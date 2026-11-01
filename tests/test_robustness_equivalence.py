@@ -276,11 +276,27 @@ def _check_supplemental_inventory(base: dict, current: dict) -> dict:
     """Check the separate inventory; compare existing schemas and hashes intact."""
     from rtpipeline import radiomics_robustness as rr
     current = {**current, "outputs": dict(current["outputs"])}
+    for key, payload in list(current["outputs"].items()):
+        if (key.endswith("radiomics_robustness_source_dispositions.json")
+                and payload.get("measurement_outcome") == rr.ROBUSTNESS_FAILED_OUTCOME):
+            errors = payload.get("source_errors", [])
+            assert payload.get("source_errors_sha256") == rr._content_sha256(errors)
+            for error in errors:
+                if error.get("sha256"):
+                    assert rr._file_sha256(Path(error["source_path"])) == error["sha256"]
+            # NEW-5 adds verified diagnostics to failed runs. Measurement
+            # artifacts and partial extraction evidence still compare exactly.
+            current["outputs"][key] = {k: v for k, v in payload.items()
+                                      if k not in {"source_errors", "source_errors_sha256"}}
     for key in set(current["outputs"]) - set(base["outputs"]):
         assert key.endswith("/metadata/radiomics_robustness_target_inventory.json")
         inventory = current["outputs"].pop(key)
-        expected = [roi for binding in inventory["source_bindings"] for roi in rr._robustness_target_inventory(binding)]
-        expected += rr._robustness_voxel_target_inventory(inventory["voxel_source_bindings"])
+        sidecar = current["outputs"][key.replace("radiomics_robustness_target_inventory.json", "radiomics_robustness_source_dispositions.json")]
+        if sidecar["measurement_outcome"] == rr.ROBUSTNESS_FAILED_OUTCOME:
+            expected = []  # A failed course makes no complete inventory claim.
+        else:
+            expected = [roi for binding in inventory["source_bindings"] for roi in rr._robustness_target_inventory(binding)]
+            expected += rr._robustness_voxel_target_inventory(inventory["voxel_source_bindings"])
         assert inventory["target_inventory"] == expected
     return current
 
@@ -326,7 +342,7 @@ def test_non_triggering_courses_match_base_revision(tmp_path):
     for patient, spec in COURSES.items():
         _build_course(inputs / "Output" / patient / "C1", spec)
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.safe_dump({"radiomics_robustness": {
+    config.write_text(yaml.safe_dump({"custom_structures": str(tmp_path / "no-custom.yaml"), "radiomics_robustness": {
         "enabled": True,
         "segmentation_perturbation": {
             "apply_to_structures": ["GTV*"], "small_volume_changes": [-0.15, 0.0],

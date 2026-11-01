@@ -460,15 +460,8 @@ RADIOMICS_MIN_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("min_voxels"), 120)
 if RADIOMICS_MIN_VOXELS is not None and RADIOMICS_MIN_VOXELS < 1:
     RADIOMICS_MIN_VOXELS = 1
 
-_custom_structures_cfg = config.get("custom_structures")
-if _custom_structures_cfg:
-    cs_path = Path(_custom_structures_cfg)
-    if not cs_path.is_absolute():
-        cs_path = ROOT_DIR / cs_path
-    CUSTOM_STRUCTURES_CONFIG = str(cs_path.resolve())
-else:
-    default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
-    CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
+from rtpipeline.config import resolve_custom_structures_config
+CUSTOM_STRUCTURES_CONFIG = str(resolve_custom_structures_config(config.get("custom_structures"), ROOT_DIR) or "")
 
 AGGREGATION_CONFIG = config.get("aggregation", {})
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")

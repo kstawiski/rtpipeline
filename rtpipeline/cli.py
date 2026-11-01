@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-from .config import PipelineConfig
+from .config import PipelineConfig, resolve_custom_structures_config
 from .organize import CourseOutput, organize_and_merge, _hydrate_existing_course
 from .utils import run_tasks_with_adaptive_workers
 
@@ -1528,10 +1528,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_env_probe_timeout=env_probe_timeout,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
-        custom_structures_config=(
-            _resolve_path(yaml_config["custom_structures"], "custom_structures_pelvic.yaml")
-            if yaml_config.get("custom_structures") else None
-        ),
+        custom_structures_config=resolve_custom_structures_config(yaml_config.get("custom_structures")),
     )
 
     worker_budget = pipeline_config.effective_workers()
@@ -1588,6 +1585,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
                     output_name=output_path.name,
                     run_identifier=failure_run_id,
                     failed_evidence=partial.evidence_path if partial else None,
+                    custom_structures_config=pipeline_config.custom_structures_config,
                 )
                 failure_rows = _json.loads(
                     dispositions_path.read_text(encoding="utf-8")
@@ -1836,13 +1834,17 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
         return _refuse("campaign minimum completion fraction must be between zero and one")
     rob_config = RobustnessConfig.from_dict(rob_config_data)
 
+    active_custom_structures = resolve_custom_structures_config(
+        yaml_config.get("custom_structures"),
+    )
+
     if args.inputs and args.campaign_mode:
         return _refuse("campaign aggregation requires manifest mode")
     if args.inputs:
         # Historical contract, unchanged: the caller's tables, measured only.
         input_paths = [Path(item) for item in args.inputs]
         try:
-            aggregate_robustness_results(input_paths, output_path, rob_config)
+            aggregate_robustness_results(input_paths, output_path, rob_config, custom_structures_config=active_custom_structures)
             logger.info("Aggregation complete: %s", output_path)
             return 0
         except Exception as e:
@@ -1873,6 +1875,7 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
             campaign_mode=args.campaign_mode,
             campaign_require_all_courses=args.campaign_require_all_courses,
             campaign_min_completion_fraction=args.campaign_min_completion_fraction,
+            custom_structures_config=active_custom_structures,
         )
         logger.info(
             "Cohort robustness accounting complete for %d manifest course(s): %s",
@@ -2105,29 +2108,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.radiomics_thread_limit = _derive_radiomics_thread_limit(worker_budget)
     logger.info("Effective worker budget (non-segmentation stages): %d", worker_budget)
 
-    # Parse custom structures configuration
-    custom_structures_config = None
-    if args.custom_structures:
-        # User provided custom config
-        custom_structures_config = Path(args.custom_structures).resolve()
-        if not custom_structures_config.exists():
-            logger.warning("Custom structures config file not found: %s", custom_structures_config)
-            custom_structures_config = None
-    else:
-        # Use default pelvic template if it exists
-        packaged_pelvic_config = Path(__file__).with_name("custom_structures_pelvic.yaml")
-        repo_root_pelvic_config = Path(__file__).parent.parent / "custom_structures_pelvic.yaml"
-        if packaged_pelvic_config.exists():
-            custom_structures_config = packaged_pelvic_config
-            logger.info("Using packaged pelvic custom structures template: %s", custom_structures_config)
-        elif repo_root_pelvic_config.exists():
-            custom_structures_config = repo_root_pelvic_config
-            logger.info("Using default pelvic custom structures template: %s", custom_structures_config)
-        else:
-            logger.info("No custom structures configuration provided")
-
-    # Update config object
-    cfg.custom_structures_config = custom_structures_config
+    cfg.custom_structures_config = resolve_custom_structures_config(args.custom_structures)
 
     # Load project YAML settings (e.g., ct_cropping, organize) for CLI-driven stages.
     #

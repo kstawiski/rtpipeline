@@ -30,7 +30,7 @@ def _course(tmp_path, monkeypatch, *, empty_sequence):
 
     monkeypatch.setattr(rr, 'extract_features_for_masks', features)
     config = tmp_path / 'config.yaml'
-    config.write_text(yaml.safe_dump({'radiomics_robustness': {
+    config.write_text(yaml.safe_dump({'custom_structures': str(tmp_path / 'no-custom.yaml'), 'radiomics_robustness': {
         'enabled': True,
         'segmentation_perturbation': {
             'apply_to_structures': ['ROI', 'Marker1'],

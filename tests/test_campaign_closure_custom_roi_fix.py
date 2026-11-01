@@ -71,17 +71,14 @@ def _ledger_module():
 
 def _failed_receipt(tmp_path, patient="P1", course="C1"):
     """A revalidatable failed-extraction receipt via the real writer."""
-    import json
-
-    from rtpipeline.robustness_completion import (
-        write_robustness_completion_sentinel,
-    )
+    from rtpipeline.robustness_completion import write_robustness_completion_sentinel
+    from rtpipeline import radiomics_robustness as rr
 
     course_dir = tmp_path / "Output" / patient / course
-    dispositions = course_dir / "metadata" / "radiomics_robustness_source_dispositions.json"
-    dispositions.parent.mkdir(parents=True, exist_ok=True)
-    dispositions.write_text(
-        json.dumps({"rows": [], "run": "failure-run-1"}), encoding="utf-8"
+    course_dir.mkdir(parents=True, exist_ok=True)
+    rob = rr.RobustnessConfig(enabled=True)
+    dispositions = rr.write_robustness_failure_dispositions(
+        course_dir, rob_config=rob, output_name="radiomics_robustness_ct.parquet", run_identifier="failure-run-1",
     )
     sentinel = course_dir / ".radiomics_robustness_done"
     write_robustness_completion_sentinel(
@@ -95,7 +92,9 @@ def _failed_receipt(tmp_path, patient="P1", course="C1"):
         dispositions_path=dispositions,
         measured_output=None,
         source_disposition_count=0,
-        effective_configuration_sha256="0" * 64,
+        effective_configuration_sha256=rr._content_sha256(rr.effective_robustness_configuration(
+            rob, output_name="radiomics_robustness_ct.parquet",
+        )),
     )
     return sentinel
 

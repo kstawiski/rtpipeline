@@ -147,12 +147,17 @@ binds that release's complete code digest to this compatibility release so
 unchanged measured DICOM-CT/RTSTRUCT receipts can be admitted without rewriting
 their receipt, sidecar or Parquet. Admission requires current source bindings,
 no selection gaps and matching disposition rows. Custom sources also require a
-current generator publication and a known custom-structure configuration; a
-configured historical publication with no recorded configuration path requires
-a new run. Benign voxel-only models with no selected ROI or detected target do
+current generator publication and the resolved active custom-structure configuration.
+A historical publication without a recorded configuration path is reusable when
+its builder metadata binds the active file's SHA-256 digest and every independent
+Custom ROI agrees with main radiomics publication. A missing Custom source or a
+different configuration digest requires a new run. Benign voxel-only models with no selected ROI or detected target do
 not invalidate this class. NIfTI-CT and voxel-fallback courses require a new run.
 An edit to the producer invalidates the exception. New runs retain their actual
 code digest and run identifier.
+
+Unmapped Custom names retain the governed name rules and target detection; a
+recorded margin alone supplies no class.
 
 Every evaluated source is inventoried regardless of the CT source format:
 Manual, independent Custom structures, model RTSTRUCTs and NIfTI masks. Copied
@@ -160,8 +165,18 @@ Manual ROIs in `RS_custom.dcm` are not independent Custom targets. The separate
 `metadata/radiomics_robustness_target_inventory.json` records contour presence,
 measurement eligibility and the deciding classification rule without entering
 historical receipt hashes. No-match sidecars carry the full selection evidence.
+The main CLI, course robustness command, aggregate command and workflow use the
+same custom-structure resolver: an explicit path takes precedence; otherwise the
+packaged pelvic template, then the repository template, is used. An explicit
+missing file disables custom structures, matching the main CLI.
+
 Voxel-only model inventories check presence on the stored grid without
-resampling. An unreadable inventory-only file whose name is neither selected
+resampling. Voxel masks evaluated for measurement use the planning CT grid.
+An evaluated mask in the publication base with stored voxels but none on that
+grid receives a source-bound
+`NIFTI_EMPTY_ON_PLANNING_CT_GRID` disposition; it cannot create a missed target.
+RTSTRUCT and voxel renderings of the same source/ROI share one inventory entry,
+while both files remain bound as provenance. An unreadable inventory-only file whose name is neither selected
 nor a detected target is recorded as a tolerated source failure. Unreadable
 selected masks and candidate targets fail technically. On NIfTI-only CT, a
 retained main-radiomics identity uses its current `Segmentation_Original` mask

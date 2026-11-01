@@ -5,6 +5,11 @@ outcome. The workflow revalidates the CLI receipt before recording the outcome
 in `_campaign_ledger/records`. Both local and container rules use this closure.
 A missing or invalid receipt stops the job.
 
+A robustness extraction failure records readable source bindings and digest-bound
+source errors, including malformed contracts or RTSTRUCTs. The campaign closes
+that course as failed and proceeds to later courses. Aggregation retains the
+failed course in the denominator.
+
 | Robustness outcome | Campaign status | Measurement contribution |
 | --- | --- | --- |
 | `measured`, without selection gaps | `ok` | Published measurement rows |

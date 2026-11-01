@@ -256,7 +256,7 @@ def _stable_subject_frame() -> pd.DataFrame:
 
 
 def _publish_course_tables(
-    root: Path, frame: pd.DataFrame, rob_config: RobustnessConfig
+    root: Path, frame: pd.DataFrame, rob_config: RobustnessConfig, monkeypatch,
 ) -> list[Path]:
     """Publish the per-course tables a cohort aggregation is allowed to admit.
 
@@ -270,6 +270,12 @@ def _publish_course_tables(
     provenance, and it is not clinical evidence. The real publication path is
     exercised in ``tests/test_robustness_aggregation_admission.py``.
     """
+    from types import SimpleNamespace
+    from rtpipeline import radiomics as rm
+    monkeypatch.setattr(robustness, "load_course_contract", lambda course: SimpleNamespace(
+        planning_ct_dir=Path(course), planning_ct_nifti=None, planning_ct={"series_instance_uid": "1.2.3"},
+    ))
+    monkeypatch.setattr(rm, "_standard_rtstruct_sources", lambda *args: [])
     from rasterizer_test_utils import PINNED_RASTERIZER_ROW
     frame = frame.assign(**PINNED_RASTERIZER_ROW)
     output_name = "radiomics_robustness_ct.parquet"
@@ -344,7 +350,7 @@ def test_incomplete_subject_grid_fails_closed():
         robustness.summarize_feature_stability(frame, RobustnessConfig(enabled=True))
 
 
-def test_aggregate_keeps_structure_source_rows_separate(tmp_path):
+def test_aggregate_keeps_structure_source_rows_separate(tmp_path, monkeypatch):
     first = _stable_subject_frame()
     second = first.copy()
     second["structure"] = "OTHER_ROI"
@@ -353,7 +359,7 @@ def test_aggregate_keeps_structure_source_rows_separate(tmp_path):
     tables = _publish_course_tables(
         tmp_path / "courses",
         pd.concat([first, second], ignore_index=True),
-        rob_config,
+        rob_config, monkeypatch,
     )
     output_path = tmp_path / "summary.xlsx"
 
@@ -374,7 +380,7 @@ def test_aggregate_rejects_missing_course_input(tmp_path):
         )
 
 
-def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path):
+def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path, monkeypatch):
     frame = _stable_subject_frame()
     extra = frame.copy()
     extra["feature_name"] = "second_feature"
@@ -386,7 +392,7 @@ def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path):
         )
     ]
     rob_config = RobustnessConfig(enabled=True)
-    tables = _publish_course_tables(tmp_path / "courses", combined, rob_config)
+    tables = _publish_course_tables(tmp_path / "courses", combined, rob_config, monkeypatch)
 
     with pytest.raises(ValueError, match="inconsistent feature sets across subjects"):
         robustness.aggregate_robustness_results(
