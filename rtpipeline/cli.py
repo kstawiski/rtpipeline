@@ -1528,6 +1528,10 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_env_probe_timeout=env_probe_timeout,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
+        custom_structures_config=(
+            _resolve_path(yaml_config["custom_structures"], "custom_structures_pelvic.yaml")
+            if yaml_config.get("custom_structures") else None
+        ),
     )
 
     worker_budget = pipeline_config.effective_workers()

@@ -305,6 +305,7 @@ def test_workflow_dependency_invalidates_old_no_match_receipt(tmp_path, cached_d
                    "robustness": robustness_config}
     dependency = materialize_stage_dependency(tmp_path, "radiomics-robustness", old_payload)
     old_digest = json.loads(dependency.read_text())["sha256"]
+    old_mtime = dependency.stat().st_mtime_ns
     if not cached_dependency:
         dependency.unlink()
     output_root = tmp_path / "Output"
@@ -323,7 +324,11 @@ def test_workflow_dependency_invalidates_old_no_match_receipt(tmp_path, cached_d
     }
     exec(compile(assignment, str(ROOT / "Snakefile"), "exec"), namespace)
     assert json.loads(dependency.read_text())["sha256"] == old_digest
-    assert dependency.stat().st_mtime_ns > receipt.stat().st_mtime_ns
+    assert dependency.stat().st_mtime_ns == old_mtime
+    assert not receipt.exists()
+    quarantined = list((output_root / "_ROBUSTNESS_RECEIPT_QUARANTINE").glob("*/receipt.json"))
+    assert len(quarantined) == 1
+    assert json.loads(quarantined[0].read_text())["measurement_outcome"] == "not_applicable_selection_unmatched"
     # Once recomputed, identical parses preserve the dependency timestamp.
     receipt.write_text(json.dumps({"measurement_outcome": GAP}))
     stamp = dependency.stat().st_mtime_ns

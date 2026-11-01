@@ -98,14 +98,17 @@ def _layout(tmp_path, monkeypatch, kind="normal", *, missing_identity=False, exp
     if kind == "custom":
         write_rtstruct(ct, course / "RS_custom.dcm", [("PTV", mask), ("GTV", mask)])
         identities.append(("Custom", "GTV"))
+        (course / "metadata").mkdir(exist_ok=True)
+        (course / "metadata/rs_custom_meta.json").write_text(json.dumps({"custom_config_sha256": ""}))
         monkeypatch.setattr(custom_structures_rtstruct, "_is_rs_custom_stale", lambda *a: False)
-    if kind in {"model", "voxel_model"}:
+    if kind in {"model", "voxel_model", "benign_voxel_model"}:
         model = course / "Segmentation_CustomModels/M"
         model.mkdir(parents=True)
         if kind == "model":
             write_rtstruct(ct, model / "rtstruct.dcm", [("GTV", mask)])
-        sitk.WriteImage(nii_mask, str(model / "GTV.nii.gz"))
-        identities.append(("CustomModel:M", "GTV"))
+        name = "colon" if kind == "benign_voxel_model" else "GTV"
+        sitk.WriteImage(nii_mask, str(model / f"{name}.nii.gz"))
+        identities.append(("CustomModel:M", name))
     if kind == "fallback":
         for path in (course / "RS.dcm", course / "RS_auto.dcm"):
             path.unlink()
@@ -198,7 +201,7 @@ def _canonical(result):
     return frame, sidecar, ledger, receipt
 
 
-@pytest.mark.parametrize("kind", ["normal", "custom", "model", "stale_auto", "fallback", "nifti_ct"])
+@pytest.mark.parametrize("kind", ["normal", "custom", "model", "stale_auto", "fallback", "nifti_ct", "benign_voxel_model"])
 def test_main_producer_equivalence(tmp_path, monkeypatch, main_producer, kind):
     # Actual main radiomics cannot publish Manual RTSTRUCT identities without
     # DICOM CT. Layout 6 therefore exercises its real (absent-identity) state.

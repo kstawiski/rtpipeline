@@ -710,7 +710,7 @@ ROBUSTNESS_CONFIG_DEPENDENCY = _dependency_path(
 )
 
 # Obsolete no-match receipts must be recomputed, including when the dependency
-# cache was removed. Advance the DAG input; never relabel their recorded evidence.
+# cache was removed. Quarantine only obsolete receipts; preserve shared input mtimes.
 from rtpipeline.config_dependencies import migrate_legacy_robustness_receipts
 migrate_legacy_robustness_receipts(OUTPUT_DIR, Path(ROBUSTNESS_CONFIG_DEPENDENCY))
 
@@ -1709,6 +1709,9 @@ rule aggregate_radiomics_robustness:
         root_dir=lambda w, input: str(ROOT_DIR),
         configfile=str(EFFECTIVE_CONFIGFILE),
         robustness_enabled=ROBUSTNESS_ENABLED,
+        campaign_mode=CAMPAIGN_MODE,
+        campaign_require_all_courses=CAMPAIGN_REQUIRE_ALL_COURSES,
+        campaign_min_completion_fraction=CAMPAIGN_MIN_COMPLETION_FRACTION,
         # The nominal cohort result is a pair. Its raw-value name is bound to
         # rtpipeline.radiomics_robustness.robustness_cohort_output_paths, which
         # is not imported here: this rule must stay parseable in the main

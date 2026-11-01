@@ -28,18 +28,24 @@ Set `radiomics_robustness.target_selection` to `patterns` (the default) or
 whole-name fnmatch selection from `segmentation_perturbation.apply_to_structures`.
 `targets` selects the union of those patterns and the governed target detector:
 
-- A name contains `GTV`, `CTV`, `PTV` or `ITV` at the start or after a space,
-  hyphen, underscore, dot or slash. Matching ignores case. The next character
-  must not be a letter. `HR-CTV`, `IR-CTV`, `LR-CTV`, `CTV_45`, `PTV1` and
-  `ptv boost` qualify; `CTVx` does not.
-- `RTROIInterpretedType` is `GTV`, `CTV` or `PTV`, even without a target token
-  in the name. `TREATED_VOLUME` alone does not qualify. `HR-CTV` and `IR-CTV`
-  typed `TREATED_VOLUME` qualify through their names.
+The governed ROI class map and feature policy decide first. Mapped targets
+qualify. Mapped OARs, OAR subvolumes and planning helpers do not qualify, even
+when their names or interpreted types contain target labels. For example,
+`CTVN_Prostate`, `GTVm - lopatka`, `GTVm_SUMA` and `GTVn4p` are targets;
+`Jelita w PTV`, `Jelita + PTV1`, `2cm od PTV1`, `z_PTV1` and
+`PTV1-poprzednio` are not.
 
-The detector includes helpers with target tokens, including `z_PTV_opt` and
-`PTV-ring`. Detection does not establish that a structure is a clinical target.
-Main-radiomics identity, publication and measurability requirements still apply.
-`ODBYTNICA` and `PECHERZ` do not qualify by name.
+For unmapped names, the detector accepts a `GTV`, `CTV`, `PTV` or `ITV` token
+at the start or after a space, hyphen, underscore, dot or slash. A single
+`p`, `n` or `m` qualifier may precede the end, digits or a separator.
+`GTVp`, `CTVn`, `PTVn1` and `HR-CTV` qualify; `CTVx` and `GTVnode` do not.
+The interpreted types `GTV`, `CTV`, `PTV` and `ITV` also qualify unmapped names.
+`TREATED_VOLUME` alone does not qualify.
+
+A target must carry volumetric contour data or nonzero voxels. Contourless template slots,
+POINT markers and zero masks remain in the source inventory but are not missed
+targets. Inventory-only helpers cannot enter the measurement base. In `targets`
+mode, `apply_to_structures: []` requests detected targets alone.
 
 `segmentation_perturbation.exclude_structures` removes structures after selection
 in both modes. It accepts a list of non-empty, case-insensitive whole-name
@@ -84,13 +90,23 @@ receipt and close the workflow stage. Neither contributes measurements or
 ICC, CoV or QCD estimates. The receipt records the selection mode and patterns;
 for a gap it lists every missed ROI name and its detector rules. The sidecar
 binds the evaluated source inventory, source bytes, code and configuration.
-The mode enters the effective configuration hash (`effective_configuration_sha256`)
-for the configured robustness parameters. Measured rows record that hash as
-`robustness_configuration_sha256`, together with `target_selection`. The measured
-`configured_parameter_hash` also binds the mode to the extractor's configured
-hash, retained separately as `extraction_configured_parameter_hash`.
+Default `patterns` mode with no exclusions preserves the historical configuration
+hashes, measured columns and receipt schema. A non-default mode or non-empty
+exclusion list enters `effective_configuration_sha256` and the measured
+`configured_parameter_hash`; measured rows also record the selection provenance
+and retain the extractor hash as `extraction_configured_parameter_hash`.
+The standalone `metadata/radiomics_robustness_target_inventory.json` records
+all evaluated sources and their source-aware deciding rules, including the
+custom-structure provenance used for classification.
 NIfTI fallback sources use name evidence and bind it to the evaluated file bytes;
-interpreted types are available only from RTSTRUCT sources.
+interpreted types are available only from RTSTRUCT sources. Voxel-only model
+inventories check presence on the stored grid without resampling. Unreadable
+inventory-only files that are neither selected nor detected targets are
+recorded as tolerated failures; selected masks and candidate targets fail
+technically. On NIfTI-only CT, retained Manual identities use current
+`Segmentation_Original` exports resolved through the course-relative contract.
+Stale sibling exports are skipped, and the physical mask adds voxel provenance
+without duplicating the Manual inventory row.
 A canonical receipt is written for either no-match outcome even without
 `--sentinel`.
 
@@ -98,7 +114,9 @@ Aggregation retains every admitted course in `course_outcomes`, with
 `target_selection`, `accounting_status`, `technically_missing` and
 `nonmeasurement_reason`. `course_counts` reports measured, technically missing,
 not-applicable and source-only course counts. Evaluated source dispositions
-remain in `source_dispositions`. Receipts carrying the obsolete
+remain in `source_dispositions`. A measured course with `selection_gap_targets`
+retains its measured rows and closes as `technically_missing`.
+Receipts carrying the obsolete
 `not_applicable_selection_unmatched` outcome are stale and require a new run;
 they are never relabelled. Changed sources, code, configuration or receipt
 bindings also require recomputation.

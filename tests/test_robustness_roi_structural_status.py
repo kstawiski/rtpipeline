@@ -139,8 +139,9 @@ def test_selected_structural_status_is_a_governed_disposition(tmp_path, monkeypa
     code, output, sentinel = _run_cli(course, config)
     assert code == 0
     receipt = rc.read_robustness_completion_sentinel(sentinel)
-    # Marker1 (a point ROI) is present in RS.dcm and in its RS_custom copy.
-    assert receipt.measured and receipt.source_disposition_count == 3
+    # Copied Marker1 has one Manual disposition; the independent Custom
+    # small_bowel1 retains its structural disposition.
+    assert receipt.measured and receipt.source_disposition_count == 2
     admitted = rr.admit_robustness_cohort_course(
         course, patient_id="P", course_id="C", rob_config=rob
     )
