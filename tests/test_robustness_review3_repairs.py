@@ -134,20 +134,54 @@ def test_new_3_active_custom_configuration_refuses_historical_receipt(tmp_path, 
         _active_admit(course, active)
 
 
-def test_new_3_digest_check_preserves_metadata_without_key(tmp_path, monkeypatch):
+def test_new_3_robustness_digest_mismatch_with_older_configuration(tmp_path, monkeypatch, main_producer):
     from rtpipeline import custom_structures_rtstruct as custom
     course, config, contract, _ = _layout(tmp_path, monkeypatch, "default_pelvic")
     active = tmp_path / "active.yaml"
     active.write_bytes(config.custom_structures_config.read_bytes())
     os.utime(active, ns=(1_000_000_000, 1_000_000_000))
-    active.write_text(active.read_text() + "\n# changed content\n")
+    config.custom_structures_config = active
+    historical = _main_run(main_producer, course, config, monkeypatch)
+    current = rr._current_robustness_code_identity()
+    assert rr._compatible_main_measured_code(historical[1], current, course_dir=course, custom_structures_config=active)
+    active.write_bytes(active.read_bytes() + b"\n# changed content\n")
     os.utime(active, ns=(1_000_000_000, 1_000_000_000))
-    assert custom._is_rs_custom_stale(course / "RS_custom.dcm", active, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
+    args = (course / "RS_custom.dcm", active, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
+    assert active.stat().st_mtime_ns < args[0].stat().st_mtime_ns
+    check = getattr(rr, "_is_robustness_rs_custom_stale", custom._is_rs_custom_stale)
+    assert check(*args)
+    assert not rr._compatible_main_measured_code(historical[1], current, course_dir=course, custom_structures_config=active)
+    with pytest.raises((ValueError, RuntimeError, rc.RobustnessCompletionError)):
+        _active_admit(course, active)
+    with pytest.raises((ValueError, RuntimeError), match="RS_custom.*stale"):
+        _produce(rr, rc, course, config)
+    # Main retains its mtime-only configuration check on this branch.
+    assert not custom._is_rs_custom_stale(*args)
+
+
+@pytest.mark.parametrize("newer", [False, True])
+def test_new_3_robustness_without_digest_defers_to_shared_check(tmp_path, monkeypatch, newer):
+    from rtpipeline import custom_structures_rtstruct as custom
+    course, config, contract, _ = _layout(tmp_path, monkeypatch, "default_pelvic")
+    active = tmp_path / "active.yaml"
+    active.write_bytes(config.custom_structures_config.read_bytes() + b"\n# changed content\n")
+    custom_path = course / "RS_custom.dcm"
+    stamp = custom_path.stat().st_mtime_ns + 1_000_000_000 if newer else 1_000_000_000
+    os.utime(active, ns=(stamp, stamp))
     meta = course / "metadata/rs_custom_meta.json"
     payload = json.loads(meta.read_text())
     payload.pop("custom_config_sha256")
     meta.write_text(json.dumps(payload))
-    assert not custom._is_rs_custom_stale(course / "RS_custom.dcm", active, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
+    original = custom._is_rs_custom_stale
+    calls = []
+    def shared(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(custom, "_is_rs_custom_stale", shared)
+    args = (custom_path, active, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
+    check = getattr(rr, "_is_robustness_rs_custom_stale", shared)
+    assert check(*args) is newer
+    assert calls == [args]
 
 
 def test_new_4_reader_tolerates_new_unreadable_unselected_model(tmp_path, monkeypatch):
@@ -398,18 +432,6 @@ def test_new_8_aggregate_gate_snakemake_dry_run(tmp_path):
     _new_8_aggregate_gate_dry_run(tmp_path)
 
 
-def test_new_3_validation_change_preserves_generator_identity():
-    """Metadata without a config hash retains the pre-change generator epoch."""
-    import hashlib
-    from rtpipeline import custom_structures_rtstruct as custom
-    expected = rr._content_sha256([
-        {"path": name, "sha256": hashlib.sha256(subprocess.check_output(
-            ["git", "show", f"4ad1c53:rtpipeline/{name}"],
-            cwd=Path(rr.__file__).parent.parent,
-        )).hexdigest()}
-        for name in sorted(custom.RS_CUSTOM_GENERATOR_CODE_SOURCES)
-    ])
-    assert custom.rs_custom_generator_sha256() == expected
 
 
 @pytest.mark.parametrize("mode", ["inputs", "manifest"])

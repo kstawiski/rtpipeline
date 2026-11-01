@@ -747,10 +747,33 @@ def _current_dicom_robustness_sources(course_dir: Path, contract):
     return sources
 
 
+def _is_robustness_rs_custom_stale(rs_custom_path, config_path, rs_manual, rs_auto):
+    """Apply shared currency checks and any recorded configuration-content binding.
+
+    Metadata without a configuration digest retains the shared check's result.
+    The additional binding governs robustness reuse only.
+    """
+    from .custom_structures_rtstruct import _is_rs_custom_stale
+
+    if _is_rs_custom_stale(rs_custom_path, config_path, rs_manual, rs_auto):
+        return True
+    metadata = Path(rs_custom_path).parent / "metadata/rs_custom_meta.json"
+    if not metadata.is_file():
+        return False
+    try:
+        recorded = json.loads(metadata.read_text())
+        if "custom_config_sha256" not in recorded:
+            return False
+        active_digest = _file_sha256(Path(config_path)) if config_path else ""
+        return recorded["custom_config_sha256"] != active_digest
+    except (OSError, ValueError, TypeError):
+        return True
+
+
 def _evaluated_robustness_sources(
     course_dir, *, configuration, custom_structures_config=None, contract=None,
     evaluated_voxels=False, planning_image=None, independent_custom_names=None, best_effort=False,
-    payload=None,
+    payload=None, require_custom=False, custom_error=ValueError,
 ):
     """Enumerate the producer's evaluated sources, scope and byte provenance.
 
@@ -805,7 +828,13 @@ def _evaluated_robustness_sources(
     independent_custom_names = independent_custom_names or ()
     active = Path(custom_structures_config) if custom_structures_config else None
     if active and not (course_dir / "RS_custom.dcm").is_file() and not best_effort:
-        raise ValueError("active custom-structure configuration requires RS_custom.dcm")
+        raise custom_error("RS_custom is missing under the active custom-structure configuration")
+    rs_custom = course_dir / "RS_custom.dcm"
+    if not best_effort and (active or require_custom or rs_custom.exists()):
+        if _is_robustness_rs_custom_stale(
+            rs_custom, active, contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm",
+        ):
+            raise custom_error("RS_custom is stale under the active custom-structure configuration")
     for source, path in sources:
         if not Path(path).is_file():
             continue
@@ -815,16 +844,12 @@ def _evaluated_robustness_sources(
                 try:
                     from .radiomics_ct_contract import load_custom_structure_provenance
                     meta = json.loads((course_dir / "metadata/rs_custom_meta.json").read_text())
-                    if meta.get("custom_config_sha256") != _file_sha256(active):
-                        raise ValueError("active custom-structure configuration digest differs from RS_custom")
+                    if "custom_config_sha256" not in meta:
+                        raise ValueError("active custom-structure configuration is unbound in RS_custom metadata")
                     binding.update(custom_provenance=load_custom_structure_provenance(active),
                                    custom_structures_config={"path": str(active.resolve()), "sha256": _file_sha256(active)})
                 except Exception as exc:
                     failed(source, path, exc)
-            if source == "Custom" and not best_effort:
-                from .custom_structures_rtstruct import _is_rs_custom_stale
-                if _is_rs_custom_stale(path, active, contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm"):
-                    raise ValueError("RS_custom is stale under the active custom-structure configuration")
             binding = _scope_custom_robustness_binding(binding, inventory, independent_custom_names)
             source_inventory = _robustness_target_inventory(binding)
             bindings.append(binding)
@@ -976,9 +1001,6 @@ def _compatible_main_measured_code(
                     _file_sha256(Path(configured["path"])) != configured["sha256"]
                     or (custom_cfg and _file_sha256(custom_cfg) != configured["sha256"])
                 ):
-                    return False
-                meta = json.loads((course_dir / "metadata/rs_custom_meta.json").read_text())
-                if meta.get("custom_config_sha256") != (_file_sha256(custom_cfg) if custom_cfg else ""):
                     return False
                 provenance = load_custom_structure_provenance(custom_cfg)
                 if configured and provenance != recorded.get("custom_provenance"):
@@ -5350,15 +5372,14 @@ def robustness_for_course(
         )
         for source, roi_name in identity_catalog
     )
-    if custom_cfg or custom_selected or rs_custom.exists():
-        from .custom_structures_rtstruct import _is_rs_custom_stale
-        if _is_rs_custom_stale(
-            rs_custom, custom_cfg, contract.authoritative_rtstruct_path, course_dir / "RS_auto.dcm"
-        ):
-            raise RuntimeError(
-                "RS_custom is stale, missing, or lacks main-runtime OpenCV 5.0.0 provenance; "
-                "run the main-runtime DVH/custom-structure stage before robustness"
-            )
+
+    source_enumeration = _evaluated_robustness_sources(
+        course_dir, contract=contract,
+        configuration=effective_robustness_configuration(rob_config, output_name=output_path.name),
+        custom_structures_config=custom_cfg, require_custom=custom_selected, custom_error=RuntimeError,
+        evaluated_voxels=_use_nifti_masks, planning_image=ct_image,
+        independent_custom_names=[name for label, name in identity_catalog if label == "Custom"],
+    )
 
     # ========================================================================
     # Collect masks from all segmentation sources
@@ -5390,13 +5411,6 @@ def robustness_for_course(
     # non-volumetric rows — so they travel in a separate digest-bound list
     # that readers validate leniently and aggregation never measures.
     tolerated_source_failures: List[Dict[str, Any]] = []
-    source_enumeration = _evaluated_robustness_sources(
-        course_dir, contract=contract,
-        configuration=effective_robustness_configuration(rob_config, output_name=output_path.name),
-        custom_structures_config=custom_cfg,
-        evaluated_voxels=_use_nifti_masks, planning_image=ct_image,
-        independent_custom_names=[name for label, name in identity_catalog if label == "Custom"],
-    )
     rtstruct_source_bindings: List[Dict[str, Any]] = []
     target_inventory: List[Dict[str, Any]] = []
     voxel_source_bindings: List[Dict[str, Any]] = []
