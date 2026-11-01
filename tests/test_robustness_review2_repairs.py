@@ -23,7 +23,7 @@ from rtpipeline import robustness_completion as rc
 from rtpipeline.config_dependencies import migrate_legacy_robustness_receipts
 from rtpipeline.course_manifest import read_course_manifest
 from test_robustness_consumer_integration import _build_courses, _run_course, _write_manifest
-from test_robustness_producer_equivalence import _layout, _produce, main_producer, one_itk_thread  # noqa: F401
+from test_robustness_producer_equivalence import _layout, _produce, _custom_metadata, main_producer, one_itk_thread  # noqa: F401
 from test_robustness_review_repairs import _course
 from test_robustness_selection_unmatched import _ledger
 from test_robustness_snakefile_parse import SNAKEFILE_PATH, parse_snakefile_source
@@ -77,7 +77,7 @@ def test_custom_provenance_helper_reader_agrees(tmp_path, monkeypatch, name, via
         "segmentation_source": "Custom", "roi_original_name": name,
         "mask_identity": "helper", "stable_roi_identifier": "helper",
     })
-    monkeypatch.setattr("rtpipeline.custom_structures_rtstruct._is_rs_custom_stale", lambda *a: False)
+    _custom_metadata(course, custom, contract, monkeypatch)
     cfg = rr.RobustnessConfig(enabled=True)
     cfg.perturbation.apply_to_structures = [name]
     if via_cli:
@@ -148,6 +148,7 @@ def _add_copied_disposition(course, geometry):
 def test_copied_custom_disposition_is_not_published_twice(tmp_path, monkeypatch, geometry):
     course, config, _, _ = _layout(tmp_path, monkeypatch, "custom")
     _add_copied_disposition(course, geometry)
+    _custom_metadata(course, config.custom_structures_config, rr.load_course_contract(course), monkeypatch)
     result = _produce(rr, rc, course, config)
     assert [(r["segmentation_source"], r["roi_name"]) for r in result[1]["rows"]] == [("Manual", "CTV")]
 
@@ -165,6 +166,8 @@ def test_certificate_refuses_stale_custom(tmp_path, monkeypatch, main_producer, 
     from rtpipeline.custom_structures_rtstruct import _is_rs_custom_stale
     course, config, _, _, main, completion = _main_artifact(tmp_path, monkeypatch, main_producer)
     before = _produce(main, completion, course, config)
+    if real_check:
+        (course / "metadata/rs_custom_meta.json").unlink()
     check = _is_rs_custom_stale if real_check else lambda *a: True
     monkeypatch.setattr("rtpipeline.custom_structures_rtstruct._is_rs_custom_stale", check)
     assert not rr._compatible_main_measured_code(before[1], rr._current_robustness_code_identity(), course_dir=course)
@@ -174,6 +177,7 @@ def test_certificate_refuses_stale_custom(tmp_path, monkeypatch, main_producer, 
 def test_certificate_refuses_copied_custom_rows(tmp_path, monkeypatch, main_producer, geometry):
     course, config, _, _, main, completion = _main_artifact(tmp_path, monkeypatch, main_producer)
     _add_copied_disposition(course, geometry)
+    _custom_metadata(course, config.custom_structures_config, rr.load_course_contract(course), monkeypatch)
     before = _produce(main, completion, course, config)
     assert [(r["segmentation_source"], r["roi_name"]) for r in before[1]["rows"]] == [("Manual", "CTV"), ("Custom", "CTV")]
     assert not rr._compatible_main_measured_code(before[1], rr._current_robustness_code_identity(), course_dir=course)
@@ -326,7 +330,7 @@ def test_migration_quarantines_only_obsolete_across_output_roots_and_dag(tmp_pat
         assert all(f"run-course-{i}" not in result.stdout + result.stderr for i in range(1, 4))
 
 
-def test_aggregate_dag_parameters_bind_campaign_gates():
+def test_aggregate_dag_parameters_bind_campaign_gates(tmp_path):
     compiled, _, _ = parse_snakefile_source(SNAKEFILE_PATH.read_text())
     tree = ast.parse(compiled)
     fn = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "__rule_aggregate_radiomics_robustness")
@@ -334,6 +338,8 @@ def test_aggregate_dag_parameters_bind_campaign_gates():
     values = {kw.arg: kw.value for kw in params.keywords}
     for key in ("campaign_mode", "campaign_require_all_courses", "campaign_min_completion_fraction"):
         assert isinstance(values.get(key), ast.Name) and values[key].id == key.upper()
+    from test_robustness_review3_repairs import _new_8_aggregate_gate_dry_run
+    _new_8_aggregate_gate_dry_run(tmp_path)
 
 
 def test_source_aware_deciding_rule(tmp_path, monkeypatch):
@@ -385,37 +391,29 @@ def test_classifier_producer_and_reader_agreement_table(tmp_path, monkeypatch, s
             assert actual == expected
 
 
-    for bindings, voxel_sources in (([{**rr._rtstruct_source_binding(source, path), "custom_provenance": provenance}], []),
-                                     ([], voxel_bindings)):
-        config = rr.RobustnessConfig(enabled=True)
-        config.perturbation.apply_to_structures = ["Absent"]
-        effective = rr.effective_robustness_configuration(config, output_name="radiomics_robustness_ct.parquet")
-        inventory = rr._robustness_bound_inventory(bindings, voxel_sources, configuration=effective)
-        missed = [roi for roi in inventory if roi["detector_rules"]]
-        rr._write_robustness_source_dispositions(
-            c.course_dir("P1"), run_identifier="agreement-table", rows=[], source_bindings=bindings,
-            effective_configuration=effective, code_identity=rr._current_robustness_code_identity(),
-            output_path=c.course_dir("P1") / "radiomics_robustness_ct.parquet", measured_output=None,
-            nonmeasured_outcome=rr.ROBUSTNESS_SELECTION_GAP_OUTCOME if missed else rr.ROBUSTNESS_NO_TARGET_OUTCOME,
-            voxel_source_bindings=voxel_sources,
-            source_only_basis={"selected_structure_count": 0, "unresolved_identity_count": 0,
-                               "source_disposition_count": 0, "requested_selection": ["Absent"],
-                               "missed_targets": missed, "reason": "No source ROI matches the requested patterns."},
-        )
-        rr._read_robustness_source_dispositions(c.course_dir("P1"), run_identifier="agreement-table", rob_config=config, output_name="radiomics_robustness_ct.parquet")
-
-    # Execute production as well as its pure selection rule. Isolate the source
-    # resolver, while keeping the RTSTRUCT reader, publication and admission real.
-    custom_cfg = tmp_path / "custom.yaml"
-    custom_cfg.write_bytes((Path(rr.__file__).parent / "custom_structures_pelvic.yaml").read_bytes())
-    monkeypatch.setattr(rm, "_standard_rtstruct_sources", lambda *a: [(source, path, None)])
-    monkeypatch.setattr("rtpipeline.custom_structures_rtstruct._is_rs_custom_stale", lambda *a: False)
+    config = rr.RobustnessConfig(enabled=True)
+    config.perturbation.apply_to_structures = ["Absent"]
+    custom_cfg = None
+    if source == "Custom":
+        custom_cfg = tmp_path / "custom.yaml"
+        custom_cfg.write_bytes((Path(rr.__file__).parent / "custom_structures_pelvic.yaml").read_bytes())
+        custom_path = c.course_dir("P1") / "RS_custom.dcm"
+        custom_path.write_bytes(path.read_bytes())
+        from rtpipeline.auto_rtstruct import _seg_source_series_uids
+        contract = copy.copy(rr.load_course_contract(c.course_dir("P1")))
+        contract.planning_ct = {"series_instance_uid": next(iter(_seg_source_series_uids(path)))}
+        monkeypatch.setattr(rr, "load_course_contract", lambda _: contract)
+        _custom_metadata(c.course_dir("P1"), custom_cfg, contract, monkeypatch)
+        path = custom_path
+        monkeypatch.setattr(rm, "_standard_rtstruct_sources", lambda *a: [])
+    else:
+        monkeypatch.setattr(rm, "_standard_rtstruct_sources", lambda *a: [(source, path, None)])
     actual = rr.run_robustness_course(
         SimpleNamespace(custom_structures_config=custom_cfg), config, c.course_dir("P1"),
         output_path=c.course_dir("P1") / "radiomics_robustness_ct.parquet",
     )
     produced = json.loads(rr.robustness_source_dispositions_path(c.course_dir("P1")).read_text())
-    expected = rr._robustness_target_inventory(binding)
+    expected = rr._robustness_target_inventory({**binding, "source_path": str(path)})
     assert produced["target_inventory"] == expected
     assert actual.measurement_outcome == (rr.ROBUSTNESS_SELECTION_GAP_OUTCOME if any(r["detector_rules"] for r in expected) else rr.ROBUSTNESS_NO_TARGET_OUTCOME)
 

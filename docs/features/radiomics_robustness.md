@@ -90,6 +90,17 @@ receipt and close the workflow stage. Neither contributes measurements or
 ICC, CoV or QCD estimates. The receipt records the selection mode and patterns;
 for a gap it lists every missed ROI name and its detector rules. The sidecar
 binds the evaluated source inventory, source bytes, code and configuration.
+All entry points resolve the custom-structure configuration with the main CLI's
+semantics, including the packaged or repository pelvic default. Admission checks
+the active configuration against the Custom builder metadata and source binding.
+Historical Custom receipts can be reused when the active digest matches, the real
+staleness check passes and Custom publication classifications agree.
+
+Unmapped Custom names retain the governed name rules and target detection; a
+recorded margin alone supplies no class.
+
+
+
 Default `patterns` mode with no exclusions preserves the historical configuration
 hashes, measured columns and receipt schema. A non-default mode or non-empty
 exclusion list enters `effective_configuration_sha256` and the measured
@@ -100,7 +111,11 @@ all evaluated sources and their source-aware deciding rules, including the
 custom-structure provenance used for classification.
 NIfTI fallback sources use name evidence and bind it to the evaluated file bytes;
 interpreted types are available only from RTSTRUCT sources. Voxel-only model
-inventories check presence on the stored grid without resampling. Unreadable
+inventories check presence on the stored grid without resampling. Evaluated
+voxel masks use the planning CT grid. Masks in the publication base with stored
+voxels outside that grid receive a source-bound `NIFTI_EMPTY_ON_PLANNING_CT_GRID` disposition. RTSTRUCT and voxel
+renderings of one source/ROI share one inventory entry and retain both byte
+bindings. Unreadable
 inventory-only files that are neither selected nor detected targets are
 recorded as tolerated failures; selected masks and candidate targets fail
 technically. On NIfTI-only CT, retained Manual identities use current

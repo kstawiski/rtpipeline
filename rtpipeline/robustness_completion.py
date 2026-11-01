@@ -446,10 +446,10 @@ def _validate_payload(
             f"{row_count!r}"
         )
     if (
-        outcome in ROBUSTNESS_NO_MATCH_OUTCOMES
+        outcome in ROBUSTNESS_NO_MATCH_OUTCOMES or outcome == "failed_extraction"
         or disposition_payload.get("measurement_outcome") in ROBUSTNESS_NO_MATCH_OUTCOMES
     ):
-        # A no-match closes the workflow only with the producer's complete
+        # No-match and failed courses close only with complete source
         # evidence. Recheck source/code/configuration and the zero-match basis,
         # including receipt bindings that a sidecar digest alone cannot prove.
         from .radiomics_robustness import _read_robustness_source_dispositions
@@ -465,12 +465,13 @@ def _validate_payload(
                 "effective_configuration_sha256"
             ):
                 raise ValueError("selection-unmatched receipt configuration differs from sidecar")
-            for field in ("requested_selection", "missed_targets"):
-                if payload.get(field) != disposition_payload["source_only_basis"][field]:
-                    raise ValueError(f"no-match receipt {field} differs from sidecar")
+            if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
+                for field in ("requested_selection", "missed_targets"):
+                    if payload.get(field) != disposition_payload["source_only_basis"][field]:
+                        raise ValueError(f"no-match receipt {field} differs from sidecar")
         except Exception as exc:
             raise RobustnessCompletionError(
-                f"{sentinel_path} has invalid selection-unmatched evidence: {exc}"
+                f"{sentinel_path} has invalid terminal source evidence: {exc}"
             ) from exc
     return RobustnessCompletionReceipt(
         target_selection=payload.get("target_selection", "patterns"),

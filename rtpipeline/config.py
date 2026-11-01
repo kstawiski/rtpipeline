@@ -247,3 +247,32 @@ class PipelineConfig:
         if override is not None:
             base = max(1, min(base, override))
         return base
+
+
+def resolve_custom_structures_config(
+    raw_value: str | Path | None = None, root_dir: str | Path | None = None,
+) -> Path | None:
+    """Resolve an explicit path or main CLI's packaged/repository pelvic default.
+
+    An explicit missing file disables custom structures, as in the main CLI.
+    Empty values request the default; the main CLI has no separate opt-out.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    root = Path(root_dir) if root_dir is not None else Path.cwd()
+    if raw_value:
+        path = Path(raw_value)
+        path = (root / path).resolve() if not path.is_absolute() else path.resolve()
+        if not path.exists():
+            logger.warning("Custom structures config file not found: %s", path)
+            return None
+        return path
+    for label, path in (
+        ("packaged", Path(__file__).with_name("custom_structures_pelvic.yaml")),
+        ("default", Path(__file__).parent.parent / "custom_structures_pelvic.yaml"),
+    ):
+        if path.exists():
+            logger.info("Using %s pelvic custom structures template: %s", label, path)
+            return path.resolve()
+    logger.info("No custom structures configuration provided")
+    return None

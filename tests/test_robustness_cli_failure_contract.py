@@ -852,7 +852,8 @@ def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monke
     assert _run_aggregate_manifest(manifest, output_root, output, config) == 0
 
     (admitted, out, cfg, cohort, policy), = calls
-    assert policy == {"campaign_mode": False, "campaign_require_all_courses": False, "campaign_min_completion_fraction": 0.5}
+    assert policy == {"campaign_mode": False, "campaign_require_all_courses": False, "campaign_min_completion_fraction": 0.5,
+                      "custom_structures_config": Path(cli.__file__).with_name("custom_structures_pelvic.yaml")}
     assert out == output.resolve()
     assert cohort is cohort_metadata
     assert cfg.enabled is True
@@ -868,7 +869,7 @@ def test_a_valid_configuration_still_routes_explicit_input_aggregation(tmp_path,
     monkeypatch.setattr(
         ra,
         "aggregate_robustness_results",
-        lambda inputs, out, cfg: calls.append((inputs, out, cfg)),
+        lambda inputs, out, cfg, **policy: calls.append((inputs, out, cfg)),
     )
 
     assert _run_aggregate_inputs([table], output, config) == 0

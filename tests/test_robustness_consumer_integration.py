@@ -87,6 +87,9 @@ def _write_config(
         "intensity": "standard",
     }
     payload = {
+        # These synthetic layouts intentionally have no custom-structure stage.
+        # Main CLI semantics: an explicit missing file disables that stage.
+        "custom_structures": str(tmp_path / "no-custom-structures.yaml"),
         "dicom_root": str(tmp_path / "Input"),
         "output_dir": str(tmp_path / "Output"),
         "logs_dir": str(tmp_path / "Logs"),
@@ -181,6 +184,19 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
             contour.NumberOfContourPoints = 1
             ds.ROIContourSequence[0].ContourSequence = [contour]
         ds.save_as(rs_path)
+        from course_contract_test_utils import write_minimal_course_contract
+        shutil.copytree(template_dir / "CT", course_dir / "CT")
+        metadata_path = write_minimal_course_contract(course_dir, planning_ct_dir=course_dir / "CT", authoritative_rtstruct=rs_path)
+        from rtpipeline.course_contract import _ct_provenance, load_course_contract
+        metadata = json.loads(metadata_path.read_text())
+        provenance = metadata["course_contract"]["planning_ct"]["nifti_provenance"]
+        provenance.update(_ct_provenance(course_dir / "CT"))
+        sidecar_path = course_dir / provenance["sidecar_path"]
+        sidecar = json.loads(sidecar_path.read_text())
+        sidecar.update(_ct_provenance(course_dir / "CT"))
+        sidecar_path.write_text(json.dumps(sidecar))
+        metadata_path.write_text(json.dumps(metadata))
+        load_course_contract(course_dir)  # The subprocess consumes this same real contract.
         rs_paths[rs_path] = kind
         courses[(patient_id, course_id)] = SimpleNamespace(
             course_dir=course_dir, kind=kind, rs_path=rs_path

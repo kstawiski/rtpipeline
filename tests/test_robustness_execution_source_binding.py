@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,21 @@ ORIGINALLY_BOUND_SOURCES = (
     "radiomics.py",
     "rtstruct_geometry.py",
 )
+
+
+@pytest.fixture(autouse=True)
+def synthetic_source_contract(monkeypatch):
+    """Declare the code-only fixtures' source set; keep byte validation real."""
+    from rtpipeline import radiomics as rm
+    monkeypatch.setattr(rr, "load_course_contract", lambda course: SimpleNamespace(
+        planning_ct_dir=Path(course), planning_ct_nifti=None,
+        planning_ct={"series_instance_uid": "1.2.3"},
+        authoritative_rtstruct_path=Path(course) / "RS_synthetic.dcm",
+        authoritative_rtstruct_source="Manual",
+    ))
+    monkeypatch.setattr(rm, "_standard_rtstruct_sources", lambda contract, course: [
+        ("Manual", Path(course) / "RS_synthetic.dcm", None)
+    ] if (Path(course) / "RS_synthetic.dcm").is_file() else [])
 
 
 def _drift_source_digest(monkeypatch, relative_name: str) -> None:

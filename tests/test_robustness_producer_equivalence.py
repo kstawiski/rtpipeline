@@ -8,6 +8,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+import os
 
 import numpy as np
 import pandas as pd
@@ -38,7 +39,7 @@ def main_producer(tmp_path, monkeypatch):
             ["git", "show", f"072b146:rtpipeline/{relative}"],
             cwd=Path(__file__).resolve().parents[1],
         ))
-        if relative not in {"radiomics_robustness.py", "robustness_completion.py"}:
+        if relative not in {"radiomics_robustness.py", "robustness_completion.py", "config.py", "custom_structures_rtstruct.py"}:
             # Relative imports execute shared helpers. Prove those are exactly
             # main's bytes, rather than silently comparing a hybrid producer.
             assert (Path(rr.__file__).parent / relative).read_bytes() == (directory / relative).read_bytes()
@@ -74,8 +75,34 @@ def _features(image, masks, config, **kwargs):
     return pd.DataFrame(rows)
 
 
+def _custom_metadata(course, custom_config, contract, monkeypatch):
+    """Complete synthetic builder record; exercise the real staleness check."""
+    from rtpipeline import custom_structures_rtstruct as custom
+    from rtpipeline.rtstruct_identity import assign_derived_identity
+    path = course / "RS_custom.dcm"
+    ds = pydicom.dcmread(path)
+    parent = pydicom.dcmread(course / "RS.dcm")
+    assign_derived_identity(ds, str(parent.SOPInstanceUID), str(parent.SOPClassUID))
+    ds.save_as(path)
+    meta = {
+        "version": custom._RS_CUSTOM_META_VERSION,
+        "opencv_runtime": {"opencv_version": "5.0.0"},
+        "generator_code_sha256": custom.rs_custom_generator_sha256(),
+        "custom_config_sha256": rr._file_sha256(custom_config) if custom_config else "",
+        "rs_custom_sop_instance_uid": str(ds.SOPInstanceUID),
+        "totalseg_fallback_sources": {}, "unread_source_rois": {},
+    }
+    (course / "metadata").mkdir(exist_ok=True)
+    (course / "metadata/rs_custom_meta.json").write_text(json.dumps(meta))
+    # Input files may have been written after the synthetic RTSTRUCT.
+    latest = max(p.stat().st_mtime_ns for p in course.rglob("*") if p.is_file())
+    os.utime(path, ns=(latest + 1_000_000, latest + 1_000_000))
+    monkeypatch.setattr(custom, "load_course_contract", lambda _: contract)
+    assert not custom._is_rs_custom_stale(path, custom_config, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
+
+
 def _layout(tmp_path, monkeypatch, kind="normal", *, missing_identity=False, export=False):
-    from rtpipeline import auto_rtstruct, custom_structures_rtstruct
+    from rtpipeline import auto_rtstruct
     from rasterizer_test_utils import stub_synthetic_rasterizer_columns
 
     stub_synthetic_rasterizer_columns(monkeypatch)
@@ -95,12 +122,11 @@ def _layout(tmp_path, monkeypatch, kind="normal", *, missing_identity=False, exp
     # A published voxel identity omitted by RS_auto must not enter a DICOM pass.
     sitk.WriteImage(nii_mask, str(seg / "CTV.nii.gz"))
     identities = [("Manual", "PTV"), ("AutoRTS_total", "BLADDER"), ("AutoRTS_total", "CTV")]
-    if kind == "custom":
+    if kind in {"custom", "default_pelvic"}:
         write_rtstruct(ct, course / "RS_custom.dcm", [("PTV", mask), ("GTV", mask)])
         identities.append(("Custom", "GTV"))
-        (course / "metadata").mkdir(exist_ok=True)
-        (course / "metadata/rs_custom_meta.json").write_text(json.dumps({"custom_config_sha256": ""}))
-        monkeypatch.setattr(custom_structures_rtstruct, "_is_rs_custom_stale", lambda *a: False)
+        if kind == "default_pelvic":
+            write_rtstruct(ct, course / "RS_custom.dcm", [("PTV", mask), ("GTV", mask), ("pelvic_bones_3mm", mask)])
     if kind in {"model", "voxel_model", "benign_voxel_model"}:
         model = course / "Segmentation_CustomModels/M"
         model.mkdir(parents=True)
@@ -152,12 +178,15 @@ def _layout(tmp_path, monkeypatch, kind="normal", *, missing_identity=False, exp
     monkeypatch.setenv("RTPIPELINE_DISABLE_PARALLEL_RADIOMICS", "1")
     monkeypatch.setenv("RTPIPELINE_RADIOMICS_THREAD_LIMIT", "1")
     monkeypatch.setenv("RTPIPELINE_MAX_WORKERS", "1")
-    return course, SimpleNamespace(custom_structures_config=None), contract, catalog
+    custom_config = Path(rr.__file__).with_name("custom_structures_pelvic.yaml") if kind == "default_pelvic" else None
+    if kind in {"custom", "default_pelvic"}:
+        _custom_metadata(course, custom_config, contract, monkeypatch)
+    return course, SimpleNamespace(custom_structures_config=custom_config), contract, catalog
 
 
-def _produce(module, completion, course, config):
+def _produce(module, completion, course, config, *, rob_config=None):
     output = course / "radiomics_robustness_ct.parquet"
-    cfg = module.RobustnessConfig(enabled=True)  # All measurement/selection defaults.
+    cfg = rob_config or module.RobustnessConfig(enabled=True)  # Defaults unless the scenario selects a helper.
     result = module.robustness_for_course(config, cfg, course, output_path=output)
     if result is None:
         return None
@@ -201,7 +230,7 @@ def _canonical(result):
     return frame, sidecar, ledger, receipt
 
 
-@pytest.mark.parametrize("kind", ["normal", "custom", "model", "stale_auto", "fallback", "nifti_ct", "benign_voxel_model"])
+@pytest.mark.parametrize("kind", ["normal", "custom", "model", "stale_auto", "fallback", "nifti_ct", "benign_voxel_model", "default_pelvic"])
 def test_main_producer_equivalence(tmp_path, monkeypatch, main_producer, kind):
     # Actual main radiomics cannot publish Manual RTSTRUCT identities without
     # DICOM CT. Layout 6 therefore exercises its real (absent-identity) state.
@@ -224,10 +253,26 @@ def test_main_producer_equivalence(tmp_path, monkeypatch, main_producer, kind):
         # Main's defect: it omitted the selected clinical target entirely.
         assert {(r["segmentation_source"], r["roi_original_name"]) for r in ledger["rows"]} == (
             {(r["segmentation_source"], r["roi_original_name"]) for r in old_ledger["rows"]} | {("Manual", "PTV")})
+        print({"layout": kind, "rows": 0, "comparison": "selected clinical target recorded as unresolved", "reuse": False})
         return
     old, new = _canonical(before), _canonical(after)
     pd.testing.assert_frame_equal(old[0], new[0], check_exact=True)
-    if kind == "fallback":
+    if kind == "default_pelvic":
+        # Historical sidecars omitted configuration provenance. Measurements,
+        # identities and all other sidecar fields remain equal; the caller's
+        # active digest and builder metadata can certify the old source.
+        expected_sidecar = copy.deepcopy(old[1])
+        binding = next(b for b in expected_sidecar["source_bindings"] if b["segmentation_source"] == "Custom")
+        from rtpipeline.radiomics_ct_contract import load_custom_structure_provenance
+        binding.update(custom_provenance=load_custom_structure_provenance(config.custom_structures_config),
+                       custom_structures_config={"path": str(config.custom_structures_config.resolve()),
+                                                 "sha256": rr._file_sha256(config.custom_structures_config)})
+        assert new[1] == expected_sidecar
+        assert old[2] == new[2]
+        expected_receipt = copy.deepcopy(old[3])
+        expected_receipt["source_dispositions"]["sha256"] = rr._content_sha256(expected_sidecar)
+        assert new[3] == expected_receipt
+    elif kind == "fallback":
         # Main defect: its sidecar and receipt omit every voxel input. These
         # are asserted additions, not excluded comparison fields.
         expected_sidecar = copy.deepcopy(old[1])
@@ -253,12 +298,15 @@ def test_main_producer_equivalence(tmp_path, monkeypatch, main_producer, kind):
         with pytest.raises((ValueError, rc.RobustnessCompletionError), match="different code"):
             rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True))
     else:
-        assert rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True)).measured
+        assert rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True),
+                                                custom_structures_config=config.custom_structures_config).measured
     assert snapshot == [path.read_bytes() for path in paths]
     foreign_code = {**rr._current_robustness_code_identity(), "sources_sha256": "unlisted-digest"}
     assert not rr._compatible_main_measured_code(before[1], foreign_code, course_dir=course)
     print({"layout": kind, "rows": len(new[0]),
-           "comparison": "voxel binding correction" if kind == "fallback" else "equal", "reuse": kind != "fallback"})
+           "comparison": ("voxel binding correction" if kind == "fallback" else
+                          "equal measurements; explicit custom provenance" if kind == "default_pelvic" else "equal"),
+           "reuse": kind != "fallback"})
 
 
 @pytest.mark.parametrize("kind", ["normal", "model", "stale_auto"])
@@ -293,7 +341,7 @@ def test_certificate_rederives_sources(tmp_path, monkeypatch, main_producer, bro
     write_rtstruct(course / "CT", course / "RS_custom.dcm", [("GTV", np.ones((31, 31, 13), bool))])
     if broken:
         (course / "RS_custom.dcm").write_bytes(b"malformed synthetic DICOM")
-    with pytest.raises((ValueError, rc.RobustnessCompletionError), match="different code"):
+    with pytest.raises((ValueError, rc.RobustnessCompletionError), match="different code|source evidence is stale"):
         rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True))
 
 
@@ -425,3 +473,56 @@ def test_selected_voxel_only_model_cannot_be_hidden(tmp_path, monkeypatch):
     ledger = json.loads((course / "metadata/radiomics_robustness_identity.json").read_text())
     assert ("CustomModel:M", "GTV", "main_radiomics_mask_unavailable") in [
         (row["segmentation_source"], row["roi_original_name"], row.get("reason_code")) for row in ledger["rows"]]
+
+
+def test_new_7_main_without_custom_provenance_is_refused(tmp_path, monkeypatch, main_producer):
+    """A real historical checker permits main's unconfigured Custom extraction."""
+    from rtpipeline import custom_structures_rtstruct as custom
+    from rtpipeline.radiomics_ct_contract import load_custom_structure_provenance
+    course, config, contract, catalog = _layout(tmp_path, monkeypatch, "custom")
+    active = tmp_path / "custom.yaml"
+    active.write_bytes(Path(rr.__file__).with_name("custom_structures_pelvic.yaml").read_bytes())
+    ds = pydicom.dcmread(course / "RS_custom.dcm")
+    next(roi for roi in ds.StructureSetROISequence if roi.ROIName == "GTV").ROIName = "pelvic_bones_3mm"
+    ds.save_as(course / "RS_custom.dcm")
+    identity = catalog.pop(("Custom", "GTV")).as_dict()
+    identity["roi_original_name"] = "pelvic_bones_3mm"
+    catalog[("Custom", "pelvic_bones_3mm")] = rr.RobustnessRoiIdentity.from_mapping(identity)
+    cfg = rr.RobustnessConfig(enabled=True)
+    cfg.perturbation.apply_to_structures = ["*"]
+    _custom_metadata(course, active, contract, monkeypatch)
+    assert not custom._is_rs_custom_stale(course / "RS_custom.dcm", active, course / "RS.dcm", course / "RS_auto.dcm")
+    provenance = load_custom_structure_provenance(active)
+    assert not rr.classify_robustness_roi("Custom", "pelvic_bones_3mm", custom_provenance=provenance)["in_publication_base"]
+    # Execute the complete archived checker, not a permissive stale-check stub.
+    directory = tmp_path / "historical-custom-checker"
+    directory.mkdir()
+    for relative in custom.RS_CUSTOM_GENERATOR_CODE_SOURCES:
+        (directory / relative).write_bytes(subprocess.check_output(["git", "show", f"4ad1c53:rtpipeline/{relative}"]))
+    historical = types.ModuleType("rtpipeline._s11g_historical_custom")
+    historical.__file__ = str(directory / "custom_structures_rtstruct.py")
+    exec(compile(Path(historical.__file__).read_bytes(), historical.__file__, "exec"), historical.__dict__)
+    historical.load_course_contract = lambda _: contract
+    assert not historical._is_rs_custom_stale(course / "RS_custom.dcm", None, course / "RS.dcm", course / "RS_auto.dcm")
+    main, completion = main_producer
+    main_cfg = main.RobustnessConfig(enabled=True)
+    main_cfg.perturbation.apply_to_structures = ["*"]
+    for name in ("load_course_contract", "_load_main_ct_identity_catalog", "extract_features_for_masks"):
+        monkeypatch.setattr(main, name, getattr(rr, name))
+    with monkeypatch.context() as context:
+        context.setattr(custom, "_is_rs_custom_stale", historical._is_rs_custom_stale)
+        before = _produce(main, completion, course, config, rob_config=main_cfg)
+    assert not rr._compatible_main_measured_code(
+        before[1], rr._current_robustness_code_identity(), course_dir=course, custom_structures_config=active,
+    )
+    with pytest.raises(ValueError, match="different code"):
+        rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1",
+                                        rob_config=cfg, custom_structures_config=active)
+    config.custom_structures_config = active
+    after = _produce(rr, rc, course, config, rob_config=cfg)
+    old, new = _canonical(before), _canonical(after)
+    expected = old[0][old[0].segmentation_source != "Custom"].reset_index(drop=True)
+    pd.testing.assert_frame_equal(expected, new[0].reset_index(drop=True), check_exact=True)
+    assert "Custom" not in set(new[0].segmentation_source)
+    print({"layout": "custom_without_provenance", "main_rows": len(old[0]), "current_rows": len(new[0]),
+           "comparison": "main extracted a configured planning helper without provenance", "reuse": False})

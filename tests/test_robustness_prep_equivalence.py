@@ -330,7 +330,7 @@ def runs(tmp_path_factory):
     for patient, spec in COURSES.items():
         build_course(inputs / "Output" / patient / "C1", spec)
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.safe_dump({"radiomics_robustness": {
+    config.write_text(yaml.safe_dump({"custom_structures": str(tmp_path / "no-custom.yaml"), "radiomics_robustness": {
         "enabled": True,
         "segmentation_perturbation": {
             "apply_to_structures": ["GTV*", "CTV*", "PTV*", "urinary_bladder"],
