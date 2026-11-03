@@ -294,6 +294,8 @@ def _course_outputs(run: dict, courses) -> dict:
 def _assert_equivalent(base: dict, current: dict, courses=None) -> None:
     if courses is not None:
         base, current = _course_outputs(base, courses), _course_outputs(current, courses)
+    from test_robustness_equivalence import _check_supplemental_inventory
+    current = _check_supplemental_inventory(base, current)
     assert current["codes"] == base["codes"]
     assert sorted(current["outputs"]) == sorted(base["outputs"])
     base_ids, current_ids = _run_ids(base["outputs"]), _run_ids(current["outputs"])
@@ -328,7 +330,7 @@ def runs(tmp_path_factory):
     for patient, spec in COURSES.items():
         build_course(inputs / "Output" / patient / "C1", spec)
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.safe_dump({"radiomics_robustness": {
+    config.write_text(yaml.safe_dump({"custom_structures": str(tmp_path / "no-custom.yaml"), "radiomics_robustness": {
         "enabled": True,
         "segmentation_perturbation": {
             "apply_to_structures": ["GTV*", "CTV*", "PTV*", "urinary_bladder"],
@@ -501,7 +503,9 @@ def test_scoped_reader_negative_controls_still_fail(runs):
 
 def test_two_point_item_changes_only_that_selected_roi(runs):
     """Deliberate: the main path withholds a two-point item that rt_utils draws."""
-    base, current = runs["base"], runs["current"]
+    from test_robustness_equivalence import _check_supplemental_inventory
+    base = _course_outputs(runs["base"], {"S3"})
+    current = _check_supplemental_inventory(base, _course_outputs(runs["current"], {"S3"}))
     assert base["codes"]["S3"] == current["codes"]["S3"] == 0
     for key, value in base["outputs"].items():
         if key.startswith("S3/") and not key.endswith(".parquet"):

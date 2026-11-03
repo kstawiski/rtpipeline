@@ -98,6 +98,9 @@ radiomics_robustness:
       - "GTV*"
       - "CTV*"
       - "PTV*"
+    # Optional exclusions after selection in both modes; default absent or [].
+    # Case-insensitive whole-name fnmatch, including target-typed helpers.
+    # exclude_structures: ["z_PTV_*", "PTV-ring", "RING"]
     small_volume_changes: [-0.15, 0.0, 0.15]
     max_translation_mm: 4.0
     n_random_contour_realizations: 2

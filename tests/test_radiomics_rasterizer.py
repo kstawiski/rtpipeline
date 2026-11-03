@@ -332,7 +332,9 @@ class EnvironmentAndProvenanceTests(unittest.TestCase):
             output.write_bytes(b"test measurement bytes")
             path = rr._write_robustness_source_dispositions(
                 course, run_identifier="run-1", rows=[], source_bindings=[],
-                effective_configuration={}, code_identity=rr._capture_robustness_code_identity(),
+                effective_configuration=rr.effective_robustness_configuration(
+                    rr.RobustnessConfig(), output_name=output.name,
+                ), code_identity=rr._capture_robustness_code_identity(),
                 output_path=output, measured_output=output,
             )
             source = json.loads(path.read_text())

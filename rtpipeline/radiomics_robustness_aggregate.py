@@ -257,7 +257,7 @@ def _duplicate(registry, key, path, repeated):
     registry[key] = path
 
 
-def aggregate_robustness_results(input_parquets, output_excel, rob_config):
+def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, custom_structures_config=None):
     output_excel = Path(output_excel)
     rr.withdraw_robustness_cohort_outputs(output_excel)
     if not input_parquets:
@@ -267,7 +267,7 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config):
     with TemporaryDirectory(prefix=".robustness-aggregate-", dir=output_excel.parent) as directory:
         staged = _StagedValues(directory)
         for path in input_parquets:
-            entry = rr._admit_robustness_aggregation_input(path, rob_config)
+            entry = rr._admit_robustness_aggregation_input(path, rob_config, custom_structures_config=custom_structures_config)
             for registry, key, repeated in (
                 (seen_paths, str(entry.path.resolve()), "input path"),
                 (seen_courses, (entry.patient_id, entry.course_id), "course identity"),
@@ -282,6 +282,9 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config):
 def aggregate_robustness_cohort(
     courses: Sequence[RobustnessCourseReference | rr.RobustnessCohortCourse],
     output_excel: Path, rob_config: rr.RobustnessConfig, *, cohort: Mapping,
+    campaign_mode: bool = False, campaign_require_all_courses: bool = False,
+    campaign_min_completion_fraction: float = 0.5,
+    custom_structures_config: Path | None = None,
 ):
     """Account for exact manifest membership with one live admitted frame.
 
@@ -302,7 +305,8 @@ def aggregate_robustness_cohort(
         for course in courses:
             fresh = rr.admit_robustness_cohort_course(
                 course.course_dir, patient_id=course.patient_id,
-                course_id=course.course_id, rob_config=rob_config,
+                course_id=course.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
+                custom_structures_config=custom_structures_config,
             )
             if isinstance(course, rr.RobustnessCohortCourse):
                 _check_snapshot(course, fresh, check_frame=True)
@@ -324,7 +328,8 @@ def aggregate_robustness_cohort(
             for snapshot in snapshots:
                 fresh = rr.admit_robustness_cohort_course(
                     snapshot.course_dir, patient_id=snapshot.patient_id,
-                    course_id=snapshot.course_id, rob_config=rob_config,
+                    course_id=snapshot.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
+                    custom_structures_config=custom_structures_config,
                 )
                 _check_snapshot(snapshot, fresh)
                 del fresh
@@ -342,7 +347,14 @@ def aggregate_robustness_cohort(
                             pd.read_parquet(BytesIO(original.table_snapshot)))):
                         raise ValueError("admitted measurement frame was mutated")
 
+        course_outcomes = pd.concat(outcomes, ignore_index=True)
+        if campaign_mode:
+            completed = int((~course_outcomes.technically_missing).sum())
+            fraction = completed / len(course_outcomes)
+            if ((campaign_require_all_courses and completed != len(course_outcomes))
+                    or fraction < campaign_min_completion_fraction):
+                raise RuntimeError(f"Campaign robustness completion gate failed: {completed}/{len(course_outcomes)} courses ({fraction:.3f})")
         _publish(staged, output_excel, rob_config,
-                 extra_sheets=[("course_outcomes", pd.concat(outcomes, ignore_index=True)),
+                 extra_sheets=[*rr._robustness_accounting_sheets(course_outcomes, snapshots),
                                ("source_dispositions", rr._robustness_source_disposition_rows(snapshots))],
                  verify_evidence=verify)

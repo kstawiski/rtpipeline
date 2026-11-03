@@ -101,6 +101,7 @@ nav:
     - Docker Setup: getting_started/docker_setup.md
   - User Guide:
     - Output Format: user_guide/output_format.md
+    - Campaign Accounting: user_guide/campaigns.md
     - Interpreting Results: user_guide/results_interpretation.md
     - Reproducibility Guide: user_guide/reproducibility.md
     - Troubleshooting: user_guide/troubleshooting.md

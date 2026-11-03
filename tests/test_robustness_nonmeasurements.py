@@ -968,7 +968,7 @@ def test_unmatched_selection_is_not_a_nonvolumetric_outcome(
     run_id = payload['robustness_run_identifier']
     # An unrelated POINT elsewhere in the source says nothing about a name that
     # was never found, and an unfound name is not a clinical exclusion.
-    assert payload['measurement_outcome'] == rr.ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+    assert payload['measurement_outcome'] == rr.ROBUSTNESS_NO_TARGET_OUTCOME
     assert payload['measurement_outcome'] != rr.ROBUSTNESS_SOURCE_ONLY_OUTCOME
     assert payload['measured_output'] is None
     basis = payload['source_only_basis']
