@@ -2687,7 +2687,9 @@ def _calculate_delivery_summary(
                 or not left["reference_uids"]
                 or not right["reference_uids"]
             )
-            if shared_sessions:
+            if classification == DECLARED_CONCURRENT_COMPONENTS:
+                pass  # the declaration hold below states the withheld course dose once
+            elif shared_sessions:
                 course_holds.append(
                     {
                         "reason_code": "COURSE_DOSE_CONCURRENT_DISTINCT_REFERENCES",
@@ -2705,7 +2707,18 @@ def _calculate_delivery_summary(
                     "sequential total, not a dose at one reference point"
                 )
                 delivery_warnings.append(note)
-    if classification == INDEPENDENT_DELIVERY_UNRECONCILED:
+    if classification == DECLARED_CONCURRENT_COMPONENTS:
+        reference_identity = "DISTINCT_OR_UNBOUND_DOSE_REFERENCE_UIDS"
+        course_holds.append(
+            {
+                "reason_code": "COURSE_DOSE_CONCURRENT_DISTINCT_REFERENCES",
+                "reason": (
+                    "declared concurrent components authorize a physical grid sum only; "
+                    "doses at distinct reference points and component fractions do not add"
+                ),
+            }
+        )
+    elif classification == INDEPENDENT_DELIVERY_UNRECONCILED:
         course_holds.append(
             {
                 "reason_code": "COURSE_INDEPENDENT_DELIVERY_UNRECONCILED",
@@ -3095,6 +3108,7 @@ def _replacement_partition(plans: List[dict]) -> tuple[int, tuple[int, ...]] | N
 INDEPENDENT_DELIVERY_UNRECONCILED = "independent_delivered_plans_unreconciled"
 INDEPENDENT_DELIVERY_UNRESOLVED_SCOPE = "UNRESOLVED_INDEPENDENT_DELIVERY"
 DELIVERED_REMAINDER_CHAIN = "delivered_remainder_plan_doses_accumulated"
+DECLARED_CONCURRENT_COMPONENTS = "declared_concurrent_components"
 
 
 def _course_fraction_totals(
@@ -3124,6 +3138,16 @@ def _course_fraction_totals(
                 "remainder or replacement chain, whose per-plan planned fractions "
                 "overlap, and no adjudicated course fraction denominator exists; see "
                 "delivery_plan_details for exact per-plan counts"
+            ),
+        }
+    if str(classification or "") == DECLARED_CONCURRENT_COMPONENTS:
+        return {
+            "delivered_fraction_count": None,
+            "planned_fraction_count": None,
+            "basis": COURSE_FRACTION_TOTALS_WITHHELD_BASIS,
+            "reason": (
+                "Course fraction totals are withheld: declared concurrent component "
+                "fractions are not additive; see delivery_plan_details for per-plan counts"
             ),
         }
     if str(classification or "") == INDEPENDENT_DELIVERY_UNRECONCILED:
@@ -3321,22 +3345,34 @@ def _classify_doses(
     dose_paths: List[Path],
     max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY,
     treatment_record_paths: Optional[Iterable[Path]] = None,
+    *,
+    structure_set_paths: Optional[Iterable[Path]] = None,
+    course_dose_paths: Optional[Iterable[Path]] = None,
 ) -> DoseClassification:
-    """Apply approval eligibility before any revision, prescription or dose ranking."""
+    """Apply approval eligibility before any revision, prescription or dose ranking.
+
+    ``course_dose_paths`` (declarations only) lists every dose file of the course before eligibility filtering, for the
+    coverage check of a concurrent-components declaration; it defaults to ``dose_paths``.
+    """
     plan_paths = list(dict.fromkeys(Path(p) for p in plan_paths))
     dose_paths = list(dict.fromkeys(Path(p) for p in dose_paths))
     audit = approval_audit(plan_paths)
     eligible_plans = approved_plan_paths(plan_paths)
     eligible_doses = eligible_dose_paths(eligible_plans, dose_paths)
     if plan_paths and not eligible_plans:
+        declaration_warnings: List[str] = []
+        _declared_concurrent_doses(plan_paths, dose_paths, structure_set_paths, declaration_warnings)
         return DoseClassification(
             classification=audit["disposition"], selected_plans=[], selected_doses=[],
             excluded_doses=dose_paths, should_sum=False,
-            warnings=["No approved RTPLAN. Archived plans are context, not treatment authority."],
+            warnings=["No approved RTPLAN. Archived plans are context, not treatment authority."] + declaration_warnings,
             reason=audit["disposition"],
         )
     result = _classify_approved_doses(
-        eligible_plans, eligible_doses, max_total_dose_gy, treatment_record_paths
+        eligible_plans, eligible_doses, max_total_dose_gy, treatment_record_paths,
+        **({"structure_set_paths": structure_set_paths,
+            "course_dose_paths": list(dict.fromkeys(list(dose_paths) + [Path(p) for p in (course_dose_paths or [])]))}
+           if os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip() else {}),
     )
     excluded = [p for p in dose_paths if p not in eligible_doses]
     if dose_paths and not eligible_doses and len(eligible_plans) == len(plan_paths):
@@ -3348,11 +3384,229 @@ def _classify_doses(
     return result
 
 
+def _declared_concurrent_doses(
+    plan_paths: List[Path],
+    dose_paths: List[Path],
+    structure_set_paths: Optional[Iterable[Path]],
+    warnings: List[str],
+    course_dose_paths: Optional[Iterable[Path]] = None,
+) -> DoseClassification | None:
+    """Apply one explicit course declaration, or leave legacy selection intact.
+
+    Structure paths come from the course's linked sets, never a directory scan.
+    An entry is matched to the course by plan UID before it is validated, so an
+    entry naming no plan of this course, valid or not, has no effect here.
+    Multiple declarations touching one course are ambiguous and are rejected.
+    ``course_dose_paths`` lists every dose file of the course (eligible or not);
+    coverage is judged on all of them.
+    """
+    declaration_path = os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip()
+    if not declaration_path:
+        return None
+    try:
+        raw = Path(declaration_path).read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("declarations"), list):
+            raise ValueError("expected an object containing a declarations list")
+        declarations = payload["declarations"]
+
+        plans: Dict[str, Path] = {}
+        unreadable_plans = 0
+        for path in plan_paths:
+            try:
+                plans[str(read_dicom_header(path, stop_before_pixels=True).SOPInstanceUID)] = path
+            except Exception:  # an unreadable plan outside any declaration leaves the course as it was
+                unreadable_plans += 1
+
+        def named_uids(item: object) -> set:
+            uids = item.get("plan_sop_instance_uids") if isinstance(item, dict) else None
+            if isinstance(uids, str):
+                uids = [uids]
+            if not isinstance(uids, list):
+                return set()
+            return {uid.strip() for uid in uids if isinstance(uid, str)}
+
+        relevant = [item for item in declarations if named_uids(item) & set(plans)]
+        if not relevant:
+            return None
+        if len(relevant) != 1:
+            raise ValueError("multiple declarations touch this course")
+        declaration = relevant[0]
+        uids = declaration.get("plan_sop_instance_uids")
+        if (not isinstance(uids, list) or len(uids) < 2
+                or any(not isinstance(uid, str) or not uid.strip() or uid != uid.strip()
+                       for uid in uids) or len(set(uids)) != len(uids)):
+            raise ValueError("each declaration needs at least two unique plan UIDs")
+        if not isinstance(declaration.get("basis"), str) or not declaration["basis"].strip():
+            raise ValueError("declaration basis is missing")
+        day = declaration.get("declared_on")
+        if not isinstance(day, str) or datetime.date.fromisoformat(day).isoformat() != day:
+            raise ValueError("declared_on must be YYYY-MM-DD")
+        if not isinstance(declaration.get("issued_by"), str) or not declaration["issued_by"].strip():
+            raise ValueError("declaration issuer (issued_by) is missing")
+        if unreadable_plans:
+            raise ValueError("a course RTPLAN header cannot be read, so course coverage cannot be checked")
+        if not set(uids) <= set(plans):
+            raise ValueError("a declared plan is not among the course's approved plans")
+        if set(plans) != set(uids):
+            raise ValueError("the declaration does not cover every approved plan of the course")
+        selected_plans = [plans[uid] for uid in uids]
+        datasets = [read_dicom_header(path, stop_before_pixels=True) for path in selected_plans]
+        if any(approval_status(ds) != "APPROVED" for ds in datasets):
+            raise ValueError("a declared plan is not APPROVED")
+        if any(str(getattr(ds, "RTPlanGeometry", "")) != "PATIENT" for ds in datasets):
+            raise ValueError("a declared plan does not have PATIENT geometry")
+        # PLAN-dose membership comes from each dose header's own summation type and plan references, read directly;
+        # a course dose file that cannot be read that far refuses the declaration (its plan might be left out).
+        dose_refs = []
+        for path in dict.fromkeys([Path(p) for p in dose_paths] + [Path(p) for p in (course_dose_paths or [])]):
+            try:
+                ds = read_dicom_header(path, stop_before_pixels=True)
+                refs = [str(getattr(item, "ReferencedSOPInstanceUID", "") or "").strip()
+                        for item in getattr(ds, "ReferencedRTPlanSequence", []) or []]
+                summation = str(getattr(ds, "DoseSummationType", "") or "").strip().upper()
+            except Exception as exc:
+                raise ValueError(f"a course RTDOSE cannot be read for its plan references ({type(exc).__name__})")
+            dose_refs.append((path, summation, refs))
+        # A declaration covers every approved plan of the course that has a PLAN dose (a missing summation type counts
+        # as PLAN here); one naming only some of them would silently drop the others' doses, so it is refused.
+        dosed = {uid for uid in plans for _, summation, refs in dose_refs
+                 if uid in refs and summation in ("PLAN", "")}
+        if dosed - set(uids):  # a declared plan without its dose is refused below ("exactly one ... PLAN RTDOSE")
+            raise ValueError("the declaration does not cover every approved plan of the course that has a PLAN dose")
+        # A TPS course-level dose (MULTI_PLAN, PLAN_SUM) of a declared plan is evidence the 74c25b9 selection prefers;
+        # it decides. BEAM and other summation types of declared plans are excluded as 74c25b9 excludes them, with its
+        # warnings.
+        others = [(path, summation) for path, summation, refs in dose_refs
+                  if set(refs) & set(uids) and summation not in ("PLAN", "")]
+        course_level = sorted({summation for _, summation in others if summation in ("MULTI_PLAN", "PLAN_SUM")})
+        if course_level:
+            raise ValueError(f"a course-level RTDOSE ({', '.join(course_level)}) references a declared plan")
+        applied_warnings = []
+        beams = [path for path, summation in others if summation == "BEAM"]
+        if beams:
+            applied_warnings.append(f"Excluded {len(beams)} BEAM dose(s) because matching PLAN dose(s) exist")
+        unsupported = sorted({summation for _, summation in others if summation != "BEAM"})
+        if unsupported:
+            applied_warnings.append("Excluded unsupported RTDOSE summation types: " + ", ".join(unsupported))
+        eligible = {Path(p) for p in dose_paths}
+        selected_doses = []
+        frames = {str(getattr(ds, "FrameOfReferenceUID", "")) for ds in datasets}
+        for uid in uids:
+            linked = [(path, summation, refs) for path, summation, refs in dose_refs
+                      if uid in refs and summation in ("PLAN", "")]
+            if len(linked) != 1 or linked[0][2] != [uid]:
+                raise ValueError("each declared plan needs exactly one singly referenced PLAN RTDOSE")
+            path, summation, _ = linked[0]
+            if summation != "PLAN":
+                raise ValueError("each declared dose must explicitly specify PLAN summation")
+            if path not in eligible:
+                raise ValueError("a declared PLAN RTDOSE is not an eligible dose of the course")
+            meta = _extract_dose_metadata(path)
+            try:  # the checks _sum_doses_with_resample applies (geometry, pixel shape, scaling), so it can be summed
+                full = pydicom.dcmread(str(path), stop_before_pixels=False)
+                grid = _validated_dose_grid_geometry(full, path)
+                expected = (int(cast(int, grid["frames"])), int(cast(int, grid["rows"])), int(cast(int, grid["cols"])))
+                scaling = float(getattr(full, "DoseGridScaling", 1.0))
+                if full.pixel_array.shape != expected or not np.isfinite(scaling) or scaling <= 0:
+                    raise ValueError("pixel payload")
+                del full
+            except Exception:
+                raise ValueError("a declared PLAN RTDOSE has an incomplete or invalid grid geometry or pixel data") from None
+            if not meta["sop_uid"]:
+                raise ValueError("a declared PLAN RTDOSE has no SOP Instance UID")
+            selected_doses.append(next(p for p in dose_paths if Path(p) == path))
+            frames.add(meta["frame_of_reference"])
+        if len(frames) != 1 or "" in frames:
+            raise ValueError("declared plans and doses do not share one FrameOfReferenceUID")
+        frame = next(iter(frames))
+
+        structs = defaultdict(list)
+        for path in dict.fromkeys(structure_set_paths or []):
+            try:  # an unreadable set the plans do not reference is irrelevant; a referenced one is then "missing"
+                ds = read_dicom_header(path, stop_before_pixels=True)
+            except Exception:
+                continue
+            structs[str(getattr(ds, "SOPInstanceUID", ""))].append((path, ds))
+        ct_series = set()
+        struct_uids = set()
+        targets = []
+        for ds in datasets:
+            refs = list(getattr(ds, "ReferencedStructureSetSequence", []) or [])
+            if len(refs) != 1:
+                raise ValueError("planning CT unresolved: expected one referenced RTSTRUCT per plan")
+            struct_uid = str(getattr(refs[0], "ReferencedSOPInstanceUID", ""))
+            candidates = structs.get(struct_uid, [])
+            if len(candidates) > 1 and len({hashlib.sha256(Path(p).read_bytes()).hexdigest()
+                                            for p, _ in candidates}) == 1:
+                candidates = candidates[:1]  # one object linked under several paths
+            if len(candidates) != 1:
+                raise ValueError("planning CT unresolved: referenced RTSTRUCT missing or ambiguous")
+            path, struct = candidates[0]
+            # The structure set may cite further frames (e.g. registered images); the declared frame must be one of
+            # them, and exactly one CT series must be cited under it.
+            frame_items = [item for item in getattr(struct, "ReferencedFrameOfReferenceSequence", []) or []
+                           if str(getattr(item, "FrameOfReferenceUID", "")) == frame]
+            if not frame_items:
+                raise ValueError("RTSTRUCT does not reference the declared FrameOfReferenceUID")
+            series = {str(getattr(item, "SeriesInstanceUID", "") or "").strip()
+                      for ref_for in frame_items
+                      for study in getattr(ref_for, "RTReferencedStudySequence", []) or []
+                      for item in getattr(study, "RTReferencedSeriesSequence", []) or []} - {""}
+            if len(series) != 1:
+                raise ValueError("planning CT unresolved: expected one referenced CT series under the declared frame")
+            ct_series.update(series)
+            struct_uids.add(struct_uid)
+            references = [item for item in getattr(ds, "DoseReferenceSequence", []) or []
+                          if str(getattr(item, "DoseReferenceType", "")).upper() == "TARGET"]
+            if not references:
+                raise ValueError("declared plan has no TARGET dose reference")
+            targets.append([
+                (str(getattr(item, "DoseReferenceUID", "") or "").strip(),
+                 str(getattr(item, "ReferencedROINumber", "") or "").strip())
+                for item in references
+            ])
+        if len(ct_series) != 1:
+            raise ValueError("declared plans do not reference the same planning-CT series")
+        if len(struct_uids) != 1:  # one structure set, as well as one frame and planning CT
+            raise ValueError("declared plans reference different RTSTRUCTs")
+        uid_sets = [{uid for uid, _ in group if uid} for group in targets]
+        if any(left & right for left, right in combinations(uid_sets, 2)):
+            raise ValueError("TARGET DoseReferenceUIDs are not pairwise distinct")
+        if any(not uid for group in targets for uid, _ in group):
+            if any(not roi for group in targets for _, roi in group):
+                raise ValueError("TARGET UID absent: need ROI numbers in one shared RTSTRUCT")
+            roi_sets = [{roi for _, roi in group} for group in targets]
+            if any(left & right for left, right in combinations(roi_sets, 2)):
+                raise ValueError("TARGET ROI numbers are not pairwise distinct")
+        return DoseClassification(
+            classification=DECLARED_CONCURRENT_COMPONENTS,
+            selected_doses=selected_doses,
+            selected_plans=selected_plans,
+            excluded_doses=[path for path in dose_paths if path not in selected_doses],
+            should_sum=True,
+            warnings=warnings + applied_warnings,
+            # hash-pinned provenance: the declaration file and the applied entry
+            reason=(f"Explicit concurrent components declared on {declaration['declared_on']} by "
+                    f"{declaration['issued_by'].strip()} (declaration file sha256 {hashlib.sha256(raw).hexdigest()}, "
+                    f"entry sha256 {hashlib.sha256(json.dumps(declaration, sort_keys=True).encode('utf-8')).hexdigest()}): "
+                    f"{declaration['basis']}; physical grid sum only"),
+        )
+    except Exception as exc:  # any failure leaves the 74c25b9 selection in place, visibly
+        message = f"Concurrent-components declaration not applied: {exc}"
+        warnings.append(message)
+        logger.warning(message)
+        return None
+
+
 def _classify_approved_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
     max_total_dose_gy: float = DEFAULT_MAX_TOTAL_DOSE_GY,
     treatment_record_paths: Optional[Iterable[Path]] = None,
+    *,
+    structure_set_paths: Optional[Iterable[Path]] = None,
+    course_dose_paths: Optional[Iterable[Path]] = None,
 ) -> DoseClassification:
     """Select dose evidence without using free-text plan labels.
 
@@ -3375,6 +3629,9 @@ def _classify_approved_doses(
     plan_paths = list(dict.fromkeys(Path(path) for path in plan_paths))
     dose_paths = list(dict.fromkeys(Path(path) for path in dose_paths))
     record_paths = list(dict.fromkeys(Path(path) for path in (treatment_record_paths or [])))
+    declared = _declared_concurrent_doses(plan_paths, dose_paths, structure_set_paths, warnings, course_dose_paths)
+    if declared is not None:
+        return declared
     if not dose_paths:
         return DoseClassification(
             classification="no_doses",
@@ -3382,7 +3639,7 @@ def _classify_approved_doses(
             selected_plans=plan_paths,
             excluded_doses=[],
             should_sum=False,
-            warnings=["No dose files found"],
+            warnings=warnings + ["No dose files found"],
             reason="No dose files available",
         )
 
@@ -5664,6 +5921,20 @@ def organize_and_merge(
 
         if config.resume and course_dir.exists():
             hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
+            if hydrated and (
+                os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip()
+                or hydrated.dose_classification.get("classification") == DECLARED_CONCURRENT_COMPONENTS
+            ):
+                declaration_warnings: List[str] = []
+                declared = _declared_concurrent_doses(
+                    approved_plan_paths(dict.fromkeys(it.plan.path for it in items)),
+                    list(dict.fromkeys(it.dose.path for it in items if it.dose)),
+                    list(dict.fromkeys(it.struct.path for it in items if it.struct)),
+                    declaration_warnings,
+                )
+                if (declared is not None or declaration_warnings
+                        or hydrated.dose_classification.get("classification") == DECLARED_CONCURRENT_COMPONENTS):
+                    hydrated = None
             if hydrated:
                 source_audit = approval_audit(dict.fromkeys(item.plan.path for item in items))
                 archived_audit = approval_audit([
@@ -5753,18 +6024,25 @@ def organize_and_merge(
             }
         elif plan_paths and dose_paths:
             treatment_record_paths = rt_file_index.get(patient_id, [])
+            declaration_kwargs = (
+                # coverage of a declaration is judged on every dose file of the course, before eligibility filtering
+                {"structure_set_paths": struct_candidates, "course_dose_paths": all_dose_paths}
+                if os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip() else {}
+            )
             if treatment_record_paths:
                 dose_classification = _classify_doses(
                     plan_paths=plan_paths,
                     dose_paths=dose_paths,
                     max_total_dose_gy=float(config.max_total_dose_gy),
                     treatment_record_paths=treatment_record_paths,
+                    **declaration_kwargs,
                 )
             else:
                 dose_classification = _classify_doses(
                     plan_paths=plan_paths,
                     dose_paths=dose_paths,
                     max_total_dose_gy=float(config.max_total_dose_gy),
+                    **declaration_kwargs,
                 )
 
             logger.info(
@@ -5818,7 +6096,7 @@ def organize_and_merge(
                 )
                 if (
                     dose_classification.classification
-                    == INDEPENDENT_DELIVERY_UNRECONCILED
+                    in {INDEPENDENT_DELIVERY_UNRECONCILED, DECLARED_CONCURRENT_COMPONENTS}
                 ):
                     source_rx = None
                     total_rx = None
@@ -5870,6 +6148,10 @@ def organize_and_merge(
                 ):
                     dose_weights_for_accumulation = candidate_weights
 
+            if dose_classification.classification == DECLARED_CONCURRENT_COMPONENTS:
+                # The declaration authorizes the complete physical PLAN grids only.
+                dose_weights_for_accumulation = None
+
             single_plan_requires_scaling = bool(
                 len(selected_doses) == 1
                 and len(selected_plans) == 1
@@ -5886,6 +6168,15 @@ def organize_and_merge(
                 plan_sum_ds, plan_ds_list, source_plan_uids = _create_summed_plan(
                     selected_plans, total_rx
                 )
+                if dose_classification.classification == DECLARED_CONCURRENT_COMPONENTS:
+                    # This evaluation artifact has no additive course prescription or denominator.
+                    for group in getattr(plan_sum_ds, "FractionGroupSequence", []) or []:
+                        group.NumberOfFractionsPlanned = None
+                    if hasattr(plan_sum_ds, "NumberOfFractionsPlanned"):
+                        del plan_sum_ds.NumberOfFractionsPlanned
+                    for reference in getattr(plan_sum_ds, "DoseReferenceSequence", []) or []:
+                        if hasattr(reference, "TargetPrescriptionDose"):
+                            del reference.TargetPrescriptionDose
                 if dose_weights_for_accumulation is None:
                     logger.warning(
                         "Summing planned RTDOSE sources without delivered-fraction "
@@ -6011,6 +6302,14 @@ def organize_and_merge(
                     dose_sop_uid = None
                 if dose_sop_uid:
                     source_dose_uids.append(dose_sop_uid)
+
+        if not plan_paths or not dose_paths:
+            declaration_warnings = []
+            _declared_concurrent_doses(
+                all_plan_paths, all_dose_paths, struct_candidates, declaration_warnings
+            )
+            if declaration_warnings:
+                dose_classification_info.setdefault("warnings", []).extend(declaration_warnings)
 
         if len(plan_paths) != len(all_plan_paths):
             dose_classification_info["plan_approval"] = plan_approval_audit
@@ -7333,6 +7632,19 @@ def organize_and_merge(
                 clinical_prescription_evidence["dicom"]["delivered_dose_gy"] = (
                     co.delivered_dose_gy
                 )
+                if (
+                    co.dose_classification.get("classification") == DECLARED_CONCURRENT_COMPONENTS
+                    and clinical_prescription_evidence.get("outcome") == "RESOLVED_FROM_CLINICAL_RECORD"
+                ):
+                    # Declared concurrent components have no additive course total, so a register total does not
+                    # resolve one; the matched record and its parsed site totals stay in the evidence.
+                    clinical_prescription_evidence["outcome"] = "UNRESOLVED"
+                    clinical_prescription_evidence["reason"] = (
+                        "DECLARED_CONCURRENT_COMPONENTS_HAVE_NO_ADDITIVE_COURSE_TOTAL"
+                    )
+                    for key in ("clinical_resolved_total_gy", "effective_resolved_total_gy",
+                                "effective_prescription_source"):
+                        clinical_prescription_evidence.pop(key, None)
                 clinical_prescription_evidence = record_clinical_evidence_regeneration(
                     clinical_prescription_evidence,
                     previous_clinical_prescription_evidence,
@@ -7340,6 +7652,7 @@ def organize_and_merge(
                 if (
                     clinical_prescription_evidence.get("outcome")
                     == "RESOLVED_FROM_CLINICAL_RECORD"
+                    and co.dose_classification.get("classification") != DECLARED_CONCURRENT_COMPONENTS
                 ):
                     clinical_total = float(
                         clinical_prescription_evidence[
