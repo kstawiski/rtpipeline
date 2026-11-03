@@ -135,6 +135,42 @@ def legacy(monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, module.__name__, module)
     exec(compile(source, reference, "exec"), module.__dict__)
+    # F4 changes only the record-free hold's clinical wording. Keep the
+    # frozen selector as the independent oracle for all other fields.
+    original_classify = module._classify_doses
+    def with_record_free_wording(*args, **kwargs):
+        result = original_classify(*args, **kwargs)
+        if (result.classification == org.INDEPENDENT_DELIVERY_UNRECONCILED
+                and not kwargs.get("treatment_record_paths")):
+            result.reason = (
+                "Equal-signature plans retained as membership without revision evidence; "
+                "no representative or summed course dose"
+            )
+            result.warnings = [
+                message if not message.startswith("Retained ") else
+                "Equal-signature plans retained as membership without revision evidence "
+                f"({len(result.selected_plans)} plans); no course dose grid; "
+                "equal-signature plans lack complete TARGET identity with agreeing isocentres "
+                "or later-calendar-day revision evidence, or strict plan equivalence"
+                for message in result.warnings
+            ]
+        return result
+    module._classify_doses = with_record_free_wording
+    original_summary = module._calculate_delivery_summary
+    def with_record_free_hold(plan_paths, record_paths, **kwargs):
+        result = original_summary(plan_paths, record_paths, **kwargs)
+        if not record_paths:
+            old = "independently delivered plans share membership without reconciled course semantics"
+            new = "equal-signature plans retained as membership without revision evidence"
+            def wording(value):
+                if isinstance(value, dict):
+                    return {key: wording(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [wording(item) for item in value]
+                return value.replace(old, new) if isinstance(value, str) else value
+            return wording(result)
+        return result
+    module._calculate_delivery_summary = with_record_free_hold
     return module
 
 
@@ -176,7 +212,7 @@ def test_opt_in_grid_arithmetic_and_no_declaration_equivalence(tmp_path, monkeyp
     ("ct_series", "same planning-CT"), ("no_struct", "RTSTRUCT missing"),
     ("no_ct", "one referenced CT"), ("no_target", "no TARGET"),
     ("roi_overlap", "ROI numbers"), ("missing_roi", "need ROI"),
-    ("unapproved", "not among"), ("geometry", "PATIENT"),
+    ("unapproved", "not APPROVED"), ("geometry", "PATIENT"),
     ("all_doses_missing", "exactly one"),
     ("missing_summation", "explicitly specify PLAN"),
     ("shared_dose_reference", "singly referenced"),
@@ -349,9 +385,11 @@ def run_organizer(root, output, *, resume=False):
 def test_published_grid_dispositions_holds_and_resume(tmp_path, monkeypatch, with_records):
     fixture = course(tmp_path / "input")
     if with_records:
-        # Partial exported record evidence must not weight the declared full PLAN grids.
+        # A declared full planned-grid sum requires complete exported delivery.
         for index, uid in enumerate(fixture["uids"]):
-            make_record(tmp_path / "input" / f"record_{index}.dcm", uid)
+            for fraction in range(1, 31):
+                make_record(tmp_path / "input" / f"record_{index}_{fraction}.dcm", uid,
+                            fraction_number=fraction)
     output = tmp_path / "output"
     monkeypatch.delenv(ENV, raising=False)
     baseline = run_organizer(tmp_path / "input", output)
@@ -863,7 +901,9 @@ def test_clinical_record_total_does_not_override_a_declared_course(tmp_path, mon
     fixture = course(tmp_path / "input")
     if with_records:
         for index, uid in enumerate(fixture["uids"]):
-            make_record(tmp_path / "input" / f"record_{index}.dcm", uid)
+            for fraction in range(1, 31):
+                make_record(tmp_path / "input" / f"record_{index}_{fraction}.dcm", uid,
+                            fraction_number=fraction)
     if declared:
         declare(tmp_path, monkeypatch, fixture["uids"])
     else:

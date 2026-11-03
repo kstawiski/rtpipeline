@@ -45,10 +45,15 @@ def test_unproven_revisions_held_then_positive_evidence_allows_collapse(
     assert asdict(org._classify_doses(plans[::-1], doses[::-1]))['classification'] == held.classification
 
     if target == 'different':
-        # Matching TARGET UIDs prove a revision even if a revision moves the isocentre.
+        # Matching TARGET UIDs plus a later calendar day permit a moved isocentre.
         first, second = [pydicom.dcmread(p) for p in plans]
         second.DoseReferenceSequence[0].DoseReferenceUID = first.DoseReferenceSequence[0].DoseReferenceUID
         second.save_as(plans[1], enforce_file_format=True)
+        if distinct_isocentres:
+            same_day = org._classify_doses(plans, doses)
+            assert same_day.classification == org.INDEPENDENT_DELIVERY_UNRECONCILED
+            second.RTPlanDate = '20240102'
+            second.save_as(plans[1], enforce_file_format=True)
     else:
         # With no complete target identity, only strict equivalence suffices.
         # Byte-identical copies of one SOP are the strongest strict proof.
