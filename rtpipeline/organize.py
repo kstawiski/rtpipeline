@@ -3507,7 +3507,7 @@ def _declared_concurrent_doses(
         for path, uid in zip(selected_plans, uids):
             sessions = delivery.get(uid, {}).get("sessions", set())
             planned = int(_plan_evidence(path).get("fractions_planned") or 0)
-            if sessions and planned > 0 and len(sessions) < planned:
+            if delivery.get(uid, {}).get("instances") and planned > 0 and len(sessions) < planned:
                 raise ValueError("RTRECORD shows incomplete delivery of a declared plan")
         if any(str(getattr(ds, "RTPlanGeometry", "")) != "PATIENT" for ds in datasets):
             raise ValueError("a declared plan does not have PATIENT geometry")
