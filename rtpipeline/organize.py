@@ -7500,10 +7500,12 @@ def organize_and_merge(
                         "A verified complete course-dose grid is available, but another "
                         "dose-response eligibility requirement is unresolved."
                     )
-                co.delivery_warnings.append(
+                warning = (
                     "Dose-response eligibility withheld: "
                     + dose_response_ineligibility_reason
                 )
+                if warning not in co.delivery_warnings:
+                    co.delivery_warnings.append(warning)
             if dose_grid_contract is not None:
                 dose_grid_contract["dose_completeness_status"] = dose_completeness[
                     "status"
