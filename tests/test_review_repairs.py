@@ -109,6 +109,18 @@ def test_partial_records_contradiction_is_visible(tmp_path, monkeypatch):
     assert result.selected_plans == legacy.selected_plans
     assert result.selected_doses == legacy.selected_doses
     assert result.should_sum == legacy.should_sum
+    # Existing records with no validated delivered fractions are also below
+    # the planned count; an empty delivered-session set must not evade refusal.
+    for record in folder.glob("rec*.dcm"):
+        ds = pydicom.dcmread(record)
+        if str(ds.ReferencedRTPlanSequence[0].ReferencedSOPInstanceUID) != uids["D"]["pB"]:
+            continue
+        ds.TreatmentSessionBeamSequence[0].TreatmentTerminationStatus = "ABORTED"
+        ds.save_as(record, enforce_file_format=True)
+    zero_sessions = org._record_delivery_evidence(sorted(folder.glob("rec*.dcm")))
+    assert not zero_sessions[uids["D"]["pB"]]["sessions"]
+    assert any("RTRECORD shows incomplete delivery of a declared plan" in w
+               for w in classify(folder).warnings)
     # No records and complete records retain the declaration behaviour.
     for variant in ("none", "full_records"):
         other = tmp_path / variant
