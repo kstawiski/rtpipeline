@@ -22,6 +22,7 @@ from rtpipeline.dvh import (
     summarize_plan_isocenter_positions,
 )
 from rtpipeline.organize import (
+    DECLARED_CONCURRENT_COMPONENTS,
     _calculate_delivery_summary,
     _classify_doses,
     _extract_dose_metadata,
@@ -202,7 +203,11 @@ def _prospective_contract_inputs(
                 record_paths.append(record_path)
     plan_paths = sorted(set(plan_paths))
     record_paths = sorted(set(record_paths))
-    if not plan_paths or not dose_paths:
+    # A persisted declaration is the authority for the published physical sum.
+    # Auditing it must not depend on the operator retaining the declaration
+    # environment variable (or on a later edit of that external file).
+    published_declared = (contract.get("dose_classification") or {}).get("classification") == DECLARED_CONCURRENT_COMPONENTS
+    if published_declared or not plan_paths or not dose_paths:
         return (
             list(contract.get("selected_plans") or []),
             list(contract.get("selected_doses") or []),
@@ -213,12 +218,15 @@ def _prospective_contract_inputs(
         plan_paths,
         dose_paths,
         treatment_record_paths=record_paths,
+        structure_set_paths=sorted((course_dir / "DICOM" / "RTSTRUCT").glob("*.dcm")),
+        course_dose_paths=dose_paths,
     )
     prospective_delivery = _calculate_delivery_summary(
         plan_paths,
         record_paths,
         selected_plan_paths=classification.selected_plans,
         selected_dose_paths=classification.selected_doses,
+        classification=classification.classification,
     )
     all_plan_delivery = _calculate_delivery_summary(
         plan_paths,
