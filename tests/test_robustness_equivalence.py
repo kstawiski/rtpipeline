@@ -26,6 +26,11 @@ feature-set difference).
 Runtime rasterizer provenance is checked separately from the
 historical comparison; all existing measurement fields, masks and Arrow field
 types remain exact comparisons. Both runs use the same installed OpenCV.
+The added course-level nonmeasurement reason must be empty for these matching
+courses. Target selection mode, source inventory and configuration hashes are
+validated separately before projecting onto the historical schema; every
+pre-existing selection, measurement, accounting field and Arrow type is compared
+exactly.
 
 """
 from __future__ import annotations
@@ -104,6 +109,10 @@ def _build_course(course: Path, spec: dict) -> None:
     ds.save_as(course / "RS.dcm")
     if spec.get("custom"):
         custom = copy.deepcopy(ds)
+        # This historical control has no duplicate copied-point disposition;
+        # that changed accounting is exercised by the review2 regressions.
+        custom.StructureSetROISequence = [r for r in custom.StructureSetROISequence if int(r.ROINumber) != 50]
+        custom.ROIContourSequence = [r for r in custom.ROIContourSequence if int(r.ReferencedROINumber) != 50]
         _append_roi(custom, 60, "GTV_empty", [])
         custom.SOPInstanceUID = pydicom.uid.generate_uid()
         custom.file_meta.MediaStorageSOPInstanceUID = custom.SOPInstanceUID
@@ -263,7 +272,37 @@ def _in_row_order(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[order].reset_index(drop=True)
 
 
+def _check_supplemental_inventory(base: dict, current: dict) -> dict:
+    """Check the separate inventory; compare existing schemas and hashes intact."""
+    from rtpipeline import radiomics_robustness as rr
+    current = {**current, "outputs": dict(current["outputs"])}
+    for key, payload in list(current["outputs"].items()):
+        if (key.endswith("radiomics_robustness_source_dispositions.json")
+                and payload.get("measurement_outcome") == rr.ROBUSTNESS_FAILED_OUTCOME):
+            errors = payload.get("source_errors", [])
+            assert payload.get("source_errors_sha256") == rr._content_sha256(errors)
+            for error in errors:
+                if error.get("sha256"):
+                    assert rr._file_sha256(Path(error["source_path"])) == error["sha256"]
+            # NEW-5 adds verified diagnostics to failed runs. Measurement
+            # artifacts and partial extraction evidence still compare exactly.
+            current["outputs"][key] = {k: v for k, v in payload.items()
+                                      if k not in {"source_errors", "source_errors_sha256"}}
+    for key in set(current["outputs"]) - set(base["outputs"]):
+        assert key.endswith("/metadata/radiomics_robustness_target_inventory.json")
+        inventory = current["outputs"].pop(key)
+        sidecar = current["outputs"][key.replace("radiomics_robustness_target_inventory.json", "radiomics_robustness_source_dispositions.json")]
+        if sidecar["measurement_outcome"] == rr.ROBUSTNESS_FAILED_OUTCOME:
+            expected = []  # A failed course makes no complete inventory claim.
+        else:
+            expected = [roi for binding in inventory["source_bindings"] for roi in rr._robustness_target_inventory(binding)]
+            expected += rr._robustness_voxel_target_inventory(inventory["voxel_source_bindings"])
+        assert inventory["target_inventory"] == expected
+    return current
+
+
 def _assert_equivalent(base: dict, current: dict, rob_config) -> None:
+    current = _check_supplemental_inventory(base, current)
     assert current["codes"] == base["codes"]
     assert sorted(current["outputs"]) == sorted(base["outputs"])
     base_ids, current_ids = _run_ids(base["outputs"]), _run_ids(current["outputs"])
@@ -288,8 +327,9 @@ def _assert_equivalent(base: dict, current: dict, rob_config) -> None:
             assert list(observed) == list(expected), key
             for sheet, frame in expected.items():
                 frame = _with_cov_in_table_order(base["outputs"], key, sheet, frame, rob_config)
+                observed_frame = observed[sheet]
                 pd.testing.assert_frame_equal(
-                    _normalize_frame(observed[sheet], current_ids),
+                    _normalize_frame(observed_frame, current_ids),
                     _normalize_frame(frame, base_ids),
                     check_exact=True, obj=f"{key}:{sheet}",
                 )
@@ -302,7 +342,7 @@ def test_non_triggering_courses_match_base_revision(tmp_path):
     for patient, spec in COURSES.items():
         _build_course(inputs / "Output" / patient / "C1", spec)
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.safe_dump({"radiomics_robustness": {
+    config.write_text(yaml.safe_dump({"custom_structures": str(tmp_path / "no-custom.yaml"), "radiomics_robustness": {
         "enabled": True,
         "segmentation_perturbation": {
             "apply_to_structures": ["GTV*"], "small_volume_changes": [-0.15, 0.0],
@@ -318,7 +358,7 @@ def test_non_triggering_courses_match_base_revision(tmp_path):
     p1 = base["outputs"]["P1/C1/metadata/radiomics_robustness_source_dispositions.json"]
     assert [t["roi_name"] for t in p1["tolerated_source_failures"]] == ["Bad"]
     assert {(r["segmentation_source"], r["roi_name"]) for r in p1["rows"]} == {
-        ("Manual", "Marker1"), ("Custom", "Marker1")}
+        ("Manual", "Marker1")}
     assert any(k.startswith("_RESULTS/radiomics_robustness_summary") for k in base["outputs"])
     p4, _ = base["outputs"]["P4/C1/radiomics_robustness_ct.parquet"]
     assert not p4.feature_name[p4.extraction_arm == "primary_resegmented"].str.contains(

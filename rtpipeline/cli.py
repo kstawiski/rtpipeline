@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-from .config import PipelineConfig
+from .config import PipelineConfig, resolve_custom_structures_config
 from .organize import CourseOutput, organize_and_merge, _hydrate_existing_course
 from .utils import run_tasks_with_adaptive_workers
 
@@ -1051,11 +1051,12 @@ class _UnsafeStudyPathError(ValueError):
 
 
 _ROBUSTNESS_SECTION_KEYS = frozenset(
-    {"enabled", "modes", "segmentation_perturbation", "metrics", "thresholds"}
+    {"enabled", "modes", "segmentation_perturbation", "metrics", "thresholds", "target_selection"}
 )
 _PERTURBATION_KEYS = frozenset(
     {
         "apply_to_structures",
+        "exclude_structures",
         "small_volume_changes",
         "large_volume_changes",
         "n_random_contour_realizations",
@@ -1173,6 +1174,8 @@ def _validate_robustness_section(section: dict) -> None:
     """Check every value RobustnessConfig.from_dict would read from this section."""
     _require_known_keys(section, _ROBUSTNESS_SECTION_KEYS, "radiomics_robustness")
 
+    if section.get("target_selection", "patterns") not in ("patterns", "targets"):
+        raise _RobustnessRequestError("radiomics_robustness.target_selection must be 'patterns' or 'targets'")
     if "modes" in section:
         modes = section["modes"]
         _require_name_list(
@@ -1182,10 +1185,18 @@ def _validate_robustness_section(section: dict) -> None:
     label = "radiomics_robustness.segmentation_perturbation"
     perturbation = _require_mapping(section.get("segmentation_perturbation", {}), label)
     _require_known_keys(perturbation, _PERTURBATION_KEYS, label)
-    if "apply_to_structures" in perturbation:
+    if "apply_to_structures" in perturbation and not (
+        section.get("target_selection", "patterns") == "targets" and perturbation["apply_to_structures"] == []
+    ):
         _require_name_list(
             perturbation["apply_to_structures"], f"{label}.apply_to_structures"
         )
+    if "exclude_structures" in perturbation:
+        exclusions = perturbation["exclude_structures"]
+        if not isinstance(exclusions, list):
+            raise _RobustnessRequestError(f"{label}.exclude_structures must be a list of non-empty strings")
+        for index, pattern in enumerate(exclusions):
+            _require_name(pattern, f"{label}.exclude_structures[{index}]")
     for key in ("small_volume_changes", "large_volume_changes", "noise_levels"):
         if key in perturbation:
             _require_number_list(perturbation[key], f"{label}.{key}")
@@ -1338,7 +1349,9 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         help=(
             "Optional path to this course's .radiomics_robustness_done completion "
             "receipt. It is invalidated before any work and rewritten only after "
-            "the run's own outcome is admitted."
+            "the run's own outcome is admitted. An unmatched selection always "
+            "writes this receipt in the course directory, including when this "
+            "option is omitted."
         ),
     )
     p.add_argument("--max-workers", type=int, default=None, help="Override automatic worker budget (cores-1)")
@@ -1386,6 +1399,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
 
     from .robustness_completion import (
         ROBUSTNESS_COMPLETION_SENTINEL_NAME,
+        ROBUSTNESS_NO_MATCH_OUTCOMES,
         invalidate_robustness_completion_sentinel,
         write_robustness_completion_sentinel,
     )
@@ -1414,6 +1428,8 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         # evidence. This runs before the enabled/disabled branch as well, so a
         # course whose robustness was switched off keeps no success receipt.
         invalidate_robustness_completion_sentinel(sentinel_path)
+    else:
+        invalidate_robustness_completion_sentinel(course_dir / ROBUSTNESS_COMPLETION_SENTINEL_NAME)
 
     # The requested policy, or nothing at all. This runs before the producer
     # and before admission, so a missing, malformed, non-mapping or disabled
@@ -1512,6 +1528,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         radiomics_env_probe_timeout=env_probe_timeout,
         radiomics_robustness_enabled=rob_config.enabled,
         radiomics_robustness_config=rob_config_data,
+        custom_structures_config=resolve_custom_structures_config(yaml_config.get("custom_structures")),
     )
 
     worker_budget = pipeline_config.effective_workers()
@@ -1522,7 +1539,6 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
     # as success, and never as a completed course either.
     from .radiomics_robustness import (
         RobustnessNotRequestedError,
-        RobustnessSelectionUnmatchedError,
         run_robustness_course,
     )
 
@@ -1532,12 +1548,6 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         )
     except RobustnessNotRequestedError as e:
         logger.error("Robustness was requested for a disabled configuration: %s", e)
-        return 1
-    except RobustnessSelectionUnmatchedError as e:
-        # The sidecar evidence stays on disk, but an unmatched selection is a
-        # selection/configuration outcome: it excludes no anatomy, publishes no
-        # success receipt, and this course enters no cohort.
-        logger.error("Robustness selection matched no source structure: %s", e)
         return 1
     except Exception as e:
         if getattr(e, "code", None) == "RADIOMICS_ENV_PROBE_TIMEOUT":
@@ -1575,6 +1585,7 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
                     output_name=output_path.name,
                     run_identifier=failure_run_id,
                     failed_evidence=partial.evidence_path if partial else None,
+                    custom_structures_config=pipeline_config.custom_structures_config,
                 )
                 failure_rows = _json.loads(
                     dispositions_path.read_text(encoding="utf-8")
@@ -1621,6 +1632,8 @@ def _radiomics_robustness_course(argv: list[str]) -> int:
         )
         return 1
 
+    if outcome.measurement_outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
+        sentinel_path = course_dir / ROBUSTNESS_COMPLETION_SENTINEL_NAME
     if sentinel_path is not None:
         try:
             write_robustness_completion_sentinel(
@@ -1745,6 +1758,9 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     )
     p.add_argument("--output", required=True, help="Output Excel file")
     p.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    p.add_argument("--campaign-mode", action="store_true")
+    p.add_argument("--campaign-require-all-courses", action="store_true")
+    p.add_argument("--campaign-min-completion-fraction", type=float, default=None)
     p.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = p.parse_args(argv)
 
@@ -1804,17 +1820,31 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     # The requested policy, or nothing at all: both modes publish a cohort
     # result, and neither may publish one under an assumed configuration.
     try:
-        _, rob_config_data = _load_requested_robustness_config(config_path)
+        yaml_config, rob_config_data = _load_requested_robustness_config(config_path)
     except _RobustnessRequestError as e:
         return _refuse("Refusing to aggregate radiomics robustness: %s", e)
 
+    args.campaign_mode = args.campaign_mode or bool(yaml_config.get("campaign_mode", False))
+    args.campaign_require_all_courses = args.campaign_require_all_courses or bool(yaml_config.get("campaign_require_all_courses", False))
+    if args.campaign_min_completion_fraction is None:
+        args.campaign_min_completion_fraction = yaml_config.get("campaign_min_completion_fraction", 0.5)
+    if (not isinstance(args.campaign_min_completion_fraction, (int, float))
+            or isinstance(args.campaign_min_completion_fraction, bool)
+            or not 0 <= args.campaign_min_completion_fraction <= 1):
+        return _refuse("campaign minimum completion fraction must be between zero and one")
     rob_config = RobustnessConfig.from_dict(rob_config_data)
 
+    active_custom_structures = resolve_custom_structures_config(
+        yaml_config.get("custom_structures"),
+    )
+
+    if args.inputs and args.campaign_mode:
+        return _refuse("campaign aggregation requires manifest mode")
     if args.inputs:
         # Historical contract, unchanged: the caller's tables, measured only.
         input_paths = [Path(item) for item in args.inputs]
         try:
-            aggregate_robustness_results(input_paths, output_path, rob_config)
+            aggregate_robustness_results(input_paths, output_path, rob_config, custom_structures_config=active_custom_structures)
             logger.info("Aggregation complete: %s", output_path)
             return 0
         except Exception as e:
@@ -1841,7 +1871,11 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
             for patient_id, course_id, course_dir in courses
         ]
         aggregate_robustness_cohort(
-            admitted, output_path, rob_config, cohort=cohort
+            admitted, output_path, rob_config, cohort=cohort,
+            campaign_mode=args.campaign_mode,
+            campaign_require_all_courses=args.campaign_require_all_courses,
+            campaign_min_completion_fraction=args.campaign_min_completion_fraction,
+            custom_structures_config=active_custom_structures,
         )
         logger.info(
             "Cohort robustness accounting complete for %d manifest course(s): %s",
@@ -2074,29 +2108,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.radiomics_thread_limit = _derive_radiomics_thread_limit(worker_budget)
     logger.info("Effective worker budget (non-segmentation stages): %d", worker_budget)
 
-    # Parse custom structures configuration
-    custom_structures_config = None
-    if args.custom_structures:
-        # User provided custom config
-        custom_structures_config = Path(args.custom_structures).resolve()
-        if not custom_structures_config.exists():
-            logger.warning("Custom structures config file not found: %s", custom_structures_config)
-            custom_structures_config = None
-    else:
-        # Use default pelvic template if it exists
-        packaged_pelvic_config = Path(__file__).with_name("custom_structures_pelvic.yaml")
-        repo_root_pelvic_config = Path(__file__).parent.parent / "custom_structures_pelvic.yaml"
-        if packaged_pelvic_config.exists():
-            custom_structures_config = packaged_pelvic_config
-            logger.info("Using packaged pelvic custom structures template: %s", custom_structures_config)
-        elif repo_root_pelvic_config.exists():
-            custom_structures_config = repo_root_pelvic_config
-            logger.info("Using default pelvic custom structures template: %s", custom_structures_config)
-        else:
-            logger.info("No custom structures configuration provided")
-
-    # Update config object
-    cfg.custom_structures_config = custom_structures_config
+    cfg.custom_structures_config = resolve_custom_structures_config(args.custom_structures)
 
     # Load project YAML settings (e.g., ct_cropping, organize) for CLI-driven stages.
     #

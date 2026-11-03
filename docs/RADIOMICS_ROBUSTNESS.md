@@ -69,6 +69,139 @@ The module supports three intensity levels to balance computational cost and tho
 - **standard**: 81 perturbations with the shipped defaults (complete standard NTCV chain)
 - **aggressive**: 315 perturbations with the shipped defaults (computational stress test)
 
+## Target detection and selection
+
+Set `radiomics_robustness.target_selection` to `patterns` (the default) or
+`targets`. Unknown values are rejected. `patterns` retains case-insensitive,
+whole-name fnmatch selection from `segmentation_perturbation.apply_to_structures`.
+`targets` selects the union of those patterns and the governed target detector:
+
+The governed ROI class map and feature policy decide first. Mapped targets
+qualify. Mapped OARs, OAR subvolumes and planning helpers do not qualify, even
+when their names or interpreted types contain target labels. For example,
+`CTVN_Prostate`, `GTVm - lopatka`, `GTVm_SUMA` and `GTVn4p` are targets;
+`Jelita w PTV`, `Jelita + PTV1`, `2cm od PTV1`, `z_PTV1` and
+`PTV1-poprzednio` are not.
+
+For unmapped names, the detector accepts a `GTV`, `CTV`, `PTV` or `ITV` token
+at the start or after a space, hyphen, underscore, dot or slash. A single
+`p`, `n` or `m` qualifier may precede the end, digits or a separator.
+`GTVp`, `CTVn`, `PTVn1` and `HR-CTV` qualify; `CTVx` and `GTVnode` do not.
+The interpreted types `GTV`, `CTV`, `PTV` and `ITV` also qualify unmapped names.
+`TREATED_VOLUME` alone does not qualify.
+
+A target must carry volumetric contour data or nonzero voxels. Template slots,
+POINT markers and zero masks remain in the source inventory but are not missed
+targets. Inventory-only helpers cannot enter the measurement base. Classification uses the source label and records the
+custom-structure provenance. A Custom ROI is copied support only when a standard
+source declares the same name with contours; a contourless slot cannot hide it. In `targets`
+mode, `apply_to_structures: []` requests detected targets alone.
+
+`segmentation_perturbation.exclude_structures` removes structures after selection
+in both modes. It accepts a list of non-empty, case-insensitive whole-name
+fnmatch patterns. The default is `[]`. For example, `"RING"` excludes a structure
+named RING even when its interpreted type is PTV; it does not exclude RING_extra.
+Use `"z_PTV_*"` or `"PTV-ring"` to exclude those helper names. Each evaluated
+source retains its own ROI identity and interpreted-type evidence.
+
+When exclusions remove every selected ROI, the detector checks the remaining
+ROIs. If no target remains, the outcome is
+`not_applicable_no_target_structure`. An unexcluded target that the selection
+missed gives `selection_gap_targets_unselected`. Excluded targets never count
+as missed targets. The receipt and sidecar list `excluded_by_configuration`
+with source, ROI number, name, interpreted types and detector rules.
+
+Non-empty exclusion lists enter the effective configuration hash, the measured
+`configured_parameter_hash`, sidecars, receipts and measured-row provenance
+(`exclude_structures`, encoded as a JSON list). Admission rechecks the list,
+hashes and source evidence. A receipt from a different exclusion list requires
+recomputation. An absent key and `[]` retain the same configuration bytes,
+hashes and selections as the default configuration without exclusions.
+
+```yaml
+radiomics_robustness:
+  enabled: true
+  target_selection: targets
+  segmentation_perturbation:
+    apply_to_structures: ["GTV*", "CTV*", "PTV*"]
+    exclude_structures: ["z_PTV_*", "PTV-ring", "RING"]  # Optional
+```
+
+When the selection matches no source ROI, every evaluated source structure set
+is checked for target evidence after configured exclusions:
+
+- `not_applicable_no_target_structure`: no unexcluded target is detected; campaign status
+  is `not_applicable`.
+- `selection_gap_targets_unselected`: targets are detected but unselected;
+  campaign status is `technically_missing`. This is a technical measurement gap.
+
+Both outcomes return success, publish a validated `.radiomics_robustness_done`
+receipt and close the workflow stage. Neither contributes measurements or
+ICC, CoV or QCD estimates. The receipt records the selection mode and patterns;
+for a gap it lists every missed ROI name and its detector rules. The sidecar
+binds the evaluated source inventory, source bytes, code and configuration.
+Non-default selection mode and nonempty exclusions enter configuration and
+parameter hashes. Default `patterns` selection with no exclusions retains the
+measured schema and configuration hashes from main `072b146`. An allowlist
+binds that release's complete code digest to this compatibility release so
+unchanged measured DICOM-CT/RTSTRUCT receipts can be admitted without rewriting
+their receipt, sidecar or Parquet. Admission requires current source bindings,
+no selection gaps and matching disposition rows. Custom sources also require a
+current generator publication and the resolved active custom-structure configuration.
+A historical publication without a recorded configuration path is reusable when
+its builder metadata binds the active file's SHA-256 digest and every independent
+Custom ROI agrees with main radiomics publication. A missing Custom source or a
+different configuration digest requires a new run. Benign voxel-only models with no selected ROI or detected target do
+not invalidate this class. NIfTI-CT and voxel-fallback courses require a new run.
+An edit to the producer invalidates the exception. New runs retain their actual
+code digest and run identifier.
+
+Unmapped Custom names retain the governed name rules and target detection; a
+recorded margin alone supplies no class.
+
+Every evaluated source is inventoried regardless of the CT source format:
+Manual, independent Custom structures, model RTSTRUCTs and NIfTI masks. Copied
+Manual ROIs in `RS_custom.dcm` are not independent Custom targets. The separate
+`metadata/radiomics_robustness_target_inventory.json` records contour presence,
+measurement eligibility and the deciding classification rule without entering
+historical receipt hashes. No-match sidecars carry the full selection evidence.
+The main CLI, course robustness command, aggregate command and workflow use the
+same custom-structure resolver: an explicit path takes precedence; otherwise the
+packaged pelvic template, then the repository template, is used. An explicit
+missing file disables custom structures, matching the main CLI.
+
+Voxel-only model inventories check presence on the stored grid without
+resampling. Voxel masks evaluated for measurement use the planning CT grid.
+An evaluated mask in the publication base with stored voxels but none on that
+grid receives a source-bound
+`NIFTI_EMPTY_ON_PLANNING_CT_GRID` disposition; it cannot create a missed target.
+RTSTRUCT and voxel renderings of the same source/ROI share one inventory entry,
+while both files remain bound as provenance. An unreadable inventory-only file whose name is neither selected
+nor a detected target is recorded as a tolerated source failure. Unreadable
+selected masks and candidate targets fail technically. On NIfTI-only CT, a
+retained main-radiomics identity uses its current `Segmentation_Original` mask
+on the same physical grid. Export validation resolves sources through the
+course-relative contract and skips stale sibling exports. The voxel file is
+bound as provenance without adding a second inventory row for the Manual ROI.
+A selected RTSTRUCT volume without a published identity or usable physical
+export remains unresolved and the course cannot close as complete.
+
+Aggregation retains every manifest course. A selected marker cannot hide an
+unselected volumetric target. A measured course with missed targets retains its
+measurements and is also marked technically missing. Cohorts with these outcomes
+or non-default selection include `course_counts` and the selection-accounting
+columns in `course_outcomes`; matching default cohorts retain the historical
+workbook schema. Bare campaign `failed` closures contribute no measurements and
+remain in the denominator. Campaign completion gates apply before publication.
+
+The obsolete `not_applicable_selection_unmatched` outcome requires a new run.
+Startup migration scans receipts once per dependency content under a lock.
+When importing external obsolete receipts into an already migrated output tree,
+remove the dependency cache’s `.robustness-selection-v2` marker to request
+another scan.
+
+See [campaign accounting](user_guide/campaigns.md) for workflow closure.
+
 ## Quick Start
 
 ### 1. Enable in config.yaml
@@ -218,6 +351,11 @@ radiomics_robustness:
       - "BLADDER"
       - "RECTUM"
       - "PROSTATE"
+
+    # Exclusions apply after selection in both target_selection modes.
+    # Whole-name fnmatch, case-insensitive; [] or absent preserves defaults.
+    exclude_structures: []
+    # exclude_structures: ["z_PTV_*", "PTV-ring", "RING"]
 
     # V: Volume changes (τ parameter from Lo Iacono 2024)
     small_volume_changes: [-0.15, 0.0, 0.15]   # ±15% volume change (standard)

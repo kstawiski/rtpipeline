@@ -1,0 +1,148 @@
+{
+  "revision": "1a5d1290ad20b7227968e6b3dd078f5d441f0c7e",
+  "module_sha256": "7ee27a74ea421bacf42cf4b85f147b08adaab54f8205eb54b13d6fa2abd5ec70",
+  "names": [
+    "GTV",
+    "CTV1",
+    "HR-CTV",
+    "IR-CTV",
+    "PTV-ring",
+    "z_PTV_opt",
+    "RING",
+    "ODBYTNICA",
+    "CTVx",
+    "ptv boost"
+  ],
+  "cases": [
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "patterns",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "GTV*",
+            "CTV*",
+            "PTV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV*\", \"CTV*\", \"PTV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"patterns\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "b30e21ff5858687b8bb0e3f529f85180102841d08c382110b3b662bd88ed5f05",
+      "configured_parameter_hash": "7b178fe7504847ec1786e3804f120f1393b342b7e3f9e8c89e1438212ea0ed6b",
+      "selected_json": "[\"GTV\", \"CTV1\", \"PTV-ring\", \"CTVx\", \"ptv boost\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "patterns",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "HR-CTV*",
+            "R?NG",
+            "[PG]TV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"HR-CTV*\", \"R?NG\", \"[PG]TV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"patterns\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "e2cf05304c7ddf83dbed2a916215a87e6373dd89ec33262a12909b99dbfd6c8b",
+      "configured_parameter_hash": "7b178fe7504847ec1786e3804f120f1393b342b7e3f9e8c89e1438212ea0ed6b",
+      "selected_json": "[\"GTV\", \"HR-CTV\", \"PTV-ring\", \"RING\", \"ptv boost\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "targets",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "GTV*",
+            "CTV*",
+            "PTV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV*\", \"CTV*\", \"PTV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"targets\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "7d473ef7c863bc3fde112ad27196b292e2064cddaec39a2eb4eb332b3ca0c7fb",
+      "configured_parameter_hash": "4d61d0b1af8b547c7ed1e7c2935de16a16cebe80e6d4eff767483acba789067b",
+      "selected_json": "[\"GTV\", \"CTV1\", \"HR-CTV\", \"IR-CTV\", \"PTV-ring\", \"z_PTV_opt\", \"RING\", \"CTVx\", \"ptv boost\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "target_selection": "targets",
+        "segmentation_perturbation": {
+          "apply_to_structures": [
+            "HR-CTV*",
+            "R?NG",
+            "[PG]TV*"
+          ]
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"HR-CTV*\", \"R?NG\", \"[PG]TV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"targets\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "0ebfd41f0d619b8921c21d195e7b5159f9fa651a31747be6b1547d9487258824",
+      "configured_parameter_hash": "4d61d0b1af8b547c7ed1e7c2935de16a16cebe80e6d4eff767483acba789067b",
+      "selected_json": "[\"GTV\", \"CTV1\", \"HR-CTV\", \"IR-CTV\", \"PTV-ring\", \"z_PTV_opt\", \"RING\", \"ptv boost\"]"
+    },
+    {
+      "input": {},
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV\", \"CTV\", \"PTV\", \"BLADDER\", \"RECTUM\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"patterns\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "e1d209909f375175d9d40f37578702da2c5f71e9772376034b85d2e1a5ae3072",
+      "configured_parameter_hash": "7b178fe7504847ec1786e3804f120f1393b342b7e3f9e8c89e1438212ea0ed6b",
+      "selected_json": "[\"GTV\"]"
+    },
+    {
+      "input": {
+        "enabled": true,
+        "modes": [
+          "segmentation_perturbation"
+        ],
+        "segmentation_perturbation": {
+          "intensity": "standard",
+          "apply_to_structures": [
+            "GTV*",
+            "CTV*",
+            "PTV*"
+          ],
+          "small_volume_changes": [
+            -0.15,
+            0.0,
+            0.15
+          ],
+          "max_translation_mm": 4.0,
+          "n_random_contour_realizations": 2,
+          "noise_levels": [
+            0.0,
+            10.0,
+            20.0
+          ]
+        },
+        "metrics": {
+          "icc": {
+            "implementation": "pingouin",
+            "icc_type": "ICC3",
+            "ci": true
+          },
+          "cov": {
+            "enabled": true
+          },
+          "qcd": {
+            "enabled": true
+          }
+        },
+        "thresholds": {
+          "icc": {
+            "robust": 0.9,
+            "acceptable": 0.75
+          },
+          "cov": {
+            "robust_pct": 10.0,
+            "acceptable_pct": 20.0
+          }
+        }
+      },
+      "effective_configuration_json": "{\"measurement_type\": \"segmentation_perturbation\", \"output_name\": \"radiomics_robustness_ct.parquet\", \"robustness\": {\"enabled\": true, \"metrics\": {\"cov_enabled\": true, \"icc\": {\"ci\": true, \"icc_type\": \"ICC3\", \"implementation\": \"pingouin\"}, \"qcd_enabled\": true}, \"modes\": [\"segmentation_perturbation\"], \"perturbation\": {\"apply_to_structures\": [\"GTV*\", \"CTV*\", \"PTV*\"], \"contour_randomization_mm\": 0.0, \"intensity\": \"standard\", \"large_volume_changes\": [-0.3, 0.0, 0.3], \"max_translation_mm\": 4.0, \"n_random_contour_realizations\": 2, \"noise_levels\": [0.0, 10.0, 20.0], \"rotation_angles\": [], \"small_volume_changes\": [-0.15, 0.0, 0.15]}, \"target_selection\": \"patterns\", \"thresholds\": {\"cov_acceptable_pct\": 20.0, \"cov_robust_pct\": 10.0, \"icc_acceptable\": 0.75, \"icc_robust\": 0.9}}}",
+      "effective_configuration_sha256": "b30e21ff5858687b8bb0e3f529f85180102841d08c382110b3b662bd88ed5f05",
+      "configured_parameter_hash": "7b178fe7504847ec1786e3804f120f1393b342b7e3f9e8c89e1438212ea0ed6b",
+      "selected_json": "[\"GTV\", \"CTV1\", \"PTV-ring\", \"CTVx\", \"ptv boost\"]"
+    }
+  ]
+}

@@ -40,10 +40,12 @@ STATUS_OK = "ok"
 STATUS_FAILED = "failed"
 STATUS_DISABLED = "disabled"
 STATUS_MISSING = "missing"
-# A course whose contract declares no planning CT has nothing for the CT
-# stages to process. That is a governed terminal outcome, not a failure.
+# Governed nonmeasurement outcomes close a stage without a measurement.
 STATUS_NOT_APPLICABLE = "not_applicable"
 ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME = "not_applicable_no_planning_ct"
+ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME = "not_applicable_no_target_structure"
+ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME = "selection_gap_targets_unselected"
+STATUS_TECHNICALLY_MISSING = "technically_missing"
 
 
 def _utcnow() -> str:
@@ -193,6 +195,33 @@ def close_robustness_failed_extraction(
     )
 
 
+def close_robustness_completion(
+    output_dir: Path, patient: str, course: str, sentinel_path: Path,
+    *, log_path: str | None = None,
+) -> Path:
+    """Record a CLI-success outcome only after its receipt revalidates."""
+    from rtpipeline.robustness_completion import read_robustness_completion_sentinel
+
+    receipt = read_robustness_completion_sentinel(
+        Path(sentinel_path), course_dir=Path(sentinel_path).parent
+    )
+    if (receipt.patient_id, receipt.course_id) != (str(patient), str(course)):
+        raise RuntimeError("robustness completion receipt identity differs from campaign course")
+    if receipt.measurement_outcome == ROBUSTNESS_FAILED_RECEIPT_OUTCOME:
+        raise RuntimeError("a failed extraction cannot close as a successful robustness stage")
+    status = _sentinel_status(Path(sentinel_path).parent, STAGE_SENTINELS["radiomics_robustness"])
+    if status in {STATUS_MISSING, STATUS_FAILED}:
+        raise RuntimeError("robustness completion evidence failed validation")
+    return record(
+        Path(output_dir), patient, course, "radiomics_robustness",
+        status,
+        returncode=0, log_path=log_path, detail=(
+            ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME if status == STATUS_TECHNICALLY_MISSING
+            else receipt.measurement_outcome
+        ),
+    )
+
+
 def record(
     output_dir: Path,
     patient: str,
@@ -240,6 +269,7 @@ def _load_records(output_dir: Path) -> dict[tuple[str, str, str], dict]:
             str(entry.get("stage") or ""),
         )
         if all(key):
+            entry["_record_mtime_ns"] = path.stat().st_mtime_ns
             entries[key] = entry
     return entries
 
@@ -259,19 +289,54 @@ def _sentinel_status(course_path: Path, suffix: str) -> str:
         payload = json.loads(text)
     except json.JSONDecodeError:
         payload = None
-    if isinstance(payload, dict):
-        value = str(payload.get("status") or "").strip().lower()
-        if (
-            value == STATUS_OK
-            and payload.get("measurement_outcome")
-            == ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME
-        ):
+    if suffix == STAGE_SENTINELS["radiomics_robustness"]:
+        if not isinstance(payload, dict):
+            return text.lower() if text.lower() in {STATUS_DISABLED, STATUS_FAILED} else STATUS_MISSING
+        from rtpipeline.robustness_completion import (
+            RobustnessCompletionError, read_robustness_completion_sentinel,
+        )
+        try:
+            receipt = read_robustness_completion_sentinel(sentinel, course_dir=course_path)
+            from rtpipeline.radiomics_robustness import _read_robustness_source_dispositions
+            _read_robustness_source_dispositions(
+                course_path, run_identifier=receipt.run_identifier, output_name=receipt.output_name, rob_config=None,
+            )
+        except (RobustnessCompletionError, ValueError, RuntimeError):
+            return STATUS_MISSING
+        sidecar = json.loads(receipt.dispositions_path.read_text())
+        if sidecar.get("selection_gap_targets"):
+            return STATUS_TECHNICALLY_MISSING
+        outcome = receipt.measurement_outcome
+        if outcome == "failed_extraction":
+            return STATUS_FAILED
+        if outcome == ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME:
+            return STATUS_TECHNICALLY_MISSING
+        if outcome in {ROBUSTNESS_NO_TARGET_RECEIPT_OUTCOME, ROBUSTNESS_NOT_APPLICABLE_RECEIPT_OUTCOME}:
             return STATUS_NOT_APPLICABLE
-    else:
-        value = text.lower()
-    if value in {STATUS_DISABLED, STATUS_NOT_APPLICABLE}:
+        return STATUS_OK
+    value = str(payload.get("status") or "").strip().lower() if isinstance(payload, dict) else text.lower()
+    if value in {STATUS_DISABLED, STATUS_NOT_APPLICABLE, STATUS_FAILED}:
         return value
     return STATUS_OK if value == STATUS_OK else STATUS_MISSING
+
+
+def _robustness_not_applicable_detail(course_path: Path) -> str | None:
+    """Recover the declared reason for rollup; admission validates evidence."""
+    try:
+        payload = json.loads((course_path / STAGE_SENTINELS["radiomics_robustness"]).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("measurement_outcome") == "measured":
+        from rtpipeline.radiomics_robustness import robustness_source_dispositions_path
+        try:
+            sidecar = json.loads(robustness_source_dispositions_path(course_path).read_text())
+        except (OSError, ValueError):
+            return None
+        if sidecar.get("selection_gap_targets"):
+            return ROBUSTNESS_SELECTION_GAP_RECEIPT_OUTCOME
+    return payload.get("measurement_outcome")
 
 
 def _iter_courses(output_dir: Path):
@@ -306,7 +371,7 @@ def rollup(output_dir: Path) -> dict:
                 source = "record"
                 # A record claiming success without a sentinel is not success.
                 if (
-                    status in {STATUS_OK, STATUS_NOT_APPLICABLE}
+                    status in {STATUS_OK, STATUS_NOT_APPLICABLE, STATUS_TECHNICALLY_MISSING}
                     and sentinel_state == STATUS_MISSING
                 ):
                     status = STATUS_FAILED
@@ -314,6 +379,16 @@ def rollup(output_dir: Path) -> dict:
             else:
                 status = sentinel_state
                 source = "sentinel"
+
+            receipt_wins = False
+            if stage == "radiomics_robustness" and sentinel_state != STATUS_MISSING:
+                if entry is None or (
+                    (course_path / suffix).stat().st_mtime_ns >= entry["_record_mtime_ns"]
+                ):
+                    receipt_wins = True
+                    status, source = sentinel_state, "sentinel"
+                elif status != sentinel_state:
+                    status, source = STATUS_FAILED, "record-sentinel-conflict"
 
             rows.append(
                 {
@@ -323,11 +398,16 @@ def rollup(output_dir: Path) -> dict:
                     "status": status,
                     "status_source": source,
                     "sentinel_status": sentinel_state,
-                    "returncode": (entry or {}).get("returncode"),
-                    "log_path": (entry or {}).get("log_path"),
-                    "detail": (entry or {}).get("detail"),
-                    "finished_at": (entry or {}).get("finished_at"),
-                    "duration_seconds": (entry or {}).get("duration_seconds"),
+                    "returncode": (1 if source == "record-sentinel-conflict" else int(status == STATUS_FAILED) if receipt_wins else (entry or {}).get("returncode")),
+                    "log_path": None if receipt_wins else (entry or {}).get("log_path"),
+                    "detail": (
+                        _robustness_not_applicable_detail(course_path)
+                        if receipt_wins
+                        else "record-sentinel-conflict" if source == "record-sentinel-conflict"
+                        else (entry or {}).get("detail")
+                    ),
+                    "finished_at": None if receipt_wins else (entry or {}).get("finished_at"),
+                    "duration_seconds": None if receipt_wins else (entry or {}).get("duration_seconds"),
                 }
             )
 
@@ -384,6 +464,11 @@ def rollup(output_dir: Path) -> dict:
             {"patient": p, "course": c, "stage": s} for p, c, s in failed_units
         ],
         "failed_unit_count": len(failed_units),
+        "technically_missing_unit_count": sum(row["status"] == STATUS_TECHNICALLY_MISSING for row in rows),
+        "technically_missing_units": [
+            {key: row[key] for key in ("patient", "course", "stage", "detail")}
+            for row in rows if row["status"] == STATUS_TECHNICALLY_MISSING
+        ],
         "courses_with_any_failure": len({(p, c) for p, c, _ in failed_units}),
     }
     if organize_ledger is not None:
@@ -490,6 +575,15 @@ def main(argv: list[str] | None = None) -> int:
         "names the failure class",
     )
 
+    close_complete = sub.add_parser(
+        "close-robustness-complete", help="verify and record a completed robustness receipt"
+    )
+    close_complete.add_argument("--output-dir", required=True)
+    close_complete.add_argument("--patient", required=True)
+    close_complete.add_argument("--course", required=True)
+    close_complete.add_argument("--sentinel", required=True)
+    close_complete.add_argument("--log-path", default=None)
+
     roll = sub.add_parser("rollup", help="rebuild campaign ledger and summary")
     roll.add_argument("--output-dir", required=True)
 
@@ -517,6 +611,14 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.sentinel),
             log_path=args.log_path,
             upstream=args.upstream,
+        )
+        print(path)
+        return 0
+
+    if args.command == "close-robustness-complete":
+        path = close_robustness_completion(
+            Path(args.output_dir), args.patient, args.course, Path(args.sentinel),
+            log_path=args.log_path,
         )
         print(path)
         return 0

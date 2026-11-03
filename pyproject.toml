@@ -76,6 +76,7 @@ rtpipeline = [
   "radiomics_params_pet_fdg.yaml",
   "radiomics_params_pet_psma.yaml",
   "roi_class_map_v1.yaml",
+  "robustness_main_compatibility.json",
   "custom_structures_pelvic.yaml",
   "treatment_scope_rules_v1.yaml",
   "treatment_scope_rules_v1_1.yaml",

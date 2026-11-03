@@ -8,7 +8,7 @@ found. This receipt records the exact identity instead, and every consumer
 re-checks all of it against the artifacts on disk before using a course.
 
 The receipt is a *step* receipt, not a scientific eligibility decision: it says
-a robustness course reached a terminal, non-technical outcome and which one.
+a robustness course reached a terminal outcome and which one.
 Deciding what a measured or source-only outcome means for a cohort stays with
 the aggregation consumer.
 """
@@ -39,12 +39,19 @@ ROBUSTNESS_COMPLETION_SENTINEL_NAME = ".radiomics_robustness_done"
 # It is neither measured nor failed, and it is admitted only while the upstream
 # not-applicable radiomics completion revalidates (added 2026-09-25).
 ROBUSTNESS_NOT_APPLICABLE_OUTCOME = "not_applicable_no_planning_ct"
+# Zero-match outcomes are separated by governed target evidence.
+ROBUSTNESS_NO_TARGET_OUTCOME = "not_applicable_no_target_structure"
+ROBUSTNESS_SELECTION_GAP_OUTCOME = "selection_gap_targets_unselected"
+ROBUSTNESS_NO_MATCH_OUTCOMES = frozenset({
+    ROBUSTNESS_NO_TARGET_OUTCOME, ROBUSTNESS_SELECTION_GAP_OUTCOME,
+})
 ROBUSTNESS_COMPLETING_OUTCOMES = frozenset(
     {
         "measured",
         "source_only_nonvolumetric",
         "failed_extraction",
         ROBUSTNESS_NOT_APPLICABLE_OUTCOME,
+        *ROBUSTNESS_NO_MATCH_OUTCOMES,
     }
 )
 
@@ -79,6 +86,8 @@ class RobustnessCompletionReceipt:
     measured_output_sha256: Optional[str]
     source_disposition_count: int
     effective_configuration_sha256: str
+    target_selection: str = "patterns"
+    exclude_structures: tuple[str, ...] = ()
 
     @property
     def measured(self) -> bool:
@@ -230,6 +239,15 @@ def robustness_completion_payload(
         "effective_configuration_sha256": str(effective_configuration_sha256),
         "environment_fingerprint": source_provenance.get("environment_fingerprint", "unrecorded"),
         "rasterizer": source_provenance.get("rasterizer", {"backend": "unrecorded"}),
+        **({"target_selection": source_provenance["target_selection"]}
+           if "target_selection" in source_provenance else {}),
+        **({key: source_provenance[key] for key in ("exclude_structures", "excluded_by_configuration")}
+           if source_provenance.get("exclude_structures") else {}),
+        **(
+            {key: (source_provenance.get("source_only_basis") or {}).get(key)
+             for key in ("requested_selection", "missed_targets")}
+            if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES else {}
+        ),
     }
 
 
@@ -357,11 +375,14 @@ def _validate_payload(
         raise RobustnessCompletionError("robustness disposition sidecar is unreadable") from exc
     if not isinstance(disposition_payload, dict):
         raise RobustnessCompletionError("robustness disposition sidecar is not a record")
-    for field in ("environment_fingerprint", "rasterizer"):
+    for field in ("environment_fingerprint", "rasterizer", "target_selection"):
         if field in disposition_payload and payload.get(field) != disposition_payload[field]:
             raise RobustnessCompletionError(
                 f"robustness receipt {field} differs from the measurement sidecar"
             )
+    for field in ("exclude_structures", "excluded_by_configuration"):
+        if payload.get(field, []) != disposition_payload.get(field, []):
+            raise RobustnessCompletionError(f"robustness receipt {field} differs from the measurement sidecar")
     if disposition_payload.get("failed_evidence") is not None:
         for field, expected in (
             ("measurement_outcome", outcome),
@@ -424,7 +445,37 @@ def _validate_payload(
             f"{sentinel_path} records an unusable source disposition count "
             f"{row_count!r}"
         )
+    if (
+        outcome in ROBUSTNESS_NO_MATCH_OUTCOMES or outcome == "failed_extraction"
+        or disposition_payload.get("measurement_outcome") in ROBUSTNESS_NO_MATCH_OUTCOMES
+    ):
+        # No-match and failed courses close only with complete source
+        # evidence. Recheck source/code/configuration and the zero-match basis,
+        # including receipt bindings that a sidecar digest alone cannot prove.
+        from .radiomics_robustness import _read_robustness_source_dispositions
+
+        try:
+            inspection = _read_robustness_source_dispositions(
+                course_dir, run_identifier=run_identifier, rob_config=None, output_name=output_name,
+                snapshot=disposition_bytes,
+            )
+            if inspection.measurement_outcome != outcome or len(inspection.rows) != row_count:
+                raise ValueError("selection-unmatched receipt outcome or row count differs from sidecar")
+            if payload.get("effective_configuration_sha256") != disposition_payload.get(
+                "effective_configuration_sha256"
+            ):
+                raise ValueError("selection-unmatched receipt configuration differs from sidecar")
+            if outcome in ROBUSTNESS_NO_MATCH_OUTCOMES:
+                for field in ("requested_selection", "missed_targets"):
+                    if payload.get(field) != disposition_payload["source_only_basis"][field]:
+                        raise ValueError(f"no-match receipt {field} differs from sidecar")
+        except Exception as exc:
+            raise RobustnessCompletionError(
+                f"{sentinel_path} has invalid terminal source evidence: {exc}"
+            ) from exc
     return RobustnessCompletionReceipt(
+        target_selection=payload.get("target_selection", "patterns"),
+        exclude_structures=tuple(payload.get("exclude_structures", [])),
         path=sentinel_path,
         course_dir=course_dir,
         patient_id=patient_id,

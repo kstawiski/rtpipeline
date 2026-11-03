@@ -460,15 +460,8 @@ RADIOMICS_MIN_VOXELS = _coerce_int(RADIOMICS_CONFIG.get("min_voxels"), 120)
 if RADIOMICS_MIN_VOXELS is not None and RADIOMICS_MIN_VOXELS < 1:
     RADIOMICS_MIN_VOXELS = 1
 
-_custom_structures_cfg = config.get("custom_structures")
-if _custom_structures_cfg:
-    cs_path = Path(_custom_structures_cfg)
-    if not cs_path.is_absolute():
-        cs_path = ROOT_DIR / cs_path
-    CUSTOM_STRUCTURES_CONFIG = str(cs_path.resolve())
-else:
-    default_pelvic = ROOT_DIR / "custom_structures_pelvic.yaml"
-    CUSTOM_STRUCTURES_CONFIG = str(default_pelvic.resolve()) if default_pelvic.exists() else ""
+from rtpipeline.config import resolve_custom_structures_config
+CUSTOM_STRUCTURES_CONFIG = str(resolve_custom_structures_config(config.get("custom_structures"), ROOT_DIR) or "")
 
 AGGREGATION_CONFIG = config.get("aggregation", {})
 _agg_threads_raw = AGGREGATION_CONFIG.get("threads")
@@ -485,7 +478,13 @@ if AGGREGATION_THREADS is not None:
 else:
     AGG_THREADS_RESERVED = SNAKEMAKE_THREADS
 
-ROBUSTNESS_CONFIG = config.get("radiomics_robustness", {})
+ROBUSTNESS_CONFIG = dict(config.get("radiomics_robustness", {}))
+if ROBUSTNESS_CONFIG.get("target_selection", "patterns") == "patterns":
+    ROBUSTNESS_CONFIG.pop("target_selection", None)
+if "segmentation_perturbation" in ROBUSTNESS_CONFIG:
+    ROBUSTNESS_CONFIG["segmentation_perturbation"] = dict(ROBUSTNESS_CONFIG["segmentation_perturbation"])
+    if not ROBUSTNESS_CONFIG["segmentation_perturbation"].get("exclude_structures"):
+        ROBUSTNESS_CONFIG["segmentation_perturbation"].pop("exclude_structures", None)
 ROBUSTNESS_REQUESTED = bool(ROBUSTNESS_CONFIG.get("enabled", False))
 ROBUSTNESS_ENABLED = RADIOMICS_ENABLED and ROBUSTNESS_REQUESTED
 if ROBUSTNESS_REQUESTED and not RADIOMICS_ENABLED:
@@ -702,6 +701,11 @@ ROBUSTNESS_CONFIG_DEPENDENCY = _dependency_path(
     },
     _radiomics_source_paths,
 )
+
+# Obsolete no-match receipts must be recomputed, including when the dependency
+# cache was removed. Quarantine only obsolete receipts; preserve shared input mtimes.
+from rtpipeline.config_dependencies import migrate_legacy_robustness_receipts
+migrate_legacy_robustness_receipts(OUTPUT_DIR, Path(ROBUSTNESS_CONFIG_DEPENDENCY))
 
 # Adding a real input changes Snakemake's stored input inventory. The one-time
 # migration below extends only the old metadata for affected outputs, allowing
@@ -1483,6 +1487,18 @@ if config.get("container_mode", False):
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
                 fi
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-complete \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness completion could not be validated and recorded" >&2
+                        exit 1
+                    fi
+                fi
             else
                 # D22b: the CLI publishes a failed-extraction receipt before
                 # exiting 1 in campaign mode. That receipt is evidence the
@@ -1621,6 +1637,18 @@ else:
                     echo "Radiomics robustness returned success without a completion receipt: {output.sentinel}" >&2
                     exit 1
                 fi
+                if [ "{params.campaign_mode}" = "True" ]; then
+                    if ! PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}" "{params.python}" "{params.root_dir}/workflow/scripts/campaign_ledger.py" close-robustness-complete \
+                        --output-dir "{params.output_dir}" \
+                        --patient "{wildcards.patient}" \
+                        --course "{wildcards.course}" \
+                        --sentinel "{output.sentinel}" \
+                        --log-path "{log}"; then
+                        rm -f {output.sentinel}
+                        echo "Campaign-mode robustness completion could not be validated and recorded" >&2
+                        exit 1
+                    fi
+                fi
             else
                 # D22b: the CLI publishes a failed-extraction receipt before
                 # exiting 1 in campaign mode. That receipt is evidence the
@@ -1674,6 +1702,9 @@ rule aggregate_radiomics_robustness:
         root_dir=lambda w, input: str(ROOT_DIR),
         configfile=str(EFFECTIVE_CONFIGFILE),
         robustness_enabled=ROBUSTNESS_ENABLED,
+        campaign_mode=CAMPAIGN_MODE,
+        campaign_require_all_courses=CAMPAIGN_REQUIRE_ALL_COURSES,
+        campaign_min_completion_fraction=CAMPAIGN_MIN_COMPLETION_FRACTION,
         # The nominal cohort result is a pair. Its raw-value name is bound to
         # rtpipeline.radiomics_robustness.robustness_cohort_output_paths, which
         # is not imported here: this rule must stay parseable in the main

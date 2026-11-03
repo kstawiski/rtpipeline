@@ -87,6 +87,9 @@ def _write_config(
         "intensity": "standard",
     }
     payload = {
+        # These synthetic layouts intentionally have no custom-structure stage.
+        # Main CLI semantics: an explicit missing file disables that stage.
+        "custom_structures": str(tmp_path / "no-custom-structures.yaml"),
         "dicom_root": str(tmp_path / "Input"),
         "output_dir": str(tmp_path / "Output"),
         "logs_dir": str(tmp_path / "Logs"),
@@ -170,6 +173,30 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
         course_dir.mkdir(parents=True)
         rs_path = course_dir / "RS.dcm"
         shutil.copyfile(template_rs, rs_path)
+        import pydicom
+        ds = pydicom.dcmread(rs_path)
+        ds.StructureSetROISequence[0].ROIName = {"measured": "ROI", "source_only": "Marker1", "unmatched": "Unrequested1"}[kind]
+        ds.RTROIObservationsSequence[0].RTROIInterpretedType = "ORGAN"
+        if kind == "source_only":
+            contour = ds.ROIContourSequence[0].ContourSequence[0]
+            contour.ContourGeometricType = "POINT"
+            contour.ContourData = contour.ContourData[:3]
+            contour.NumberOfContourPoints = 1
+            ds.ROIContourSequence[0].ContourSequence = [contour]
+        ds.save_as(rs_path)
+        from course_contract_test_utils import write_minimal_course_contract
+        shutil.copytree(template_dir / "CT", course_dir / "CT")
+        metadata_path = write_minimal_course_contract(course_dir, planning_ct_dir=course_dir / "CT", authoritative_rtstruct=rs_path)
+        from rtpipeline.course_contract import _ct_provenance, load_course_contract
+        metadata = json.loads(metadata_path.read_text())
+        provenance = metadata["course_contract"]["planning_ct"]["nifti_provenance"]
+        provenance.update(_ct_provenance(course_dir / "CT"))
+        sidecar_path = course_dir / provenance["sidecar_path"]
+        sidecar = json.loads(sidecar_path.read_text())
+        sidecar.update(_ct_provenance(course_dir / "CT"))
+        sidecar_path.write_text(json.dumps(sidecar))
+        metadata_path.write_text(json.dumps(metadata))
+        load_course_contract(course_dir)  # The subprocess consumes this same real contract.
         rs_paths[rs_path] = kind
         courses[(patient_id, course_id)] = SimpleNamespace(
             course_dir=course_dir, kind=kind, rs_path=rs_path
@@ -244,7 +271,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
                 rows.append(
                     {
                         **fields,
-                        "structure": "ROI",
+                        "structure": fields["roi_original_name"],
                         "modality": "CT",
                         "measurement_type": rr.ROBUSTNESS_MEASUREMENT_TYPE,
                         "perturbed_mask_identity": identity,
@@ -252,6 +279,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
                         "extraction_arm": arm,
                         "run_identifier": kwargs["run_identifier"],
                         "feature_name": "original_firstorder_Mean",
+                        "configured_parameter_hash": f"synthetic-extractor-{arm}",
                         "value": base + 0.01 * offset,
                     }
                 )
@@ -263,7 +291,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
     return Cohort(output_root, config_path, courses)
 
 
-def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=True):
+def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=True, campaign=False):
     course_dir = cohort.course_dir(patient, course)
     argv = [
         "radiomics-robustness",
@@ -276,6 +304,8 @@ def _run_course(cohort: Cohort, patient: str, course: str = "C1", *, sentinel=Tr
     ]
     if sentinel:
         argv += ["--sentinel", str(course_dir / SENTINEL_NAME)]
+    if campaign:
+        argv.append("--campaign-mode")
     return cli.main(argv)
 
 
@@ -402,28 +432,27 @@ def test_source_only_course_completes_without_fabricating_a_table(tmp_path, monk
     assert rc.read_robustness_completion_sentinel(cohort.sentinel("P2")).measured is False
 
 
-def test_unmatched_selection_blocks_the_step_and_publishes_no_receipt(
-    tmp_path, monkeypatch, caplog
+@pytest.mark.parametrize("campaign", [False, True])
+@pytest.mark.parametrize("sentinel", [False, True])
+def test_unmatched_selection_completes_with_a_nonmeasurement_receipt(
+    tmp_path, monkeypatch, campaign, sentinel
 ):
     cohort = _build_courses(tmp_path, monkeypatch, {("P3", "C1"): "unmatched"})
 
-    assert _run_course(cohort, "P3") == 1
-    _assert_failed_for(
-        caplog,
-        "matched no source structure",
-        "not an anatomical finding",
-    )
+    assert _run_course(cohort, "P3", campaign=campaign, sentinel=sentinel) == 0
 
-    # The step is blocked, but the run's own accounting survives untouched: an
-    # unmatched selection is a configuration fact, not an anatomical exclusion.
-    assert not cohort.sentinel("P3").exists()
+    receipt = rc.read_robustness_completion_sentinel(cohort.sentinel("P3"))
+    assert receipt.measurement_outcome == "not_applicable_no_target_structure"
+    assert receipt.measured is False
+    assert receipt.measured_output is None
+    assert cohort.receipt("P3")["requested_selection"] == ["Marker*", "ROI"]
     assert not cohort.table("P3").exists()
     payload = json.loads(
         rr.robustness_source_dispositions_path(cohort.course_dir("P3")).read_text(
             encoding="utf-8"
         )
     )
-    assert payload["measurement_outcome"] == rr.ROBUSTNESS_UNMATCHED_SELECTION_OUTCOME
+    assert payload["measurement_outcome"] == rr.ROBUSTNESS_NO_TARGET_OUTCOME
     assert payload["source_only_basis"]["selection_matched_nonvolumetric_count"] == 0
     assert payload["rows"][0]["roi_name"] == "Unrequested1"
 

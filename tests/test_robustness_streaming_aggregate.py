@@ -62,7 +62,7 @@ def test_metric_and_raw_equivalence(tmp_path, monkeypatch, variant):
         elif variant == "roi_name":
             frame = frame.rename(columns={"structure": "roi_name"})
         frames[entry.path] = replace(entry, frame=frame)
-    monkeypatch.setattr(rr, "_admit_robustness_aggregation_input", lambda p, cfg: frames[p])
+    monkeypatch.setattr(rr, "_admit_robustness_aggregation_input", lambda p, cfg, **kwargs: frames[p])
     old, new = tmp_path / "old.xlsx", tmp_path / "new.xlsx"
     rr.aggregate_robustness_results(cohort.tables, old, cohort.rob)
     ra.aggregate_robustness_results(cohort.tables, new, cohort.rob)
@@ -107,7 +107,7 @@ def test_metric_refusals_match_legacy(tmp_path, monkeypatch, failure):
         frame = pd.concat([frame, extra], ignore_index=True)
     entries[0] = replace(entries[0], frame=frame)
     supplied = {entry.path: entry for entry in entries}
-    monkeypatch.setattr(rr, "_admit_robustness_aggregation_input", lambda p, cfg: supplied[p])
+    monkeypatch.setattr(rr, "_admit_robustness_aggregation_input", lambda p, cfg, **kwargs: supplied[p])
     for module in (rr, ra):
         output, raw = admission._summary_paths(tmp_path)
         admission._plant_stale_outputs(output, raw)
