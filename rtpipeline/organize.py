@@ -2927,7 +2927,7 @@ def _plan_evidence(path: Path) -> dict:
 
 
 def _prescriptions_match(left: dict, right: dict) -> bool:
-    """Identify revision-equivalent prescriptions without plan-label text."""
+    """Group equal prescriptions; revision identity requires separate proof."""
     left_rx = float(left.get("total_rx_gy") or 0.0)
     right_rx = float(right.get("total_rx_gy") or 0.0)
     left_fx = int(left.get("fractions_planned") or 0)
@@ -3211,6 +3211,25 @@ def _strict_plan_equivalence(candidate: dict, representative: dict) -> tuple[boo
     return True, "strict identical-beam variant with identical target references"
 
 
+
+def _positive_revision_evidence(candidate: dict, representative: dict) -> bool:
+    """Require complete equal TARGET identities or source-bound strict proof.
+
+    A shared target may move between revisions. Missing identities, a shared
+    ROI number, equal prescriptions or equal isocentres alone prove nothing.
+    """
+    def targets(plan: dict) -> set[str]:
+        references = [item for item in plan.get("dose_references", [])
+                      if str(item.get("reference_type") or "").upper() == "TARGET"]
+        uids = {str(item.get("reference_uid") or "").strip() for item in references}
+        return uids if references and "" not in uids else set()
+
+    candidate_targets, representative_targets = targets(candidate), targets(representative)
+    return bool(candidate_targets and candidate_targets == representative_targets) or (
+        _strict_plan_equivalence(candidate, representative)[0]
+    )
+
+
 def _independent_delivery_clusters(
     plans: List[dict], delivery: Dict[str, dict], notes: Optional[List[str]] = None
 ) -> List[List[dict]]:
@@ -3338,8 +3357,10 @@ def _classify_approved_doses(
     """Select dose evidence without using free-text plan labels.
 
     Explicit dose-to-plan references establish membership. Equal prescription
-    and fraction signatures are revisions and contribute once only when at most
-    one of them was delivered, or when their treatment records name both plans.
+    and fraction signatures alone never prove revisions. Without RTRECORDs,
+    collapse requires matching complete TARGET DoseReferenceUID sets or strict
+    plan equivalence. With records, existing delivery authority chooses sources
+    and shared record membership still requires strict equivalence.
     Equal-signature plans that each carry disjoint RTRECORD sessions, and
     supported plans whose treatment dates are strictly contained in another
     supported plan's dates, are retained as membership without a course dose
@@ -3648,6 +3669,17 @@ def _classify_approved_doses(
             independent_groups.append(cluster_representatives)
             representatives.extend(cluster_representatives)
             duplicate_count += len(group) - len(cluster_representatives)
+        elif not record_paths and len(group) > 1 and any(
+            not _positive_revision_evidence(plan, representative(group))
+            for plan in group if plan is not representative(group)
+        ):
+            # No record authority chooses a source and no revision proof permits
+            # discarding it. Retain all members, including distinct targets and
+            # split isocentres, under the existing governed no-grid hold.
+            latest = representative(group)
+            retained_group = [latest] + [plan for plan in group if plan is not latest]
+            independent_groups.append(retained_group)
+            representatives.extend(retained_group)
         else:
             representatives.append(representative(group))
             duplicate_count += len(group) - 1
@@ -3658,13 +3690,14 @@ def _classify_approved_doses(
     if independent_groups:
         for group in independent_groups:
             warnings.append(
-                "Equal prescription and fraction signatures with separate RTRECORD "
-                "delivery are not proven revisions: "
+                ("Equal prescription and fraction signatures with separate RTRECORD "
+                 "delivery are not proven revisions: " if record_paths else
+                 "Equal prescription and fraction signatures are not proven revisions: ")
                 + ", ".join(str(plan.get("sop_uid") or "") for plan in group)
             )
         for note in unproven_equivalence:
             warnings.append("Shared delivery records are not physical equivalence: " + note)
-        retained = [plan for plan in representatives if plan_sessions(plan)]
+        retained = [plan for plan in representatives if not record_paths or plan_sessions(plan)]
         for plan in representatives:
             if plan not in retained:
                 warnings.append(
@@ -3672,8 +3705,10 @@ def _classify_approved_doses(
                 )
         return unreconciled(
             retained,
-            "equal-signature plans each carry their own delivery records without "
-            "source-bound proof of physical equivalence",
+            ("equal-signature plans each carry their own delivery records without "
+             "source-bound proof of physical equivalence" if record_paths else
+             "equal-signature plans lack matching complete TARGET DoseReferenceUIDs "
+             "or strict plan equivalence"),
         )
 
     if record_paths and not any(
