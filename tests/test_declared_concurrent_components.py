@@ -126,8 +126,12 @@ def legacy(monkeypatch):
     """Pin undeclared behavior to M-DEDUP-1(a), before the declaration port."""
     import subprocess
     reference = "f0ed849:rtpipeline/organize.py"
-    source = subprocess.check_output(["git", "show", reference],
-                                     cwd=Path(__file__).resolve().parents[1], text=True)
+    try:
+        source = subprocess.check_output(["git", "show", reference],
+                                         cwd=Path(__file__).resolve().parents[1], text=True,
+                                         stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip(f"reference source {reference} needs repository history")
     # The reference remains read-only; loading source does not create a bytecode file.
     import types
     module = types.ModuleType("rtpipeline._concurrent_legacy_test")
