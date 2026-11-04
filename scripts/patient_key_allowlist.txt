@@ -1,0 +1,2 @@
+# Synthetic numeric patient keys that scripts/check_patient_keys.py may accept, one per line.
+# Only invented values belong here. Never add a real patient identifier.

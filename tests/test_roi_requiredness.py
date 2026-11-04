@@ -395,7 +395,7 @@ def test_modality_ledgers_merge_without_overwriting_course_or_patient_denominato
 
 
 def test_parallel_ledger_records_configured_roi_realized_by_partial_alias(tmp_path):
-    course_dir = tmp_path / "901492" / "2021-07"
+    course_dir = tmp_path / "SYNTH_D" / "2021-07"
     course_dir.mkdir(parents=True)
     task = SimpleNamespace(roi_name="bowel_bag__partial")
     rows = [

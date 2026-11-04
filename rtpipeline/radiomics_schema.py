@@ -103,7 +103,7 @@ RADIOMICS_TEXT_COLUMNS = frozenset(
         # through the allowlist the same way a third time.
         # Row-level contour-scope provenance attached by the parallel backend
         # (radiomics_parallel: ROIContourDisposition.source_series_uids as
-        # JSON): omitting it closed live course 903180/2021-07 at
+        # JSON): omitting it closed live course (key withheld) at
         # publication after successful extraction — same failure class.
         "source_series_uids",
         "geometry_basis",
