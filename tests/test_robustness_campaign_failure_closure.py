@@ -1,6 +1,6 @@
 """Campaign-mode closure for robustness' own extraction failures (D22b).
 
-Production case: course 477918/2025-11 stopped the Kopernik workflow when
+Production case: course (key withheld) stopped the Kopernik workflow when
 the robustness CLI died inside robustness_for_course and the shell rule
 exited 1 with no campaign closure. The CLI now publishes a
 failed-extraction receipt in campaign mode; the shell rule converts it to

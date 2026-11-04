@@ -73,7 +73,7 @@ def test_contour_scope_series_uids_is_publishable() -> None:
 
     The parallel backend attaches ROIContourDisposition.source_series_uids
     (JSON) to unresolved-scope rows. Omitting it from the allowlist closed
-    live course 422528/2021-07 at publication after successful extraction.
+    live course (key withheld) at publication after successful extraction.
     """
     import json
 

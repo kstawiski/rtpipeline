@@ -1,6 +1,6 @@
 """Robustness must not die on ROIs outside its selection (D22a, corrected).
 
-Production case: course 477918/2025-11 closed its robustness stage (and
+Production case: course (key withheld) closed its robustness stage (and
 stopped the workflow) because the auto ROI adrenal_gland_right carried
 ROI_CONTOUR_PARTIALLY_UNPARSEABLE, although the configured
 apply_to_structures selection (GTV*/CTV*/PTV*) never included it.
