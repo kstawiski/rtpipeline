@@ -1,0 +1,19 @@
+name: patient-key-guard
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: No likely patient course keys in tracked files
+        run: python3 scripts/check_patient_keys.py

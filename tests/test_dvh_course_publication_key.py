@@ -73,7 +73,7 @@ def test_an_existing_key_is_filled_not_overwritten(tmp_path):
 
 @pytest.mark.parametrize(
     "patient,course",
-    [("00000000001", "0000-00"), ("902591", "2024-06"), ("x", "y")],
+    [("00000000001", "0000-00"), ("SYNTH_A", "2024-06"), ("x", "y")],
 )
 def test_the_key_is_the_two_path_components_verbatim(tmp_path, patient, course):
     """The aggregate derives the same pair from the same directory, so the
