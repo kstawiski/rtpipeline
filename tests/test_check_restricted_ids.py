@@ -21,11 +21,12 @@ def _run(repo, *args, stdin=""):
 def test_staged_blob_with_listed_id_is_refused(tmp_path):
     repo = _repo(tmp_path)
     ids = tmp_path / "ids.txt"
-    ids.write_text("700007\n")  # synthetic list entry
-    (repo / "a.py").write_text('key = ("700007", "2021-07")\n')
+    token = "700007"  # synthetic list entry
+    ids.write_text(f"{token}\n")
+    (repo / "a.py").write_text(f'key = ("{token}", "2021-07")\n')
     subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
     result = _run(repo, "--staged", "--ids-file", str(ids))
-    assert result.returncode == 1 and "700007" not in result.stderr
+    assert result.returncode == 1 and token not in result.stderr
 
 
 def test_staged_blob_without_listed_id_passes(tmp_path):
