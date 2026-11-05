@@ -1,5 +1,8 @@
 # RTpipeline v2.3.0 Architecture
 
+!!! note "Applies to release 2.3.0"
+    This page describes the architecture at release 2.3.0 and has not been revised for later releases. See the [release notes](../release_notes.md) for what has changed since.
+
 RTpipeline is a radiotherapy ETL pipeline that turns raw DICOM exports into research-ready tables, derived RTSTRUCTs, QC artifacts, and robustness summaries. In `v2.3.0`, the architecture centers on three design choices:
 
 - **Course-first orchestration:** organize DICOM into patient/course units, then run every downstream stage on those units.

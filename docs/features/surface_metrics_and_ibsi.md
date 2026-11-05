@@ -61,7 +61,7 @@ setting:
 This example supplies D's preprocessing and discretisation. Exact benchmark
 parameter files also specify Original images, distance 1, dimensionality,
 aggregation and feature classes; the tested complete files are in
-[`validation/f6_ibsi/`](../validation/f6_ibsi/).
+[`validation/f6_ibsi/`](../validation/f6_ibsi/index.md).
 
 The packaged implementation is adapted from
 `validation/ibsi/scripts/run_validation.py::ibsi_preprocess`. It rounds input HU
