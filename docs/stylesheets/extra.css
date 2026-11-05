@@ -184,3 +184,17 @@
 [data-md-color-scheme="slate"] .md-search-result mark {
   color: var(--ro-coral);
 }
+
+/* ---- Code tokens reach 4.5:1 on the light code background ---- */
+[data-md-color-scheme="default"] {
+  --md-code-hl-comment-color: #5a6669;
+  --md-code-hl-constant-color: #5a45c7;
+  --md-code-hl-function-color: #94369f;
+  --md-code-hl-generic-color: #5a6669;
+  --md-code-hl-keyword-color: #2f5bab;
+  --md-code-hl-number-color: #b92323;
+  --md-code-hl-operator-color: #5a6669;
+  --md-code-hl-punctuation-color: #5a6669;
+  --md-code-hl-special-color: #b81048;
+  --md-code-hl-variable-color: #5a6669;
+}
