@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).parent))
 
 from robustness_prep_fixture import build_course, realistic_rois  # noqa: E402
+from legacy_source import legacy_archive  # noqa: E402
 
 CONFIG = """radiomics_robustness:
   enabled: true
@@ -48,8 +49,7 @@ def main() -> None:
     (scratch / "config.yaml").write_text(CONFIG)
     base = scratch / "base"
     if not (base / "rtpipeline").is_dir():
-        archive = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", base_rev,
-                                  "rtpipeline"], check=True, capture_output=True).stdout
+        archive = legacy_archive(base_rev, cwd=ROOT)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(base)
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}

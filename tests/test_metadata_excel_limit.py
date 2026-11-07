@@ -9,7 +9,6 @@ import datetime
 import importlib.util
 import json
 import logging
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -20,6 +19,8 @@ import pytest
 from pydicom.uid import RTBeamsTreatmentRecordStorage, RTPlanStorage, generate_uid
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
+
+from legacy_source import legacy_show
 
 from rtpipeline import meta
 from test_aggregate_course_contract import _aggregate_functions
@@ -350,15 +351,7 @@ def _freeze_workbook_clock(monkeypatch) -> None:
 
 
 def _baseline_meta(monkeypatch):
-    try:
-        source = subprocess.run(
-            ["git", "-C", str(ROOT), "show", f"{BASELINE_REVISION}:rtpipeline/meta.py"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"baseline revision {BASELINE_REVISION} is not available")
+    source = legacy_show(BASELINE_REVISION, "rtpipeline/meta.py", cwd=ROOT).decode()
     name = "rtpipeline._meta_baseline"
     spec = importlib.util.spec_from_loader(name, loader=None)
     module = importlib.util.module_from_spec(spec)
