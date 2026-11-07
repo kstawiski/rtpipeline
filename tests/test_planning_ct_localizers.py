@@ -11,6 +11,8 @@ import pydicom
 import pytest
 import SimpleITK as sitk
 
+from legacy_source import legacy_show
+
 from rtpipeline import organize, segmentation
 from rtpipeline.course_contract import load_course_contract
 from rtpipeline.planning_ct_localizers import PlanningCTLocalizerError, select_localizers
@@ -103,7 +105,6 @@ def test_ambiguous_localizer_selection_refused(tmp_path, case, reason):
 def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch, dcm2niix, revision):
     """Compare every output byte at one path with clocks fixed, no normalization."""
     import datetime
-    import subprocess
     import sys
     import types
     import zipfile
@@ -123,7 +124,8 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
     monkeypatch.setattr(zipfile.time, 'localtime', lambda *args: fixed_zip_time)
     monkeypatch.setenv('RTPIPELINE_INDEX_PROCESSES', '1')
     monkeypatch.setenv('RTPIPELINE_MASK_PROCESSES', '1')
-    source = subprocess.check_output(['git', 'show', f'{revision}:rtpipeline/organize.py'], text=True)
+    source = legacy_show(revision, 'rtpipeline/organize.py',
+                         cwd=Path(__file__).resolve().parents[1]).decode()
     baseline = types.ModuleType('rtpipeline._rf12_baseline_organize')
     baseline.__package__ = 'rtpipeline'
     baseline.__file__ = organize.__file__
@@ -140,16 +142,16 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
         # dynamically, so swapping only organize would compare current helpers.
         import rtpipeline
         for name in ('ct_series_hygiene', 'planning_ct_localizers'):
-            saved = subprocess.run(['git', 'show', f'{revision}:rtpipeline/{name}.py'],
-                                   capture_output=True, text=True)
-            if saved.returncode:
+            if revision == '879f225' and name == 'planning_ct_localizers':
                 continue  # RF10 predates the planning-publication helper.
+            saved = legacy_show(revision, f'rtpipeline/{name}.py',
+                                cwd=Path(__file__).resolve().parents[1]).decode()
             module = types.ModuleType(f'rtpipeline.{name}')
             module.__package__ = 'rtpipeline'
             module.__file__ = str(Path(organize.__file__).with_name(name + '.py'))
             historical.setitem(sys.modules, module.__name__, module)
             historical.setattr(rtpipeline, name, module, raising=False)
-            exec(compile(saved.stdout, module.__file__, 'exec'), module.__dict__)
+            exec(compile(saved, module.__file__, 'exec'), module.__dict__)
         assert len(baseline.organize_and_merge(cfg, metadata_snapshot={})) == 4
     expected = _tree_digest(cfg.output_root)
     shutil.rmtree(cfg.output_root)

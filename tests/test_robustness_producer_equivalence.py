@@ -3,7 +3,6 @@
 import copy
 import hashlib
 import json
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -15,6 +14,8 @@ import pandas as pd
 import pydicom
 import pytest
 import SimpleITK as sitk
+
+from legacy_source import legacy_show
 
 from rtpipeline import radiomics as rm, radiomics_robustness as rr
 from rtpipeline import robustness_completion as rc
@@ -35,9 +36,8 @@ def main_producer(tmp_path, monkeypatch):
     directory = tmp_path / "main-code"
     directory.mkdir()
     for relative in (*rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES, "robustness_completion.py"):
-        (directory / relative).write_bytes(subprocess.check_output(
-            ["git", "show", f"072b146:rtpipeline/{relative}"],
-            cwd=Path(__file__).resolve().parents[1],
+        (directory / relative).write_bytes(legacy_show(
+            '072b146', f'rtpipeline/{relative}', cwd=Path(__file__).resolve().parents[1],
         ))
         if relative not in {"radiomics_robustness.py", "robustness_completion.py", "config.py", "custom_structures_rtstruct.py"}:
             # Relative imports execute shared helpers. Prove those are exactly
@@ -498,7 +498,9 @@ def test_new_7_main_without_custom_provenance_is_refused(tmp_path, monkeypatch, 
     directory = tmp_path / "historical-custom-checker"
     directory.mkdir()
     for relative in custom.RS_CUSTOM_GENERATOR_CODE_SOURCES:
-        (directory / relative).write_bytes(subprocess.check_output(["git", "show", f"4ad1c53:rtpipeline/{relative}"]))
+        (directory / relative).write_bytes(legacy_show(
+            '4ad1c53', f'rtpipeline/{relative}', cwd=Path(__file__).resolve().parents[1],
+        ))
     historical = types.ModuleType("rtpipeline._s11g_historical_custom")
     historical.__file__ = str(directory / "custom_structures_rtstruct.py")
     exec(compile(Path(historical.__file__).read_bytes(), historical.__file__, "exec"), historical.__dict__)

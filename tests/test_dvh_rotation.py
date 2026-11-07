@@ -5,7 +5,6 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
-import subprocess
 import sys
 import types
 
@@ -17,6 +16,8 @@ from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
 import dvh_plan_target_fixtures as fx
+from legacy_source import legacy_show
+
 from rtpipeline import dvh
 from rtpipeline.dvh_rotation import DoseOrientationError, METHOD, prepare_rotated_dose, add_brachy_metrics
 
@@ -186,7 +187,7 @@ def test_exact_orientations_bypass_resampling(tmp_path, orientation):
 def historical_dvh(tmp_path):
     """Load actual a61b96a code and its original on-disk identity inputs."""
     root = Path(__file__).resolve().parents[1]
-    code = subprocess.check_output(['git', 'show', 'a61b96a:rtpipeline/dvh.py'], cwd=root).decode()
+    code = legacy_show('a61b96a', 'rtpipeline/dvh.py', cwd=root).decode()
     module = types.ModuleType('rtpipeline._rf14_baseline_dvh')
     sys.modules[module.__name__] = module
     shadow = tmp_path/'baseline_package'
@@ -194,7 +195,7 @@ def historical_dvh(tmp_path):
     module.__file__ = str(shadow/'dvh.py')
     exec(compile(code, module.__file__, 'exec'), module.__dict__)
     for name in module.DVH_MEASUREMENT_CODE_SOURCES:
-        source = subprocess.check_output(['git', 'show', f'a61b96a:rtpipeline/{name}'], cwd=root)
+        source = legacy_show('a61b96a', f'rtpipeline/{name}', cwd=root)
         (shadow/name).write_bytes(source)
     return module
 

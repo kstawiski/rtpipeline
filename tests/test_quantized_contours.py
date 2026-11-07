@@ -1,6 +1,5 @@
 """Synthetic CT quantization fallback and baseline byte-equivalence checks."""
 import copy
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -11,16 +10,16 @@ from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 from rt_utils import image_helper
 
+from legacy_source import legacy_show
+
 from rtpipeline import rtstruct_geometry as geometry
 from test_scope_resolution_degenerate_contours import _ct_slice, _contour, _rtstruct
 
 
 @pytest.fixture(scope='module')
 def baseline():
-    source = subprocess.check_output(
-        ['git', 'show', '939ad18:rtpipeline/rtstruct_geometry.py'],
-        cwd=Path(__file__).resolve().parents[1], text=True,
-    )
+    source = legacy_show('939ad18', 'rtpipeline/rtstruct_geometry.py',
+                         cwd=Path(__file__).resolve().parents[1]).decode()
     module = types.ModuleType('rtpipeline._geometry_939ad18')
     sys.modules[module.__name__] = module
     exec(compile(source, '939ad18:rtpipeline/rtstruct_geometry.py', 'exec'), module.__dict__)

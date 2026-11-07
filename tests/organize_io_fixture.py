@@ -3,7 +3,6 @@ import builtins
 import io
 import json
 import re
-import subprocess
 import sys
 import types
 import zipfile
@@ -11,6 +10,8 @@ from pathlib import Path
 
 import pydicom
 from pydicom.uid import generate_uid
+
+from legacy_source import legacy_show
 
 from synthetic_rt_fixtures import make_plan, make_dose, make_struct, make_record, _new_dataset
 
@@ -27,9 +28,7 @@ def baseline():
         return builtins.__import__(name, globals, locals, fromlist, level)
 
     for name in ('utils', 'dicom_copy', 'ct', 'meta', 'rt_details', 'course_contract', 'plan_disposition', 'organize'):
-        source = subprocess.check_output(
-            ['git', 'show', f'{BASE}:rtpipeline/{name}.py'], cwd=ROOT, text=True
-        )
+        source = legacy_show(BASE, f'rtpipeline/{name}.py', cwd=ROOT).decode()
         module = types.ModuleType(f'rtpipeline._organize_io_before_{name}')
         module.__package__ = 'rtpipeline'
         module.__file__ = str(ROOT / 'rtpipeline' / f'{name}.py')

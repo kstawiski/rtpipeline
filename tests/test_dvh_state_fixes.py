@@ -3,7 +3,6 @@ import copy
 import ast
 import json
 import struct
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +12,8 @@ import pydicom
 import pytest
 
 import dvh_plan_target_fixtures as fx
+from legacy_source import legacy_show
+
 from rtpipeline import dvh, dvh_support
 from rtpipeline.auto_rtstruct import _record_rs_auto_origin, RS_AUTO_ORIGIN_COPY
 from rtpipeline.dvh_rotation import RotatedDoseGrid, prepare_rotated_dose
@@ -182,8 +183,7 @@ def test_multibin_summary_is_lazy_and_metric_bytes_stay_exact(tmp_path, level):
     assert histogram.counts.size > 1
     result = dvh._compute_metrics(histogram, 20., lambda: pytest.fail('Multibin summary was sampled'))
     # Execute the merge-head metric function against exactly the same histogram.
-    source = subprocess.check_output(
-        ['git', 'show', '2875df2:rtpipeline/dvh.py'], cwd=Path(dvh.__file__).parents[1], text=True)
+    source = legacy_show('2875df2', 'rtpipeline/dvh.py', cwd=Path(dvh.__file__).parents[1]).decode()
     original = next(node for node in ast.parse(source).body
                     if isinstance(node, ast.FunctionDef) and node.name == '_compute_metrics')
     namespace = dict(vars(dvh))
