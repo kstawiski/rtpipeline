@@ -321,3 +321,21 @@ def test_direct_nifti_measurement_survives_generation_reassembly(tmp_path, monke
     assert measure(root)
     assert len(calls) == count
     assert (root / "dvh_metrics.parquet").read_bytes() == original_table
+
+
+def test_degraded_qc_keeps_measurements_and_negative_disposition(tmp_path, monkeypatch):
+    root = course(tmp_path)
+    calls = sampler(monkeypatch)
+    monkeypatch.setattr(dvh, "_expected_custom_structure_names", lambda _: ["Missing_required_structure"])
+    assert measure(root)
+    before = (root / "dvh_metrics.parquet").read_bytes()
+    qc = json.loads((root / "metadata/dvh_qc.json").read_text())
+    assert qc["status"] == "degraded"
+    assert qc["custom_structures_missing"] == ["Missing_required_structure"]
+    assert pd.read_parquet(root / "dvh_metrics.parquet").DmeanGy.notna().any()
+    count = len(calls)
+    assert measure(root)
+    assert len(calls) == count
+    assert (root / "dvh_metrics.parquet").read_bytes() == before
+    assert json.loads((root / "metadata/dvh_qc.json").read_text()) == qc
+    assert not dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx")

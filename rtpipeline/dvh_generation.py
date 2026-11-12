@@ -358,7 +358,7 @@ def _validate_products(course, destination):
         workbook = pd.read_excel(destination / "dvh_metrics.xlsx")
         if len(frame) != len(workbook) or list(frame.columns) != list(workbook.columns):
             raise DurableProgressError("DVH_TABLE_READBACK_FAILED")
-        if not len(frame) or qc.get("status") != "ok":
+        if not len(frame) or qc.get("status") not in {"ok", "degraded"}:
             raise DurableProgressError("DVH_OUTCOME_INVALID")
     else:
         from .course_contract import load_course_contract

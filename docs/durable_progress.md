@@ -224,6 +224,10 @@ propagates instead of certifying success. Configured or contract-declared
 nonapplicability retains its existing disposition and receives a current
 code/configuration/input binding.
 
+A committed publication can retain a declared degraded QC outcome. It keeps
+both the measured rows and the negative QC fields; commit is an attempt state,
+not a scientific-readiness decision.
+
 The DVH calculation and published table schema are unchanged. Workbook creation
 metadata uses a fixed packaging epoch so identical tables have reproducible
 bytes. SIGKILL tests cover process interruption; they do not establish behavior
