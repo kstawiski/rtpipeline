@@ -148,6 +148,7 @@ def mr_fixture(root, mode):
 def run_mr(pipeline, mode, *, kill=False):
     pipeline.handshake.unlink(missing_ok=True)
     env = dict(pipeline.env, WS516_MR_KILL='1' if kill else '')
+    env['LD_LIBRARY_PATH'] = str(pipeline.radiomics / 'lib')
     command = [str(pipeline.radiomics/'bin/python'), '-c', MR_RUN, str(pipeline.root), mode]
     log = pipeline.root / 'mr.log'
     with log.open('a') as stream:
@@ -209,6 +210,8 @@ def test_native_mr_roi_sigkill_resume_and_base_bytes(tmp_path, mode):
     shutil.rmtree(pipeline.output);shutil.copytree(clean,pipeline.output)
     run_mr(pipeline,mode)
     evidence={'mode':mode,'base':'3f94c63','interrupted_committed_rois':1,
+        'interpreter':str(pipeline.radiomics / 'bin/python'),
+        'LD_LIBRARY_PATH':str(pipeline.radiomics / 'lib'),
         'control_extractor_calls':sum(control_calls.values()),'resume_extractor_calls':2,
         'repeated_committed_calls':0,'readback':readback,'outputs':{}}
     for path in (output,output.with_suffix('.parquet')):
