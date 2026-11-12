@@ -171,7 +171,7 @@ def test_aggregation_rejects_stage_output_changed_after_completion(
 ) -> None:
     namespace = _aggregate_functions()
     course = _course(tmp_path)
-    (course / "qc_reports" / "summary.json").write_text(
+    (course / "qc_reports" / f"qc_report_{course.parent.name}_{course.name}.json").write_text(
         '{"status":"changed"}\n', encoding="utf-8"
     )
 

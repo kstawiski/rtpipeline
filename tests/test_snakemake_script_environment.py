@@ -6,7 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from course_contract_test_utils import write_minimal_course_contract
+from course_contract_test_utils import (write_minimal_course_contract, write_bound_organize_progress,
+    publish_synthetic_organize_closure)
 from rtpipeline.config_dependencies import materialize_stage_dependency
 from rtpipeline.organize_ledger import write_organize_ledger
 from rtpipeline.stage_completion import write_stage_completion_sentinel
@@ -138,6 +139,7 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
     configuration_path = materialize_stage_dependency(
         tmp_path / "dependencies", "organize", {"test": True}
     )
+    write_bound_organize_progress(course_dir)
     write_stage_completion_sentinel(
         course_dir,
         course_dir / ".organized",
@@ -170,6 +172,7 @@ def test_manifest_resume_runs_with_dicom_dependencies_blocked_in_outer_interpret
         ),
         encoding="utf-8",
     )
+    publish_synthetic_organize_closure(output_dir, tmp_path / "input")
     log_path = tmp_path / "logs" / "organize.log"
     config_path = tmp_path / "config.yaml"
     driver = f"""

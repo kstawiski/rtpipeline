@@ -62,7 +62,7 @@ def make_course(tmp_path):
 
 
 def inventory(course):
-    return {str(p.relative_to(course)): p.read_bytes() for p in course.rglob('*') if p.is_file()}
+    return {str(p.relative_to(course)): p.read_bytes() for p in course.rglob('*') if p.is_file() and not any(part.startswith('.') for part in p.relative_to(course).parts)}
 
 
 def test_selection_is_read_only_and_repair_only_writes_sidecar(tmp_path, capsys):

@@ -97,3 +97,13 @@ def legacy_archive(
                     member.size = len(source)
                     archive.addfile(member, io.BytesIO(source))
         return output.getvalue()
+
+
+def legacy_code_sources(revision: str, module: str, constant: str) -> tuple[str, ...]:
+    """Read a literal dependency list from the verified historical producer."""
+    import ast
+    tree = ast.parse(legacy_show(revision, module))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == constant for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    raise ValueError(f"Missing historical dependency list: {module}:{constant}")

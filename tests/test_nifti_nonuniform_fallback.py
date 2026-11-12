@@ -93,7 +93,7 @@ def test_fallback_publishes_the_volume_dcm2niix_writes_for_signed_data(tmp_path,
     assert published is not None and published.is_file()
     assert _tree_digest(unsigned_dir) == source_before
     assert not (nifti_dir / ".tmp_dcm2niix").exists()
-    assert sorted(p.name for p in nifti_dir.iterdir()) == sorted(
+    assert sorted(p.name for p in nifti_dir.iterdir() if p.name != ".conversion-progress") == sorted(
         [published.name, published.name[:-7] + ".metadata.json"]
     )
 
@@ -163,7 +163,7 @@ def test_fallback_fails_closed_when_a_stored_value_exceeds_signed_range(tmp_path
     nifti_dir = tmp_path / "nifti"
 
     assert segmentation._ensure_ct_nifti(config, ct_dir, nifti_dir, dcm2niix_depth=0) is None
-    assert list(nifti_dir.iterdir()) == []
+    assert [p for p in nifti_dir.iterdir() if p.name != ".conversion-progress"] == []
 
 
 @pytest.mark.parametrize(

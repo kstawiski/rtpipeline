@@ -81,7 +81,7 @@ def test_real_custom_publication_new_content_uid_parent_and_determinism(tmp_path
         require_rtstruct_identity(out, str(rt.ds.SOPInstanceUID))
     stale_task = replace(task(out, 'PTV'), mask_identity=str(rt.ds.SOPInstanceUID))
     with pytest.raises(RTStructIdentityError, match='STALE_UID'):
-        parallel._extract_one(stale_task)
+        parallel._extract_one_uncached(stale_task)
     changed = pydicom.dcmread(out)
     changed.StructureSetLabel = 'tampered'
     changed.save_as(out)
@@ -137,7 +137,7 @@ def test_four_complete_rois_recover_eleven_remain_unresolved_no_clipping(tmp_pat
             scoped.get_roi_mask_by_name(f'unresolved_target_{i}')
     monkeypatch.setattr(parallel, '_WORKER_STATE', {'ct_dir':ct, 'img':object(), 'extractor':object()})
     for i in range(4,15):
-        rows = parallel._extract_one(task(source, f'unresolved_target_{i}', i+1))
+        rows = parallel._extract_one_uncached(task(source, f'unresolved_target_{i}', i+1))
         assert len(rows) == 2
         assert {r['roi_structural_code'] for r in rows} == {'ROI_UNRESOLVED_SOURCE_SCOPE'}
         assert all(r['native_mask_voxel_count'] is None for r in rows)
@@ -198,7 +198,7 @@ def test_eight_applicators_three_points_have_explicit_identity_bound_nonmeasurem
     monkeypatch.setattr(parallel, '_WORKER_STATE', {})
     rows = []
     for observation in inventory.rois[1:]:
-        rows.extend(parallel._extract_one(task(source, observation.name, observation.roi_number)))
+        rows.extend(parallel._extract_one_uncached(task(source, observation.name, observation.roi_number)))
     assert len(rows) == 22
     assert {r['extraction_status'] for r in rows} == {'nonvolumetric_nonmeasurement'}
     assert all(r['roi_structural_code'] in NONVOLUMETRIC_CODES for r in rows)
@@ -221,7 +221,7 @@ def test_invalid_closed_planar_geometry_stays_distinct(tmp_path, points, monkeyp
     observation = inspect_rtstruct(source).rois[0]
     assert observation.structural_code == 'ROI_CONTOUR_UNPARSEABLE'
     monkeypatch.setattr(parallel, '_get_builder', lambda _:pytest.fail('invalid contour reached mask builder'))
-    rows = parallel._extract_one(task(source, 'PTV'))
+    rows = parallel._extract_one_uncached(task(source, 'PTV'))
     assert {r['extraction_status'] for r in rows} == {'invalid_contour_geometry'}
 
 

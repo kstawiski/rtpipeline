@@ -1,3 +1,4 @@
+from conftest import snakemake_executable
 """Concrete synthetic regressions for NEW-1 through NEW-8."""
 import inspect
 import json
@@ -13,7 +14,7 @@ import pytest
 import SimpleITK as sitk
 import yaml
 
-from legacy_source import legacy_show
+from legacy_source import legacy_show, legacy_code_sources
 
 from rtpipeline import cli, radiomics_robustness as rr, robustness_completion as rc
 from rtpipeline.radiomics_ct_contract import classify_ct_roi, load_custom_structure_provenance
@@ -157,8 +158,8 @@ def test_new_3_robustness_digest_mismatch_with_older_configuration(tmp_path, mon
         _active_admit(course, active)
     with pytest.raises((ValueError, RuntimeError), match="RS_custom.*stale"):
         _produce(rr, rc, course, config)
-    # Main retains its mtime-only configuration check on this branch.
-    assert not custom._is_rs_custom_stale(*args)
+    # Phase A binds the configuration bytes even when its timestamp is older.
+    assert custom._is_rs_custom_stale(*args)
 
 
 @pytest.mark.parametrize("newer", [False, True])
@@ -182,7 +183,7 @@ def test_new_3_robustness_without_digest_defers_to_shared_check(tmp_path, monkey
     monkeypatch.setattr(custom, "_is_rs_custom_stale", shared)
     args = (custom_path, active, contract.authoritative_rtstruct_path, course / "RS_auto.dcm")
     check = getattr(rr, "_is_robustness_rs_custom_stale", shared)
-    assert check(*args) is newer
+    assert check(*args) is True  # A missing configuration digest cannot override exact binding.
     assert calls == [args]
 
 
@@ -351,7 +352,7 @@ def test_new_7_positive_custom_certificate_real_staleness(tmp_path, monkeypatch,
     from types import ModuleType
     baseline_dir = tmp_path / "baseline-4ad1c53"
     baseline_dir.mkdir()
-    for relative in (*rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES, "robustness_main_compatibility.json"):
+    for relative in (*legacy_code_sources("4ad1c53", "rtpipeline/radiomics_robustness.py", "ROBUSTNESS_DISPOSITION_CODE_SOURCES"), "robustness_main_compatibility.json"):
         (baseline_dir / relative).write_bytes(legacy_show(
             '4ad1c53', f'rtpipeline/{relative}', cwd=Path(rr.__file__).parent.parent,
         ))
@@ -386,7 +387,7 @@ def _new_8_aggregate_gate_dry_run(tmp_path):
     rule = rule[:rule.index("    shell:")]
     # Replace the expensive aggregation command only; scheduling uses the
     # shipped rule, parameters and Snakemake's persisted execution metadata.
-    rule += '    shell: "touch {output.summary}"\n'
+    rule += '    shell: "touch {output}"\n'
     sentinel = tmp_path / "P1/C1/.radiomics_robustness_done"
     sentinel.parent.mkdir(parents=True)
     sentinel.write_text("synthetic receipt")
@@ -418,7 +419,7 @@ rule radiomics_robustness_course:
     shell: "touch {output}"
 '''
     snake.write_text(preamble + rule)
-    command = [sys.executable, "-m", "snakemake", "-s", str(snake), "--directory", str(tmp_path), "--cores", "1", "--nolock", "aggregate_radiomics_robustness"]
+    command = [snakemake_executable(), "-s", str(snake), "--directory", str(tmp_path), "--cores", "1", "--nolock", "aggregate_radiomics_robustness"]
     run = subprocess.run(command, text=True, capture_output=True)
     assert run.returncode == 0, run.stdout + run.stderr
     dry = subprocess.run([*command, "-n", "-p", "--config", "gate=0.9"], text=True, capture_output=True)

@@ -80,6 +80,9 @@ def _make_course(tmp_path: Path) -> tuple[Path, object, Path, Path, str, str]:
         logs_root=tmp_path / "logs",
         segmentation_temp_root=tmp_path / "seg-tmp",
     )
+    segmentation._model_progress(config, seg_dir, "total", nifti).commit_artifacts(
+        [seg_dir / name for name in masks], model_entry=manifest["models"][0])
+    segmentation._save_model_configuration(config, seg_dir, nifti, "total")
     return course, contract, nifti, seg_dir, series_uid, sop_hash
 
 
@@ -92,7 +95,7 @@ def _model_run_spy(monkeypatch):
         output_type = args[3]
         output_dir.mkdir(parents=True, exist_ok=True)
         if output_type == "nifti":
-            reference = sitk.Image([2, 2, 2], sitk.sitkUInt8)
+            reference = sitk.Cast(sitk.ReadImage(str(args[1])), sitk.sitkUInt8)
             reference[0, 0, 0] = 1
             sitk.WriteImage(reference, str(output_dir / "liver.nii.gz"))
         return True

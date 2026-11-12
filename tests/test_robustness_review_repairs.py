@@ -11,7 +11,7 @@ import pytest
 import SimpleITK as sitk
 import yaml
 
-from legacy_source import legacy_show
+from legacy_source import legacy_show, legacy_code_sources
 
 from rtpipeline import cli, radiomics as rm, radiomics_robustness as rr
 from test_robustness_consumer_integration import (
@@ -371,7 +371,7 @@ def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[1]
     baseline = tmp_path / "main-code"
     baseline.mkdir()
-    for relative in rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES:
+    for relative in legacy_code_sources("072b146", "rtpipeline/radiomics_robustness.py", "ROBUSTNESS_DISPOSITION_CODE_SOURCES"):
         content = legacy_show('072b146', f'rtpipeline/{relative}', cwd=root)
         (baseline / relative).write_bytes(content)
     name = "rtpipeline._main_producer_fixture"

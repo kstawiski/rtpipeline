@@ -90,7 +90,10 @@ def test_parallel_resume_checks_rasterizer_before_reuse(tmp_path, monkeypatch, v
     output = course / 'radiomics_ct.xlsx'
     rows = pd.read_parquet(output.with_suffix('.parquet')).to_dict('records')
     # Historical artifacts bypass the current publication writer deliberately.
-    pd.DataFrame([altered(row, variant) for row in rows]).to_parquet(output.with_suffix(".parquet"))
+    if variant == "matching":
+        assert all(all(row.get(key) == value for key, value in PIN.items()) for row in rows)
+    else:
+        pd.DataFrame([altered(row, variant) for row in rows]).to_parquet(output.with_suffix(".parquet"))
     before = output.with_suffix('.parquet').read_bytes()
     guard = Mock(side_effect=rasterizer.RadiomicsRasterizerError('recomputation required'))
     monkeypatch.setattr(rasterizer, 'require_radiomics_rasterizer', guard)

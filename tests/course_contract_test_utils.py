@@ -53,10 +53,19 @@ def write_bound_aggregation_sentinels(
     dicom.parent.mkdir(parents=True, exist_ok=True)
     if not dicom.exists():
         dicom.write_bytes(b"test-dicom-object")
-    qc_report = course / "qc_reports" / "summary.json"
+    qc_report = course / "qc_reports" / f"qc_report_{course.parent.name}_{course.name}.json"
     qc_report.parent.mkdir(parents=True, exist_ok=True)
     if not qc_report.exists():
-        qc_report.write_text('{"status":"ok"}\n', encoding="utf-8")
+        qc_report.write_text(json.dumps({"status": "ok", "checks": {
+            "file_existence": {}, "consistency": {}, "structure_cropping": {}}}), encoding="utf-8")
+    from rtpipeline.quality_control import _qc_item
+    from rtpipeline.extraction_progress import runtime_environment
+    from rtpipeline.durable_progress import final_result_writer
+    qc_settings, qc_environment = {}, runtime_environment()
+    _qc_item(course, "report", qc_settings, environment=qc_environment).commit_artifacts(
+        [qc_report], checks=["file_existence", "consistency", "structure_cropping", "segmentation_validation"])
+    final_result_writer(course / ".qc-progress/current.json",
+        {"settings": qc_settings, "environment": qc_environment})
     dvh_qc = course / "metadata" / "dvh_qc.json"
     if not dvh_qc.exists():
         dvh_qc.write_text('{"status":"ok"}\n', encoding="utf-8")
@@ -564,3 +573,32 @@ def write_minimal_course_contract(
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return metadata_path
+
+
+def write_bound_organize_progress(course):
+    """Synthetic producer-shaped byte evidence for workflow admission tests."""
+    from rtpipeline.organize import _organized_artifacts, _ORGANIZE_PROGRESS_CODE
+    from rtpipeline.artifact_progress import ArtifactItem, code_files, inventory
+    from rtpipeline.durable_progress import final_result_writer
+    from rtpipeline.extraction_progress import runtime_environment
+    course = Path(course)
+    output = course.parent.parent
+    sources = [p for p in (course / "DICOM").rglob("*") if p.is_file()]
+    environment = runtime_environment()
+    item = ArtifactItem(output / "_COURSES/.organize-progress/items",
+        str(course.relative_to(output)), {}, inventory(sources), base=course,
+        code=code_files(*_ORGANIZE_PROGRESS_CODE), environment=environment)
+    item.commit_artifacts(_organized_artifacts(course))
+    final_result_writer(course / ".organize-progress.json", {
+        "sources": list(map(str, sources)), "settings": {}, "environment": environment})
+
+
+def publish_synthetic_organize_closure(output, source_root):
+    from rtpipeline.durable_progress import final_result_writer
+    from rtpipeline.artifact_progress import inventory
+    from rtpipeline.meta import _source_candidate_paths
+    from rtpipeline.organize_publication import publish
+    output, source_root = Path(output), Path(source_root)
+    final_result_writer(output / "_COURSES/.organize-progress/discovery.json", {
+        "sources": inventory(_source_candidate_paths(source_root, None), source_root)})
+    publish(output)

@@ -15,7 +15,7 @@ import pydicom
 import pytest
 import SimpleITK as sitk
 
-from legacy_source import legacy_show
+from legacy_source import legacy_show, legacy_code_sources
 
 from rtpipeline import radiomics as rm, radiomics_robustness as rr
 from rtpipeline import robustness_completion as rc
@@ -35,14 +35,17 @@ def one_itk_thread():
 def main_producer(tmp_path, monkeypatch):
     directory = tmp_path / "main-code"
     directory.mkdir()
-    for relative in (*rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES, "robustness_completion.py"):
+    historical_sources = legacy_code_sources("072b146", "rtpipeline/radiomics_robustness.py", "ROBUSTNESS_DISPOSITION_CODE_SOURCES")
+    for relative in (*historical_sources, "robustness_completion.py"):
         (directory / relative).write_bytes(legacy_show(
             '072b146', f'rtpipeline/{relative}', cwd=Path(__file__).resolve().parents[1],
         ))
-        if relative not in {"radiomics_robustness.py", "robustness_completion.py", "config.py", "custom_structures_rtstruct.py"}:
-            # Relative imports execute shared helpers. Prove those are exactly
-            # main's bytes, rather than silently comparing a hybrid producer.
-            assert (Path(rr.__file__).parent / relative).read_bytes() == (directory / relative).read_bytes()
+        if relative not in {"radiomics_robustness.py", "robustness_completion.py", "config.py", "custom_structures_rtstruct.py",
+                            "radiomics.py", "radiomics_parallel.py", "radiomics_conda.py", "radiomics_ct_contract.py"}:
+            # Preserve byte checks on unchanged historical helpers. Phase B/C
+            # changed the listed producers to bind durable item publications;
+            # their scientific equivalence has dedicated production proofs.
+            assert (Path(rr.__file__).parent / relative).read_bytes() == (directory / relative).read_bytes(), relative
     modules = []
     for filename in ("radiomics_robustness", "robustness_completion"):
         name = f"rtpipeline._s11e_main_{filename}"
@@ -84,7 +87,10 @@ def _custom_metadata(course, custom_config, contract, monkeypatch):
     parent = pydicom.dcmread(course / "RS.dcm")
     assign_derived_identity(ds, str(parent.SOPInstanceUID), str(parent.SOPClassUID))
     ds.save_as(path)
+    monkeypatch.setattr(custom, "load_course_contract", lambda _: contract)
     meta = {
+        "binding": custom._custom_binding(course, custom_config, contract.authoritative_rtstruct_path, course / "RS_auto.dcm").as_dict(),
+        "rs_custom_sha256": rr._file_sha256(path),
         "version": custom._RS_CUSTOM_META_VERSION,
         "opencv_runtime": {"opencv_version": "5.0.0"},
         "generator_code_sha256": custom.rs_custom_generator_sha256(),
@@ -505,6 +511,10 @@ def test_new_7_main_without_custom_provenance_is_refused(tmp_path, monkeypatch, 
     historical.__file__ = str(directory / "custom_structures_rtstruct.py")
     exec(compile(Path(historical.__file__).read_bytes(), historical.__file__, "exec"), historical.__dict__)
     historical.load_course_contract = lambda _: contract
+    meta_path = course / "metadata/rs_custom_meta.json"
+    current_meta = json.loads(meta_path.read_text())
+    historical_meta = {**current_meta, "generator_code_sha256": historical.rs_custom_generator_sha256()}
+    meta_path.write_text(json.dumps(historical_meta))
     assert not historical._is_rs_custom_stale(course / "RS_custom.dcm", None, course / "RS.dcm", course / "RS_auto.dcm")
     main, completion = main_producer
     main_cfg = main.RobustnessConfig(enabled=True)
@@ -514,6 +524,7 @@ def test_new_7_main_without_custom_provenance_is_refused(tmp_path, monkeypatch, 
     with monkeypatch.context() as context:
         context.setattr(custom, "_is_rs_custom_stale", historical._is_rs_custom_stale)
         before = _produce(main, completion, course, config, rob_config=main_cfg)
+    meta_path.write_text(json.dumps(current_meta))
     assert not rr._compatible_main_measured_code(
         before[1], rr._current_robustness_code_identity(), course_dir=course, custom_structures_config=active,
     )

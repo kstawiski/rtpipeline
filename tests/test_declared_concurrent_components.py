@@ -779,6 +779,8 @@ def published(output):
     for path in sorted(output.rglob("*")):
         if not path.is_file():
             continue
+        if path.relative_to(output).parts[0] == "_CACHE" or any(part.startswith(".") for part in path.relative_to(output).parts):
+            continue
         rel = str(path.relative_to(output))
         if path.suffix == ".json":
             def scrub(value):

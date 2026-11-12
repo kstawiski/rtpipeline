@@ -57,6 +57,8 @@ def test_all_81_conditions_and_task_files(old, tmp_path, name, monkeypatch):
         _, actual = rp._prepare_radiomics_task(actual_images[key], actual_masks[key], cfg,
                                              'AutoRTS_total', 'urinary_bladder', course, tmp_path, False,
                                              'synthetic-run', identity, _cache=cache)
+        assert actual.pop("__progress_root__") == str(course / ".robustness-progress")
+        assert actual.pop("__progress_context__") == {}
         assert actual == expected
     assert len(cache['images']) == 3
     assert len(calls) == len({id(actual_masks[key]) for key in expected_tasks})
@@ -152,7 +154,10 @@ def test_custom_invariants_are_computed_once(old, tmp_path, monkeypatch):
         monkeypatch.setattr(contract, name, counted)
     cache = {}
     for _ in range(81):
-        assert rp._prepare_radiomics_task(*args, _cache=cache) == expected
+        path, actual = rp._prepare_radiomics_task(*args, _cache=cache)
+        assert actual.pop("__progress_root__") == str(course / ".robustness-progress")
+        assert actual.pop("__progress_context__") == {}
+        assert (path, actual) == expected
     assert calls == {'classify_ct_roi': 1, 'load_custom_structure_provenance': 1,
                      'configured_parameter_hash': 2}
     assert cache['images'][id(image)][0] is image

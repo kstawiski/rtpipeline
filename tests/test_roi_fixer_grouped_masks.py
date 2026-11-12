@@ -162,7 +162,7 @@ def test_fixer_rebuild_path_is_unchanged(tmp_path, monkeypatch) -> None:
     ct_dir = tmp_path / "ct"
     builder = _builder(ct_dir, _uniform_z(16))
     for contour in _contours(builder, "two")[:2]:
-        contour.ContourData = list(contour.ContourData[:3])  # one point: cv2 rejects it
+        contour.ContourData = list(contour.ContourData[:2])  # cannot be reshaped to 3-D coordinates
         contour.NumberOfContourPoints = 1
     source = tmp_path / "rs.dcm"
     builder.save(str(source))

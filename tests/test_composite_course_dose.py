@@ -139,7 +139,7 @@ def make_course(tmp_path, *, plan2_fractions=2, plan2_gy=10.0, plan2_dose_gy=10.
 
 
 def inventory(course):
-    return {str(p.relative_to(course)): p.read_bytes() for p in course.rglob('*') if p.is_file()}
+    return {str(p.relative_to(course)): p.read_bytes() for p in course.rglob('*') if p.is_file() and not any(part.startswith('.') for part in p.relative_to(course).parts)}
 
 
 def composite_values(course):

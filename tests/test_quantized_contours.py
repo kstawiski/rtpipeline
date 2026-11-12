@@ -195,7 +195,7 @@ def test_parallel_rows_and_both_ledgers_carry_actual_scope_metadata(tmp_path, mo
     monkeypatch.setitem(parallel._WORKER_STATE, 'builders', cache)
     monkeypatch.setattr(parallel, '_extract_one_with_geometry', lambda task: [
         {'roi_name':'hip_left', 'extraction_status':'success'}])
-    rows = parallel._extract_one(task)
+    rows = parallel._extract_one_uncached(task)
     assert rows[0]['geometry_basis'] == 'quantized_plane_projection'
     assert rows[0]['contour_quantization_projection_mm'] == scope.contour_quantization_projection_mm
     course = tmp_path/'synthetic-patient'/'synthetic-course'
@@ -206,7 +206,7 @@ def test_parallel_rows_and_both_ledgers_carry_actual_scope_metadata(tmp_path, mo
         assert row['contour_quantization_projection_mm'] == scope.contour_quantization_projection_mm
     strict = types.SimpleNamespace(code=None, projection_metadata={})
     cache[key].by_name['hip_left'] = strict
-    assert parallel._extract_one(task) == [{'roi_name':'hip_left','extraction_status':'success'}]
+    assert parallel._extract_one_uncached(task) == [{'roi_name':'hip_left','extraction_status':'success'}]
 
 
 def test_unscoped_inventory_remains_strict_for_quantized_contours():
@@ -293,4 +293,4 @@ def test_projection_provenance_cannot_come_from_stale_cached_source(tmp_path, mo
     monkeypatch.setattr(parallel, '_extract_one_with_geometry', lambda task: [dict(row) for row in expected])
     source.write_bytes(b'changed-source')
     task = types.SimpleNamespace(rs_path=str(source), roi_name='hip_left')
-    assert parallel._extract_one(task) == expected
+    assert parallel._extract_one_uncached(task) == expected

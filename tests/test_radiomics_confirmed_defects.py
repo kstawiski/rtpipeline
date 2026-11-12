@@ -24,7 +24,7 @@ def test_inventory_policy_precedes_mask_and_resource_guard(monkeypatch, name):
     monkeypatch.setattr(p, '_get_builder', lambda *a: pytest.fail('mask construction started'))
     t = task(name)
     assert t.decision.feature_publication_policy == c.FEATURE_POLICY_INVENTORY_ONLY
-    rows = p._extract_one(t)
+    rows = p._extract_one_uncached(t)
     assert len(rows) == 2
     assert all(r['extraction_status'] == t.decision.primary_intensity_texture_disposition for r in rows)
     assert all(r['native_mask_voxel_count'] is None for r in rows)
@@ -59,7 +59,7 @@ def test_resampled_dimensions_checked_before_execute(monkeypatch):
     ('ROI_NONVOLUMETRIC_POINT','non_volumetric'), ('ROI_CONTOUR_UNPARSEABLE','malformed_source_roi')])
 def test_source_terminal_before_mask(monkeypatch, code, status):
     monkeypatch.setattr(p, '_WORKER_STATE', {})
-    rows = p._extract_one(task('PTV', code))
+    rows = p._extract_one_uncached(task('PTV', code))
     assert len(rows) == 2
     assert all(r['extraction_status'] == status and r['roi_structural_code'] == code for r in rows)
 
@@ -89,7 +89,7 @@ def test_482_empty_and_3_point_source_universe_exact(tmp_path, monkeypatch):
     assert sum(x.structural_code=='ROI_NONVOLUMETRIC_POINT' for x in observations)==3
     tasks=[replace(task(x.name,x.structural_code),rs_path=str(path), stable_roi_identifier=f'rtstruct_roi_number:{x.roi_number}') for x in observations]
     monkeypatch.setattr(p,'_WORKER_STATE',{})
-    rows=[r for t in tasks for r in p._extract_one(t)]
+    rows=[r for t in tasks for r in p._extract_one_uncached(t)]
     ledger=source_ledger_rows([path],tasks,rows)
     source={(str(path),i) for i in range(485)}
     observed={(r['source_path'],r['declaration_ordinal']) for r in ledger}
@@ -111,5 +111,5 @@ def test_native_small_mask_retains_degenerate_code(monkeypatch):
     mask=np.zeros((8,8,8),np.uint8); mask[1:3,1:3,1:3]=1
     monkeypatch.setattr(p,'_WORKER_STATE',{'img':image,'extractor':_FakeExtractor(),'min_voxels':64})
     monkeypatch.setattr(p,'_get_builder',lambda *a: SimpleNamespace(get_roi_mask_by_name=lambda *a:mask))
-    rows=p._extract_one(task('PTV'))
+    rows=p._extract_one_uncached(task('PTV'))
     assert all(r['extraction_failure_kind']=='degenerate_mask' and r['native_mask_voxel_count']==8 for r in rows)

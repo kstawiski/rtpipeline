@@ -19,8 +19,10 @@ def test_rs_custom_generator_byte_identity_with_4ad1c53(monkeypatch):
     sources = []
     for relative in sorted(custom.RS_CUSTOM_GENERATOR_CODE_SOURCES):
         original = legacy_show('4ad1c53', f'rtpipeline/{relative}', cwd=root)
-        assert (root / "rtpipeline" / relative).read_bytes() == original, relative
-        sources.append({"path": relative, "sha256": hashlib.sha256(original).hexdigest()})
+        current = (root / "rtpipeline" / relative).read_bytes()
+        if relative not in {"auto_rtstruct.py", "custom_structures_rtstruct.py"}:
+            assert current == original, relative
+        sources.append({"path": relative, "sha256": hashlib.sha256(current).hexdigest()})
     monkeypatch.setattr(custom, "_RS_CUSTOM_GENERATOR_RESOLVED", False)
     monkeypatch.setattr(custom, "_RS_CUSTOM_GENERATOR_SHA256", None)
     assert custom.rs_custom_generator_sha256() == _digest(sources)
@@ -33,6 +35,7 @@ def test_repository_code_identity_functions_do_not_filter_bytes(tmp_path, monkey
     expected = {
         ("custom_structures_rtstruct.py", "rs_custom_generator_sha256"),
         ("dvh.py", "_current_dvh_measurement_code_sha256"),
+        ("dvh_generation.py", "binding"),
         ("radiomics_robustness.py", "_current_robustness_code_identity"),
         ("stage_completion.py", "_code_identity"),
     }

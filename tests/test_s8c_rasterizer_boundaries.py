@@ -319,7 +319,7 @@ def test_native_mr_publication_keeps_nifti_loader_label(tmp_path, monkeypatch):
     sitk.WriteImage(sitk.Cast(image, sitk.sitkUInt8), str(seg / 'total_mr--liver.nii.gz'))
     monkeypatch.setattr(radiomics.np, '__version__', '1.26.4')
     monkeypatch.setattr(radiomics, '_infer_mr_weighting', lambda *_a: 'T1')
-    monkeypatch.setattr(radiomics, '_load_series_image', lambda *_a: image)
+    monkeypatch.setattr(radiomics, '_load_series_image', lambda *_a, **_k: image)
     monkeypatch.setattr(radiomics, '_extractor', lambda *_a, **_k: fixtures._FakeExtractor())
     result = radiomics.radiomics_for_course_mr(fixtures._config(tmp_path), SimpleNamespace(dirs=dirs))
     frame = pd.read_parquet(result.with_suffix('.parquet'))

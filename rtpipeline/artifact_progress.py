@@ -117,11 +117,13 @@ class ArtifactItem(BoundItem):
         try:
             name = sidecar.resolve().relative_to(self.base).as_posix()
             observed = json.loads(sidecar.read_text())
+            observed_identity = json.dumps(observed, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            expected_identity = json.dumps(previous.get("sidecar"), sort_keys=True, separators=(",", ":"), allow_nan=False)
         except (OSError, ValueError, TypeError):
             self.invalidate("sidecar_unreadable")
             return None
         value = self.load()
-        if observed != previous.get("sidecar"):
+        if observed_identity != expected_identity:
             self.invalidate("sidecar_provenance_changed")
             return None
         if value is not None:

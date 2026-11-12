@@ -206,7 +206,7 @@ def _organized_course(root, dcm2niix, name='course_a', localizer=True):
 
 def _files_and_mtimes(root):
     return {str(p.relative_to(root)): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
-            for p in root.rglob('*') if p.is_file()}
+            for p in root.rglob('*') if p.is_file() and p.relative_to(root).parts[0] != '_CACHE' and not any(part.startswith('.') for part in p.relative_to(root).parts)}
 
 
 def test_repair_atomic_idempotent_and_course_scoped(tmp_path, dcm2niix):

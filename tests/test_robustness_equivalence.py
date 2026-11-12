@@ -157,6 +157,8 @@ def _collect(output_root: Path) -> dict:
     collected = {}
     for path in sorted(output_root.rglob("*")):
         relative = path.relative_to(output_root)
+        if any(part.startswith(".") and part != ".radiomics_robustness_done" for part in relative.parts):
+            continue
         if path.is_dir() or (len(relative.parts) > 2 and relative.parts[2] in INPUT_NAMES):
             continue
         if path.suffix == ".parquet":
@@ -215,7 +217,7 @@ def _normalize(value, ids, parent=None):
 def _normalize_frame(frame: pd.DataFrame, ids) -> pd.DataFrame:
     frame = frame.drop(columns=list(RASTERIZER_PROVENANCE_FIELDS), errors="ignore").copy()
     for column in frame.columns:
-        if frame[column].dtype == object:
+        if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
         if column in {"table_sha256", "source_dispositions_sha256"}:
             frame[column] = "<digest of run-bound artifact>"

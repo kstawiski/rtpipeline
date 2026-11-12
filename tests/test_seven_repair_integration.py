@@ -30,7 +30,7 @@ def test_geometry_precedes_policy_skip_builder_and_resource(tmp_path, monkeypatc
     monkeypatch.setattr(parallel, '_WORKER_STATE', {'skip_rois': {parallel._norm(name)}})
     monkeypatch.setattr(parallel, '_get_builder', lambda *a: pytest.fail('non-volume reached builder'))
     monkeypatch.setattr(parallel, 'estimate_resampled_bounding_box', lambda *a, **k: pytest.fail('non-volume reached resource guard'))
-    rows = parallel._extract_one(t)
+    rows = parallel._extract_one_uncached(t)
     assert len(rows) == 2
     assert {r['extraction_status'] for r in rows} == {'nonvolumetric_nonmeasurement'}
     assert {r['roi_structural_code'] for r in rows} == {'ROI_NONVOLUMETRIC_' + kind}

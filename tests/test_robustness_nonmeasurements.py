@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import os
+from rtpipeline.durable_progress import DurableProgressError
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -804,8 +805,10 @@ def test_sidecar_write_failure_withdraws_the_measured_table(tmp_path, monkeypatc
         return real_replace(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(rr.os, 'replace', failing_replace)
-    with pytest.raises(OSError, match='synthetic sidecar publication failure'):
+    with pytest.raises(DurableProgressError, match='DURABLE_WRITE_FAILED') as failure:
         rr.robustness_for_course(cfg, rob, course)
+    assert isinstance(failure.value.__cause__, OSError)
+    assert 'synthetic sidecar publication failure' in str(failure.value.__cause__)
     # A nominal completed table with no sidecar would read as a certified
     # measurement that nothing certifies.
     assert not (course / 'radiomics_robustness_ct.parquet').exists()

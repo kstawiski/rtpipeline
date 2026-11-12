@@ -138,7 +138,7 @@ def test_duplicate_differing_refused_with_reason(tmp_path, dcm2niix, monkeypatch
     evidence = {}
     assert segmentation._ensure_ct_nifti(_config(tmp_path, dcm2niix), ct, tmp_path / 'nifti', conversion_evidence=evidence) is None
     assert evidence['reason_code'] == 'ct_hygiene_duplicate_position_pixels_differ'
-    assert not list((tmp_path / 'nifti').iterdir())
+    assert not [p for p in (tmp_path / 'nifti').iterdir() if p.name != '.conversion-progress']
 
 
 @pytest.mark.parametrize('per_contour', [False, True])

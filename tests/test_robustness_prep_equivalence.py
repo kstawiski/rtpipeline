@@ -38,6 +38,7 @@ types remain exact comparisons. Both runs use the same installed OpenCV.
 from __future__ import annotations
 
 import io
+import cv2
 import json
 import os
 import shutil
@@ -222,6 +223,8 @@ def _collect(output_root: Path) -> dict:
     collected = {}
     for path in sorted(output_root.rglob("*")):
         relative = path.relative_to(output_root)
+        if any(part.startswith(".") and part != ".radiomics_robustness_done" for part in relative.parts):
+            continue
         if path.is_dir() or relative.parts[2] in {"CT", "RS.dcm", "RS_auto.dcm", "RS_custom.dcm",
                                                    "Segmentation_CustomModels", "inputs.json"}:
             continue
@@ -275,7 +278,7 @@ def canonical_table(frame: pd.DataFrame, ids) -> pd.DataFrame:
     """Row content independent of row and column order."""
     frame = frame.copy()
     for column in frame.columns:
-        if frame[column].dtype == object:
+        if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
     frame = frame.reindex(columns=sorted(frame.columns))
     order = frame.astype(str).agg("\x1f".join, axis=1).sort_values(kind="stable").index
@@ -392,7 +395,7 @@ def test_outputs_match_base_revision(runs, variant):
 def _ordered_table(frame, ids):
     frame = frame.copy()
     for column in frame.columns:
-        if frame[column].dtype == object:
+        if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
     return frame
 
@@ -437,14 +440,18 @@ def _tolerated(sidecar):
 
 def test_scoped_reader_regressions_fail_on_base(runs):
     base = runs["base"]
-    for course in ("S1", "S2", "P7"):
+    for course in (("S1", "S2", "P7") if int(cv2.__version__.split(".")[0]) < 5 else ("S1", "P7")):
         assert base["codes"][course] == 1, course
         assert _sidecar(base["outputs"], course)["measurement_outcome"] == "failed_extraction"
     log = base["log"]
     assert ("/S1/C1/RS.dcm: Loaded RTStruct references image(s) that are not contained "
             "in input series data") in log
     assert "Expected ROI 'urinary_bladder' in " in log
-    assert "/S2/C1/RS_auto.dcm could not be read: OpenCV" in log and "fillPoly" in log
+    if int(cv2.__version__.split(".")[0]) < 5:
+        assert "/S2/C1/RS_auto.dcm could not be read: OpenCV" in log and "fillPoly" in log
+    else:
+        assert base["codes"]["S2"] == 0
+        assert _sidecar(base["outputs"], "S2")["measurement_outcome"] == "measured"
     assert "Expected ROI 'GTV_far' in " in log
 
 
@@ -471,7 +478,8 @@ def test_scoped_reader_regressions_pass(runs, variant):
     # one is read by rt_utils as before and stays a tolerated failure.
     s2 = _sidecar(outputs, "S2")
     assert _dispositions(s2) == []
-    assert _tolerated(s2) == [("organ_01", "extraction_error", "ROI_EXTRACTION_FAILED")]
+    assert _tolerated(s2) == ([] if int(cv2.__version__.split(".")[0]) >= 5 else
+        [("organ_01", "extraction_error", "ROI_EXTRACTION_FAILED")])
     table, _ = outputs["S2/C1/radiomics_robustness_ct.parquet"]
     assert set(zip(table.segmentation_source, table.structure)) == {
         ("Manual", "GTV1"), ("AutoRTS_total", "urinary_bladder")}
@@ -596,8 +604,11 @@ def test_scoped_mask_for_area_less_items_matches_main_path(tmp_path):
     course = tmp_path / "Output" / "S2" / "C1"
     build_course(course, COURSES["S2"])
     series, raw = _series_and_raw(course, "RS_auto.dcm")
-    with pytest.raises(Exception, match="fillPoly"):
-        raw.get_roi_mask_by_name("urinary_bladder")
+    if int(cv2.__version__.split(".")[0]) < 5:
+        with pytest.raises(Exception, match="fillPoly"):
+            raw.get_roi_mask_by_name("urinary_bladder")
+    else:
+        assert raw.get_roi_mask_by_name("urinary_bladder").any()
     masks, sink = _scoped_masks(course, "RS_auto.dcm")
     main_path = create_scoped_rtstruct(course / "CT", course / "RS_auto.dcm")
     _assert_same_bytes(masks["urinary_bladder"], main_path.get_roi_mask_by_name("urinary_bladder"))

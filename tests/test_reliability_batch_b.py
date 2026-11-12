@@ -49,6 +49,7 @@ import inspect
 import logging
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -369,8 +370,11 @@ def test_checkpoint_flush_leaves_prior_checkpoint_intact_on_simulated_crash(tmp_
 
     monkeypatch.setattr(rc.os, "replace", boom)
 
-    cp.add_result({"roi_name": "BLADDER", "value": 2.0})
-    cp.flush()  # errors are caught and logged, not raised out of flush()
+    from rtpipeline.durable_progress import DurableProgressError
+    with pytest.raises(DurableProgressError, match="DURABLE_WRITE_FAILED") as failure:
+        cp.add_result({"roi_name": "BLADDER", "value": 2.0})
+        cp.flush()
+    assert isinstance(failure.value.__cause__, OSError)
 
     assert cp_path.read_bytes() == original_bytes, (
         "the previously-published checkpoint must be untouched by the failed flush"
@@ -609,7 +613,7 @@ def test_parallel_worker_mask_read_exception_raises_region_failure(monkeypatch, 
     task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="could not be read.*corrupt contour data"):
-        rp._extract_one(task)
+        rp._extract_one_uncached(task)
 
 
 def test_parallel_worker_missing_mask_raises_region_failure(monkeypatch, tmp_path):
@@ -623,7 +627,7 @@ def test_parallel_worker_missing_mask_raises_region_failure(monkeypatch, tmp_pat
     task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="did not provide a mask"):
-        rp._extract_one(task)
+        rp._extract_one_uncached(task)
 
 
 def test_parallel_worker_missing_builder_raises_region_failure(monkeypatch, tmp_path):
@@ -633,7 +637,7 @@ def test_parallel_worker_missing_builder_raises_region_failure(monkeypatch, tmp_
     task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="structure builder is unavailable"):
-        rp._extract_one(task)
+        rp._extract_one_uncached(task)
 
 
 def test_parallel_worker_empty_mask_raises_region_failure(monkeypatch, tmp_path):
@@ -656,7 +660,7 @@ def test_parallel_worker_empty_mask_raises_region_failure(monkeypatch, tmp_path)
     task = _dual_arm_roi_task(tmp_path)
 
     with pytest.raises(rp.RadiomicsRegionExtractionError, match="empty required mask"):
-        rp._extract_one(task)
+        rp._extract_one_uncached(task)
 
 
 def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tmp_path):
@@ -681,7 +685,7 @@ def test_parallel_worker_undersized_mask_returns_observed_status(monkeypatch, tm
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
     task = _dual_arm_roi_task(tmp_path)
 
-    records = rp._extract_one(task)
+    records = rp._extract_one_uncached(task)
 
     assert len(records) == 2
     assert {record["extraction_arm"] for record in records} == {
@@ -702,7 +706,7 @@ def test_parallel_worker_declared_skip_returns_status(monkeypatch, tmp_path):
     monkeypatch.setattr(rp, "_get_builder", lambda _path: object())
     task = _dual_arm_roi_task(tmp_path)
 
-    records = rp._extract_one(task)
+    records = rp._extract_one_uncached(task)
 
     assert len(records) == 2
     assert {record["extraction_status"] for record in records} == {"declared_skip"}
@@ -757,7 +761,7 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
             "min_voxels": 1,
             "max_voxels": 1000,
             "base_timeout": 600,
-            "config": object(),
+            "config": SimpleNamespace(),
         }
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
@@ -796,7 +800,7 @@ def test_parallel_success_record_uses_public_feature_schema_only(monkeypatch, tm
         tmp_path, course_dir=tmp_path / "patient" / "course"
     )
 
-    records = rp._extract_one(task)
+    records = rp._extract_one_uncached(task)
 
     assert len(records) == 2
     assert {record["extraction_arm"] for record in records} == {

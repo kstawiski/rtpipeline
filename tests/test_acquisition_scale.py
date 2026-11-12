@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from pathlib import Path
 
+import SimpleITK as sitk
 import numpy as np
 import pandas as pd
 import pytest
@@ -525,7 +526,7 @@ def test_native_backend_attaches_descriptor_once_after_feature_extraction(
                 return {"original_shape_MeshVolume": 8.0}
             return {"original_firstorder_Mean": 2.0}
 
-    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: Image())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: sitk.Image([2, 2, 2], sitk.sitkInt16))
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: Extractor())
     monkeypatch.setattr(
         radiomics,

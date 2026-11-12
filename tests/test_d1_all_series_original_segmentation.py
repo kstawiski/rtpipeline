@@ -478,7 +478,7 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
         assert dcm2niix_depth == 0
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / f"{Path(input_dir).name}.nii.gz"
-        path.write_text("nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkInt16), str(path))
         write_sidecar(path)
         return path
 
@@ -489,7 +489,7 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
         else:
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / "liver.nii.gz").write_text("ai liver", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkUInt8), str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)

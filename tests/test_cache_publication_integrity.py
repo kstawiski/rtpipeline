@@ -373,6 +373,8 @@ def test_nonhygiene_reuse_requires_publication_digest(tmp_path, monkeypatch, pri
         meta_path.write_text(json.dumps(metadata))
     elif state == 'nonobject_sidecar':
         meta_path.write_text('[]')
+    import builtins
+    original_builtin_open = builtins.open
     original_open, original_read = Path.open, Path.read_text
     if state == 'unreadable_digest':
         def unreadable(path, *args, **kwargs):
@@ -380,6 +382,11 @@ def test_nonhygiene_reuse_requires_publication_digest(tmp_path, monkeypatch, pri
                 raise PermissionError('synthetic unreadable volume')
             return original_open(path, *args, **kwargs)
         monkeypatch.setattr(Path, 'open', unreadable)
+        def unreadable_builtin(path, *args, **kwargs):
+            if Path(path) == out and args and args[0] == 'rb':
+                raise PermissionError('synthetic unreadable volume')
+            return original_builtin_open(path, *args, **kwargs)
+        monkeypatch.setattr(builtins, 'open', unreadable_builtin)
     elif state == 'unreadable_sidecar':
         def unreadable_sidecar(path, *args, **kwargs):
             if path == meta_path:
@@ -391,6 +398,7 @@ def test_nonhygiene_reuse_requires_publication_digest(tmp_path, monkeypatch, pri
     def counted(*args, **kwargs):
         calls.append(args[1])
         monkeypatch.setattr(Path, 'open', original_open)
+        monkeypatch.setattr(builtins, 'open', original_builtin_open)
         monkeypatch.setattr(Path, 'read_text', original_read)
         return real_converter(*args, **kwargs)
     monkeypatch.setattr(seg, 'run_dcm2niix', counted)

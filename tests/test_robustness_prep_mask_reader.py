@@ -126,7 +126,11 @@ def test_indexed_reader_matches_rt_utils_for_every_roi(source, retain):
             assert observed == ("value", bool(expected[1].any())), name
     # rt_utils cannot fill a one-point polygon; the robustness reader never
     # sees "point" because its inventory marks it non-volumetric first.
-    assert raised == {"bad_late", "missing_data", "no_sequence", "no_uid", "no_ref", "absent", "point"}
+    import cv2
+    expected_raised = {"bad_late", "missing_data", "no_sequence", "no_uid", "no_ref", "absent"}
+    if int(cv2.__version__.split(".")[0]) < 5:
+        expected_raised.add("point")
+    assert raised == expected_raised
 
 
 def test_indexed_reader_falls_back_when_uids_are_not_plain_strings(source, monkeypatch):

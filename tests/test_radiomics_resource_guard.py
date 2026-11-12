@@ -139,7 +139,7 @@ def test_parallel_worker_records_oversized_crop_without_extraction(
     )
     monkeypatch.setattr(rp, "_get_builder", lambda _path: Builder())
 
-    records = rp._extract_one(task)
+    records = rp._extract_one_uncached(task)
 
     assert len(records) == 2
     assert {record["extraction_status"] for record in records} == {"failed"}

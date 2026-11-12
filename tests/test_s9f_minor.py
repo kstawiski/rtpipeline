@@ -14,7 +14,10 @@ import pytest
 from pydicom.uid import MRImageStorage, generate_uid
 
 from conftest import snakemake_executable
-from course_contract_test_utils import write_minimal_course_contract
+from course_contract_test_utils import (write_minimal_course_contract, write_bound_organize_progress,
+    publish_synthetic_organize_closure)
+from source_plan_disposition_test_utils import empty_source_history
+from rtpipeline.organize_ledger import write_organize_ledger
 from rtpipeline import segmentation as seg
 from rtpipeline.rtstruct_geometry import geometry_adapter_output_current
 from rtpipeline.stage_completion import write_stage_completion_sentinel
@@ -61,20 +64,24 @@ def test_manifest_courses_schedule_organize_only_for_invalid_completion(tmp_path
     for name in ("C1", "C2"):
         course = output / "P1" / name
         contract = course / "metadata/case_metadata.json"
-        contract.parent.mkdir(parents=True)
-        contract.write_text('{"course_contract":{"version":4}}\n', encoding="utf-8")
+        write_minimal_course_contract(course)
         dicom = course / "DICOM/CT/image.dcm"
         dicom.parent.mkdir(parents=True)
         dicom.write_bytes(b"synthetic-organized-object")
+        write_bound_organize_progress(course)
         write_stage_completion_sentinel(
             course, course / ".organized", stage="organize", status="ok",
             configuration_dependency=dependency,
         )
         records.append({"patient": "P1", "course": name, "path": str(course)})
-    manifest.parent.mkdir(parents=True)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps({"courses": records}), encoding="utf-8")
-    # Require startup to advance the dependency beyond the manifest, even when
-    # its current timestamp is substantially older than that publication.
+    write_organize_ledger(output, [{**record, "course_key": record["course"],
+        "status": "validated", "reason": None, "quarantine_path": None} for record in records],
+        source_plan_dispositions=empty_source_history(tmp_path / "input"))
+    publish_synthetic_organize_closure(output, tmp_path / "input")
+    # Invalid closures are removed before DAG expansion. The configuration
+    # dependency is content-stable and need not be touched to trigger organize.
     now = time.time_ns()
     os.utime(dependency, ns=(now - 10_000_000_000,) * 2)
     os.utime(manifest, ns=(now - 5_000_000_000,) * 2)
@@ -95,7 +102,8 @@ def test_manifest_courses_schedule_organize_only_for_invalid_completion(tmp_path
         assert dependency.stat().st_mtime_ns == marker_before
     else:
         assert "checkpoint organize_courses:" in transcript, transcript
-        assert dependency.stat().st_mtime_ns > manifest.stat().st_mtime_ns
+        assert not manifest.exists()  # Invalid closure is removed before DAG expansion.
+        assert dependency.stat().st_mtime_ns == marker_before
 
 
 @pytest.mark.parametrize("with_ct", [False, True], ids=["mr_only", "ct_and_mr"])
@@ -137,7 +145,16 @@ def test_segment_course_mr_resume_uses_geometry_currentness(tmp_path, monkeypatc
     else:
         target.write_bytes(b"legacy RTSTRUCT without geometry evidence")
     assert geometry_adapter_output_current(target, source) is current
+    entry = json.loads(manifest.read_text())["models"][0]
+    seg._model_progress(_cfg(tmp_path), masks, "total_mr", nifti).commit_artifacts(mask_paths, model_entry=entry)
+    seg._save_model_configuration(_cfg(tmp_path), masks, nifti, "total_mr")
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in [target, manifest, *mask_paths]}
+    if with_ct:
+        ct_nifti = seg.load_course_contract(course).planning_ct_nifti
+        ct_entry = json.loads((ct_masks / "manifest.json").read_text())["models"][0]
+        seg._model_progress(_cfg(tmp_path), ct_masks, "total", ct_nifti).commit_artifacts(
+            [ct_masks / name for name in ct_entry["masks"]], model_entry=ct_entry)
+        seg._save_model_configuration(_cfg(tmp_path), ct_masks, ct_nifti, "total")
     if not with_ct:
         shutil.rmtree(ct)
         write_minimal_course_contract(course)

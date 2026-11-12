@@ -744,3 +744,22 @@ generate_qc_report(course, course/"qc_reports")
         "declared_differences": ["new durable progress and source-byte cache records", "completion receipt code and binding provenance", "segmentation resume audit reason text; actions and outcomes equal",
         "crop-enabled upstream admission now excludes derived crops; e1d551a rejects that workflow path",
         "campaign attempt start/finish/duration are execution timing, not scientific results"]})
+
+
+def test_conversion_sidecar_reserialization_preserves_types_and_all_artifact_bytes(tmp_path):
+    """Only formatting may change under an authenticated sidecar adoption."""
+    image = tmp_path / "image.nii.gz"
+    image.write_bytes(b"synthetic image payload")
+    sidecar = tmp_path / "image.metadata.json"
+    metadata = {"valid": True, "count": 1}
+    sidecar.write_text(json.dumps(metadata, indent=2))
+    item = ap.ArtifactItem(tmp_path / ".progress", "synthetic", {}, {},
+        base=tmp_path, code=ap.code_files("segmentation.py"), environment={})
+    item.commit_artifacts([image, sidecar], sidecar=metadata)
+    sidecar.write_text(json.dumps(metadata, sort_keys=True))
+    assert item.load_with_sidecar(sidecar)["sidecar"] == metadata
+    assert item.load() is not None
+    sidecar.write_text('{"valid":1,"count":1}')
+    assert item.load_with_sidecar(sidecar) is None
+    assert image.read_bytes() == b"synthetic image payload"
+    assert list(item.cache.root.parent.glob(item.key + "-invalid/*/commit.json"))

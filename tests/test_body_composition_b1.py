@@ -161,7 +161,7 @@ def test_b1_routing_adds_body_tasks_only_for_configured_ct_classes(tmp_path, mon
     def fake_ensure_nifti(config, input_dir, nifti_dir, force=False, dcm2niix_depth=None):
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / f"{Path(input_dir).name}.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkInt16), str(path))
         return path
 
     calls: list[dict] = []
@@ -182,7 +182,7 @@ def test_b1_routing_adds_body_tasks_only_for_configured_ct_classes(tmp_path, mon
         else:
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / f"{task}_mask.nii.gz").write_text("fake mask", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkUInt8), str(masks / f"{task}_mask.nii.gz"))
         return True
 
     written_body_json: list[str] = []
@@ -253,7 +253,7 @@ def test_b1_worker_path_bodycomp_failure_keeps_series_segmented_and_writes_no_cs
     def fake_ensure_nifti(config, input_dir, nifti_dir, force=False, dcm2niix_depth=None):
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / f"{Path(input_dir).name}.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkInt16), str(path))
         return path
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
@@ -263,7 +263,7 @@ def test_b1_worker_path_bodycomp_failure_keeps_series_segmented_and_writes_no_cs
         else:
             masks = output_path / "segmentations"
             masks.mkdir(parents=True, exist_ok=True)
-            (masks / f"{task}_mask.nii.gz").write_text("fake mask", encoding="utf-8")
+            sitk.WriteImage(sitk.Image([3, 3, 3], sitk.sitkUInt8), str(masks / f"{task}_mask.nii.gz"))
         return True
 
     def boom(**kwargs):
