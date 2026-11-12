@@ -359,15 +359,16 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
                 f.write(name); f.flush(); os.fsync(f.fileno())
             while True: time.sleep(.1)
     extract = ct.extract_ct_roi_arms
-    active_stage = None
+    active_stage = active_key = None
     def counted_extract(*args, **kwargs):
-        global active_stage
+        global active_stage, active_key
         caller = inspect.currentframe().f_back.f_locals
         task = caller.get("task_params") or caller.get("task")
         if isinstance(task, dict) and task.get("__progress_root__"):
             item = ep.task_item(task)
             stage = "robustness" if "robustness" in task["__progress_root__"] else "radiomics"
             active_stage = stage
+            active_key = item.key
             event({"event":"extract", "stage":stage, "key":item.key})
             if stage == "robustness" and os.environ.get("WS515_KILL_POINT") == "robustness_later":
                 counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"]) if line.strip()]
@@ -381,6 +382,11 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         from radiomics import featureextractor
         original_execute = featureextractor.RadiomicsFeatureExtractor.execute
         def observed_execute(self, *args, **kwargs):
+            caller = inspect.currentframe().f_back.f_locals
+            arm_item = caller.get('item')
+            if active_stage and arm_item is not None:
+                event({'event':'scalar_extract', 'stage':active_stage, 'key':arm_item.key,
+                       'roi_key':active_key, 'arm':caller.get('arm')})
             value = original_execute(self, *args, **kwargs)
             if active_stage == "robustness" and os.environ.get("WS515_KILL_POINT") == "robustness_later":
                 counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"]) if line.strip()]
@@ -404,11 +410,12 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         from dataclasses import asdict
         original_roi = parallel._extract_one_uncached
         def native_roi(task):
-            global active_stage
+            global active_stage, active_key
             active_stage = 'radiomics'
             identity = asdict(task)
             identity.pop('course_dir'); identity.pop('rs_path')
-            event({'event':'extract', 'stage':'radiomics', 'key':ep.digest(identity),
+            active_key = ep.digest(identity)
+            event({'event':'extract', 'stage':'radiomics', 'key':active_key,
                    'backend':'native_processpool', 'pid':os.getpid()})
             return original_roi(task)
         parallel._extract_one_uncached = native_roi
@@ -423,6 +430,8 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         result = original_commit(self, value)
         root = str(self.cache.root)
         if "/arms/" in root:
+            event({'event':'arm_commit', 'stage':'robustness' if '.robustness-progress' in root else 'radiomics',
+                   'key':self.key})
             return result
         stage = "robustness" if ".robustness-progress" in root else (
             "reduction" if "/reductions/" in root else "radiomics")
@@ -462,12 +471,18 @@ def test_real_phase_b_three_sigkill_legs(tmp_path, backend):
     shutil.copytree(clean, pipeline.output, symlinks=True)
     pipeline.events.unlink()
     previous_committed, previous_counts = set(), Counter()
+    previous_arms, previous_scalar_counts = set(), Counter()
     legs = ['native_roi' if backend == 'native_processpool' else 'conda_stream',
             'robustness_later', 'aggregate_reduction']
     for leg in legs:
         pipeline.run(target, kill=leg)
         committed = {(e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "commit"}
         before = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
+        arms = {(e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'arm_commit'}
+        scalar_counts = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'scalar_extract')
+        for key in previous_arms:
+            assert scalar_counts[key] == previous_scalar_counts[key], key
+        previous_arms, previous_scalar_counts = arms, scalar_counts
         for key in previous_committed:
             if key[0] in {"radiomics", "robustness", "reduction"}:
                 assert before[key] == previous_counts[key], key
@@ -481,6 +496,10 @@ def test_real_phase_b_three_sigkill_legs(tmp_path, backend):
         pipeline.env["WS516_COMMITTED"] = json.dumps(sorted(committed))
     pipeline.run(target)
     after = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
+    final_scalar_counts = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'scalar_extract')
+    assert previous_arms
+    for key in previous_arms:
+        assert final_scalar_counts[key] == previous_scalar_counts[key], key
     for key in committed:
         if key[0] in {"radiomics", "robustness", "reduction"}:
             assert after[key] == before[key], key
@@ -518,6 +537,7 @@ def test_real_phase_b_three_sigkill_legs(tmp_path, backend):
         Path(destination, f"interrupt-resume-evidence-{backend}.json").write_text(json.dumps({
             'backend': backend, "legs": legs,
             "repeated_committed_extractions": 0, "worker_only_scientific_jobs": 0,
+            'repeated_committed_scalar_arms': 0, 'committed_scalar_arm_keys': len(previous_arms),
             "byte_equal_parquet": {"radiomics_ct.parquet": hashlib.sha256(control_bytes).hexdigest(),
                 "radiomics_robustness_ct.parquet": hashlib.sha256(robustness_bytes).hexdigest(),
                 "raw_values.parquet": hashlib.sha256(raw).hexdigest()}, "readback": readback}, indent=2) + "\n")
@@ -554,8 +574,11 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
     dependencies = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
         for p in (pipeline.source / '.snakemake/rtpipeline-config-dependencies').rglob('*.json')}
     before = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'extract')
+    before_scalar = Counter((e['roi_key'], e['arm']) for e in pipeline.event_rows()
+        if e['event'] == 'scalar_extract' and e['stage'] == 'radiomics')
+    assert before_scalar
     old_keys = {root: {json.loads(p.read_text())['item_key']
-        for p in (root / 'metadata/.radiomics_ct-progress').rglob('commit.json')}
+        for p in (root / 'metadata/.radiomics_ct-progress').glob('*/*/commit.json')}
         for root in (valid, stale)}
     assert all(old_keys.values())
     sentinel = stale / '.radiomics_done'
@@ -622,6 +645,10 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
     if mutation == 'code':
         expected_keys |= old_keys[valid]
     assert changed_keys == expected_keys, (mutation, changed_keys, expected_keys)
+    after_scalar = Counter((e['roi_key'], e['arm']) for e in pipeline.event_rows()
+        if e['event'] == 'scalar_extract' and e['stage'] == 'radiomics')
+    scalar_delta = after_scalar - before_scalar
+    assert scalar_delta == Counter({key: 1 for key in before_scalar if key[0] in expected_keys})
     for key in expected_keys:
         assert after['radiomics', key] == before['radiomics', key] + 1
     reason = {'source': 'EXTRACTION_INPUTS_CHANGED', 'code': 'EXTRACTION_CODE_CHANGED',
@@ -643,6 +670,8 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
             'mutation': mutation, 'peer_bytes_and_mtimes_unchanged': mutation != 'code',
             'shared_dependencies_unchanged_bytes_and_mtimes': True,
             'recomputed_keys': sorted(changed_keys), 'reason_code': reason,
+            'recomputed_scalar_arms': [{'roi_key':key[0], 'arm':key[1], 'calls':count}
+                for key,count in sorted(scalar_delta.items())],
             'reason_evidence': reason_evidence, 'parameter_scope': 'public CLI --course-filter' if mutation == 'parameter' else None,
             'readback': readback}, indent=2) + '\n')
         evidence_log = Path(destination, f'production-evidence/two-course-{mutation}.log')
