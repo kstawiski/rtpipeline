@@ -388,7 +388,20 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
     assert table.dose_grid_coverage_reason.notna().all()
     assert table.dose_grid_coverage_reason_code.isna().all()
     projected = table[baseline['columns']]
-    assert projected.dtypes.astype(str).tolist() == baseline['dtypes']
+    # pandas 2 stored text as object; pandas 3 reads the pinned text fields as
+    # str. Only actual string-valued columns may use that semantic equivalence.
+    for column, expected_dtype in zip(baseline['columns'], baseline['dtypes']):
+        actual_dtype = str(projected[column].dtype)
+        if expected_dtype == 'object' and pd.api.types.is_string_dtype(projected[column]):
+            assert projected[column].dropna().map(lambda value: isinstance(value, str)).all()
+        else:
+            assert actual_dtype == expected_dtype, (column, actual_dtype, expected_dtype)
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    schema = pq.read_schema(course/'dvh_metrics.parquet')
+    for column in table:
+        if pd.api.types.infer_dtype(table[column], skipna=True) == "string":
+            assert schema.field(column).type == pa.large_string(), column
 
     def cell(value):
         if value is None or (isinstance(value, float) and np.isnan(value)):
