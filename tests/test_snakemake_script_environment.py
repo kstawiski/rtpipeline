@@ -265,3 +265,36 @@ def test_script_targets_have_no_future_import() -> None:
         "Snakemake script targets must not use a __future__ import "
         f"(preamble is prepended before them): {offenders}"
     )
+
+
+def test_organize_completion_delegate_rejects_changed_output_and_preserves_current_course(tmp_path):
+    from rtpipeline.workflow_delegate import (
+        _validate_organize, _revoke_invalid_organize_completions)
+    output = tmp_path / "output"
+    dependency = materialize_stage_dependency(tmp_path / "deps", "organize", {"synthetic": True})
+    records = []
+    for name in ("C1", "C2"):
+        course = output / "P1" / name
+        write_minimal_course_contract(course)
+        dicom = course / "DICOM/CT/image.dcm"
+        dicom.parent.mkdir(parents=True)
+        dicom.write_bytes(b"synthetic organized DICOM inventory")
+        write_bound_organize_progress(course)
+        write_stage_completion_sentinel(course, course / ".organized", stage="organize",
+            status="ok", configuration_dependency=dependency)
+        records.append({"patient": "P1", "course": name, "course_key": name,
+            "path": str(course), "status": "validated", "reason": None,
+            "quarantine_path": None})
+    write_organize_ledger(output, records)
+    current = output / "P1/C1/.organized"
+    original = current.read_bytes(), current.stat().st_mtime_ns
+    validation = _validate_organize(output, quarantine_invalid=False, require_completions=True)
+    assert len(validation["validated_courses"]) == 2 and not validation["invalid_courses"]
+    changed = output / "P1/C2/metadata/case_metadata.json"
+    changed.write_bytes(changed.read_bytes() + b" ")
+    validation = _validate_organize(output, quarantine_invalid=False, require_completions=True)
+    assert [entry["course"] for entry in validation["validated_courses"]] == ["C1"]
+    assert [entry["course"] for entry in validation["invalid_courses"]] == ["C2"]
+    _revoke_invalid_organize_completions(output)
+    assert (current.read_bytes(), current.stat().st_mtime_ns) == original
+    assert not (output / "P1/C2/.organized").exists()

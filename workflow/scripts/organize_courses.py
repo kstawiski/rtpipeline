@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from rtpipeline.snakemake_delegate import invoke, runtime_environment
-from rtpipeline.stage_completion import validate_stage_completion_sentinel
 
 
 MANIFEST_SCHEMA = "rtpipeline-organized-course-manifest-v2"
@@ -82,14 +81,11 @@ def _revoke_all_organized_flags(output_dir: Path) -> None:
         (course_dir / ".organized").unlink(missing_ok=True)
 
 
-def _revoke_invalid_organized_flags(output_dir: Path) -> None:
-    for patient, course, course_dir in _iter_course_dirs(output_dir):
-        sentinel = course_dir / ".organized"
-        try:
-            validate_stage_completion_sentinel(sentinel, expected_stage="organize",
-                expected_patient=patient, expected_course=course)
-        except (OSError, ValueError, KeyError, TypeError):
-            sentinel.unlink(missing_ok=True)
+def _revoke_invalid_organized_flags(workflow: Any, output_dir: Path) -> None:
+    invoke(python=str(workflow.params.python),
+        operation="revoke-invalid-organize-completions",
+        arguments=("--output-dir", str(output_dir)),
+        result_dir=output_dir / "_COURSES", env=runtime_environment(workflow.params))
 
 
 def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
@@ -115,7 +111,8 @@ def _delegate_validation(
     payload = invoke(
         python=str(workflow.params.python),
         operation="validate-organize",
-        arguments=("--output-dir", str(output_dir), "--mode", mode),
+        arguments=("--output-dir", str(output_dir), "--mode", mode,
+                   *(("--require-completions",) if mode == "check" else ())),
         result_dir=result_dir,
         env=runtime_environment(workflow.params),
     )
@@ -275,16 +272,8 @@ def _existing_manifest_is_valid(
                 != expected_clinical_hash
             ):
                 return False
-            completion = validate_stage_completion_sentinel(
-                course_dir / ".organized",
-                expected_stage="organize",
-                expected_patient=str(entry["patient"]),
-                expected_course=str(entry["course"]),
-            )
-            if (
-                completion.get("configuration_dependency_sha256")
-                != expected_configuration_hash
-            ):
+            if (entry.get("organized_completion_configuration_sha256")
+                    != expected_configuration_hash):
                 return False
         except Exception:
             (course_dir / ".organized").unlink(missing_ok=True)
@@ -367,7 +356,7 @@ def main(workflow: Any) -> None:
     # Revoke the cohort publication and invalid course receipts. Independently
     # valid courses retain their bytes and mtimes through checkpoint recovery.
     manifest_path.unlink(missing_ok=True)
-    _revoke_invalid_organized_flags(output_dir)
+    _revoke_invalid_organized_flags(workflow, output_dir)
     command = [
         str(workflow.params.python),
         "-m",

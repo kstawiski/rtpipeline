@@ -52,7 +52,7 @@ def _validated_course_path(
 
 
 def _validate_organize(
-    output_dir: Path, *, quarantine_invalid: bool
+    output_dir: Path, *, quarantine_invalid: bool, require_completions: bool = False
 ) -> dict[str, Any]:
     from .course_contract import load_course_contract
     from .organize_ledger import (
@@ -66,7 +66,7 @@ def _validate_organize(
     output_dir = Path(output_dir)
     ledger = read_organize_ledger(output_dir)
     entries = [dict(entry) for entry in ledger["courses"]]
-    validated_courses: list[dict[str, str]] = []
+    validated_courses: list[dict[str, Any]] = []
     invalid_courses: list[dict[str, Any]] = []
     quarantine_failures: list[str] = []
 
@@ -86,6 +86,12 @@ def _validate_organize(
             if (course_path / ".organize-progress.json").is_file():
                 from .organize import validate_organized_course_progress
                 validate_organized_course_progress(course_path)
+            completion = None
+            if require_completions:
+                from .stage_completion import validate_stage_completion_sentinel
+                completion = validate_stage_completion_sentinel(
+                    course_path / ".organized", expected_stage="organize",
+                    expected_patient=patient, expected_course=course)
         except Exception as exc:
             reason = f"manifest validation failed: {type(exc).__name__}: {exc}"
             invalid = {
@@ -133,7 +139,9 @@ def _validate_organize(
             continue
 
         validated_courses.append(
-            {"patient": patient, "course": course, "path": str(course_path)}
+            {"patient": patient, "course": course, "path": str(course_path),
+             **({"organized_completion_configuration_sha256":
+                 completion["configuration_dependency_sha256"]} if completion is not None else {})}
         )
 
     if quarantine_invalid:
@@ -165,6 +173,28 @@ def _validate_organize(
         "validated_courses": validated_courses,
         "invalid_courses": invalid_courses,
     }
+
+
+def _revoke_invalid_organize_completions(output_dir: Path) -> dict[str, Any]:
+    from .stage_completion import validate_stage_completion_sentinel
+    revoked = []
+    if not Path(output_dir).is_dir():
+        return {"revoked_courses": revoked}
+    for patient in sorted(Path(output_dir).iterdir()):
+        if not patient.is_dir() or patient.name.startswith(("_", ".")) or patient.name in {
+            "Data", "Data_Snakemake_fallback", "Logs_Snakemake_fallback"}:
+            continue
+        for course in sorted(patient.iterdir()):
+            if not course.is_dir() or course.name.startswith("_"):
+                continue
+            sentinel = course / ".organized"
+            try:
+                validate_stage_completion_sentinel(sentinel, expected_stage="organize",
+                    expected_patient=patient.name, expected_course=course.name)
+            except (OSError, ValueError, KeyError, TypeError):
+                sentinel.unlink(missing_ok=True)
+                revoked.append(str(course))
+    return {"revoked_courses": revoked}
 
 
 def _assess_segmentation(course_dir: Path) -> dict[str, Any]:
@@ -315,6 +345,10 @@ def _parser() -> argparse.ArgumentParser:
         "--mode", choices=("check", "quarantine"), required=True
     )
 
+    organize.add_argument("--require-completions", action="store_true")
+    revoke_organize = subparsers.add_parser("revoke-invalid-organize-completions")
+    revoke_organize.add_argument("--output-dir", required=True)
+
     dvh_resume = subparsers.add_parser("validate-dvh-resume")
     dvh_resume.add_argument("--output-dir", required=True)
     dvh_resume.add_argument("--configfile", required=True)
@@ -371,8 +405,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if operation == "validate-organize":
             payload = _validate_organize(
-                Path(args.output_dir), quarantine_invalid=args.mode == "quarantine"
+                Path(args.output_dir), quarantine_invalid=args.mode == "quarantine",
+                require_completions=args.require_completions,
             )
+        elif operation == "revoke-invalid-organize-completions":
+            payload = _revoke_invalid_organize_completions(Path(args.output_dir))
         elif operation == "validate-dvh-resume":
             from .dvh_generation import preflight
             payload = preflight(Path(args.output_dir), Path(args.configfile), args.custom_config)
