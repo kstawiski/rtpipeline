@@ -212,10 +212,24 @@ def _read_ledger(course_dir: Path) -> dict[str, Any]:
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    from .artifact_progress import staged_file
+    with staged_file(path) as temporary:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        json.loads(temporary.read_text())
+
+
+def _ct_bytes(course_dir):
+    from .artifact_progress import inventory
+    ct_dir, _, _ = planning_ct_identity(course_dir)
+    return inventory((p for p in ct_dir.iterdir() if p.is_file()), ct_dir)
+
+
+def _import_progress(course_dir, name, record):
+    from .artifact_progress import ArtifactItem, code_files
+    return ArtifactItem(Path(course_dir) / ".rtsegmentator-progress/imports", name,
+        {"url": record.get("url"), "model": name, "generator": record.get("generator"),
+         "package_sha256": record.get("package_sha256")}, _ct_bytes(course_dir),
+        base=course_dir, code=code_files("rtsegmentator.py", "segmenters/rtsegmentator_client.py"), environment={})
 
 
 def import_result_package(
@@ -328,6 +342,14 @@ def import_result_package(
     try:
         for imported, data, model_manifest in staged:
             target = root / output_dir_name(imported.model)
+            previous = ledger["models"].get(imported.model) or {}
+            same_package = (previous.get("package_sha256") == package_sha256
+                and previous.get("url") == url and previous.get("planning_ct_bytes") == _ct_bytes(course_dir)
+                and previous.get("outcome") == imported.outcome)
+            if same_package:
+                committed = _import_progress(course_dir, imported.model, previous).load()
+                if committed is not None and (data is not None or not target.exists()):
+                    continue
             if data is None:
                 if target.exists():
                     os.replace(target, staging / f"{target.name}.removed")
@@ -348,9 +370,14 @@ def import_result_package(
                 "url": url,
                 "planning_ct_series_instance_uid": series_uid,
                 "planning_ct_sop_instance_set_sha256": ct_digest,
+                "planning_ct_bytes": _ct_bytes(course_dir),
                 "package_sha256": package_sha256,
-                "imported_at": _utc_now(),
+                "imported_at": previous.get("imported_at") if same_package and data is None else _utc_now(),
             }
+            _write_json_atomic(course_dir / IMPORT_LEDGER, ledger)
+            paths = [p for p in target.iterdir() if p.is_file()] if data is not None else []
+            _import_progress(course_dir, imported.model, ledger["models"][imported.model]).commit_artifacts(
+                paths, ledger_entry=ledger["models"][imported.model])
             logger.info("Imported RTsegmentator %s for %s: %s (%d ROI)", imported.model, course_dir,
                         imported.outcome, len(imported.roi_names))
         _write_json_atomic(course_dir / IMPORT_LEDGER, ledger)
@@ -383,10 +410,17 @@ def _current_models(course_dir: Path, settings: RTsegmentatorSettings, series_ui
                 or record.get("planning_ct_sop_instance_set_sha256") != digest
                 or record.get("url") != settings.url):
             continue
+        if record.get("planning_ct_bytes") != _ct_bytes(course_dir):
+            continue
+        committed = _import_progress(course_dir, name, record).load()
+        if committed is None or committed.get("ledger_entry") != record:
+            continue
         if record.get("outcome") == "rtstruct":
             if not _import_intact(Path(course_dir) / CUSTOM_MODELS_DIRNAME / output_dir_name(name), record):
                 continue
         elif record.get("outcome") != "no_structures_found":
+            continue
+        elif (Path(course_dir) / CUSTOM_MODELS_DIRNAME / output_dir_name(name)).exists():
             continue
         current.add(name)
     return current
@@ -451,28 +485,59 @@ def run_for_course(
     client = client or build_client(settings)
     files = client_module.collect_files([ct_dir])
     try:
-        session = client.upload_files(files)
-        upload = client.assess(session, poll=max(1.0, settings.poll_seconds / 5))
-        chosen = client_module.select_series(upload.get("series", []), series_uids=[series_uid])
-        if len(chosen) != 1:
-            raise RTsegmentatorError(f"RTsegmentator assessed {len(chosen)} series for {series_uid}; expected one")
-        batch = client.submit(upload["upload_id"], [chosen[0]["key"]], pending)
-        jobs = batch.get("jobs") or []
-        if len(jobs) != 1:
-            raise RTsegmentatorError(f"RTsegmentator created {len(jobs)} jobs for one series")
-        skipped = jobs[0].get("skipped_models") or {}
-        if skipped:
-            raise RTsegmentatorError(f"RTsegmentator skipped model(s) for this series: {skipped}")
-        job_id = str(jobs[0].get("id") or "")
-        if not _JOB_ID.match(job_id):
-            raise RTsegmentatorError(f"RTsegmentator returned an invalid job ID: {job_id!r}")
+        from .artifact_progress import ArtifactItem, code_files
+        progress_root = course_dir / ".rtsegmentator-progress/submissions"
+        def submission_item(root):
+            return ArtifactItem(root, "job", settings.scientific_identity(),
+                _ct_bytes(course_dir), base=course_dir,
+                code=code_files("rtsegmentator.py", "segmenters/rtsegmentator_client.py"), environment={})
+        submission = submission_item(progress_root)
+        forced_record = None
+        forced_path = course_dir / ".rtsegmentator-progress/forced-current.json"
+        if force or settings.force:
+            from .durable_progress import final_result_writer
+            import uuid
+            try:
+                forced_record = json.loads(forced_path.read_text())
+            except (OSError, ValueError):
+                forced_record = None
+            if (not forced_record or forced_record.get("complete") is not False or
+                    forced_record.get("binding") != submission.binding.as_dict()):
+                forced_record = {"binding": submission.binding.as_dict(), "complete": False,
+                                 "namespace": uuid.uuid4().hex}
+                final_result_writer(forced_path, forced_record)
+            submission = submission_item(progress_root / forced_record["namespace"])
+        submitted = submission.load()
+        if submitted is None:
+            session = client.upload_files(files)
+            upload = client.assess(session, poll=max(1.0, settings.poll_seconds / 5))
+            chosen = client_module.select_series(upload.get("series", []), series_uids=[series_uid])
+            if len(chosen) != 1:
+                raise RTsegmentatorError(f"RTsegmentator assessed {len(chosen)} series for {series_uid}; expected one")
+            batch = client.submit(upload["upload_id"], [chosen[0]["key"]], pending)
+            jobs = batch.get("jobs") or []
+            if len(jobs) != 1:
+                raise RTsegmentatorError(f"RTsegmentator created {len(jobs)} jobs for one series")
+            skipped = jobs[0].get("skipped_models") or {}
+            if skipped:
+                raise RTsegmentatorError(f"RTsegmentator skipped model(s) for this series: {skipped}")
+            job_id = str(jobs[0].get("id") or "")
+            if not _JOB_ID.match(job_id):
+                raise RTsegmentatorError(f"RTsegmentator returned an invalid job ID: {job_id!r}")
+            submitted = submission.commit_artifacts([], upload_id=upload["upload_id"],
+                job_id=job_id, models=pending)
+        job_id = submitted["job_id"]
         logger.info("RTsegmentator job %s submitted for %s with %s", job_id, course_dir, ", ".join(pending))
         client.wait(job_id, poll=settings.poll_seconds, timeout=settings.job_timeout_seconds)
         with tempfile.TemporaryDirectory(prefix="rtseg-", dir=course_dir) as scratch:
             package = client.download(job_id, Path(scratch) / f"{job_id}.zip")
             # The packaged manifest must be the one the portal serves for this job.
             client_module.verify_against_portal(client, job_id, package)
-            return import_result_package(package, course_dir, models=pending, url=settings.url)
+            imported = import_result_package(package, course_dir, models=pending, url=settings.url)
+            if forced_record is not None:
+                forced_record["complete"] = True
+                final_result_writer(forced_path, forced_record)
+            return imported
     except client_module.ClientError as exc:
         raise RTsegmentatorError(f"RTsegmentator request failed for {course_dir}: {exc}") from exc
 

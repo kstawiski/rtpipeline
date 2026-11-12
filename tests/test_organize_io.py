@@ -14,7 +14,8 @@ from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from rtpipeline import meta, organize, segmentation, utils
 from rtpipeline.config import PipelineConfig
 from rtpipeline.dicom_copy import DicomCopyConfig, DicomCopyManager
-from organize_io_fixture import baseline, synthetic, tree_bytes, publish_manifest, synthetic_ct_conversion
+from organize_io_fixture import (baseline, synthetic, tree_bytes, publish_manifest,
+                                synthetic_ct_conversion, without_durable_progress)
 
 
 @pytest.mark.parametrize('modality', ['CT', 'RTSTRUCT', 'RTPLAN', 'RTDOSE', 'RTRECORD'])
@@ -145,7 +146,7 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     courses_before = before['organize'].organize_and_merge(config, metadata_snapshot=snapshot_before)
     before['meta'].export_metadata(config, source_snapshot=snapshot_before)
     publish_manifest(courses_before, out)
-    expected = tree_bytes(out)
+    expected = without_durable_progress(tree_bytes(out))
     expected_workbooks = {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.xlsx')}
     expected_warnings = [(r.levelno, r.getMessage()) for r in caplog.records]
     caplog.clear()
@@ -183,13 +184,26 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     courses_after = organize.organize_and_merge(config, metadata_snapshot=snapshot_after)
     meta.export_metadata(config, source_snapshot=snapshot_after)
     publish_manifest(courses_after, out)
-    actual = tree_bytes(out)
+    actual = without_durable_progress(tree_bytes(out))
     # The fixed workbook clock permits an additional exact ZIP-byte check.
     assert {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.xlsx')} == expected_workbooks
     assert set(actual) == set(expected)
     for name in expected:
         if name == '_CACHE/dicom_headers.json':
-            assert actual[name] == json.dumps(json.loads(expected[name]), indent=2, sort_keys=True).encode()
+            headers = json.loads(actual[name])
+            from rtpipeline.durable_progress import file_sha256
+            for source, row in headers.items():
+                assert row.pop('_source_sha256') == file_sha256(source)
+            assert headers == json.loads(expected[name])
+        elif name == '_CACHE/metadata_export.json':
+            old, new = json.loads(expected[name]), json.loads(actual[name])
+            assert new.pop('cache_key_sha256') == meta._cache_key(snapshot_after['identity'])
+            old.pop('cache_key_sha256')
+            assert new['source'].pop('inventory_sha256') == snapshot_after['identity'].digest
+            old['source'].pop('inventory_sha256')
+            new.pop('manifest_sha256'); old.pop('manifest_sha256')
+            assert new == old
+            assert meta._load_cached_outputs(config, meta._export_dir(out), snapshot_after['identity']) is not None
         elif name == '_CACHE/sop_uid_registry.json':
             old_registry = json.loads(expected[name])
             registry = json.loads(actual[name])
@@ -210,7 +224,12 @@ def test_organize_tree_matches_pinned_baseline(tmp_path, monkeypatch, caplog, co
     # outputs retain the pinned baseline's values and have no such evidence.
     expected_courses = [dict(asdict(course), planning_ct_conversion={}) for course in courses_before]
     assert [asdict(course) for course in courses_after] == expected_courses
-    assert asdict(snapshot_before['identity']) == asdict(snapshot_after['identity'])
+    # The current source identity additionally hashes source bytes. The source
+    # namespace, scope and projected scientific rows still match the baseline.
+    before_identity, after_identity = asdict(snapshot_before['identity']), asdict(snapshot_after['identity'])
+    before_identity.pop('digest'); after_identity.pop('digest')
+    assert before_identity == after_identity
+    assert snapshot_after['identity'] == meta._source_inventory_identity(root, None, max_workers=1)[0]
     assert [asdict(row) for row in snapshot_before['results']] == [asdict(row) for row in snapshot_after['results']]
     assert snapshot_before['candidates'] == snapshot_after['candidates']
     assert set((r.levelno, r.getMessage()) for r in caplog.records) == set(expected_warnings)
@@ -369,7 +388,7 @@ def test_organize_scheduling_determinism(tmp_path, monkeypatch, caplog, processe
             assert len(uids[0] & uids[1]) == 3
         meta.export_metadata(config, source_snapshot=snapshot)
         publish_manifest(courses, out)
-        actual = tree_bytes(out)
+        actual = without_durable_progress(tree_bytes(out))
         # Frozen clock: compare raw ZIP bytes too, not just normalized XML.
         actual.update({str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.xlsx')})
         warnings = {(r.levelno, r.getMessage()) for r in caplog.records}

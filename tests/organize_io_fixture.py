@@ -170,6 +170,17 @@ def tree_bytes(root):
     return result
 
 
+def without_durable_progress(tree):
+    """Exclude new operational transactions from historical scientific parity.
+
+    Item transactions are independently read back by Phase C tests. All legacy
+    scientific files and caches stay in this comparison.
+    """
+    names = {".organize-progress", ".organize-progress.json", ".conversion-progress",
+             "copy-progress", "metadata-progress"}
+    return {name: value for name, value in tree.items() if not names.intersection(Path(name).parts)}
+
+
 def publish_manifest(courses, output):
     """Exercise the workflow's actual manifest serializer without launching it."""
     import runpy

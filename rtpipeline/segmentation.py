@@ -1016,7 +1016,26 @@ def _ensure_ct_nifti(
         course_key=course_key,
         stack_override=stack_override,
     )
+    from .artifact_progress import ArtifactItem, code_files, inventory, staged_file, write_json
+    progress = ArtifactItem(nifti_dir / ".conversion-progress", str(ct_dir),
+        {"command": config.dcm2niix_cmd, "activation": config.conda_activate,
+         "depth": dcm2niix_depth, "stack_override": effective_stack_override, "require_hygiene": require_hygiene},
+        {"dicom": inventory(p for p in ct_dir.iterdir() if p.is_file()),
+         "rtstruct": inventory([authoritative_rtstruct]) if authoritative_rtstruct else {}},
+        base=nifti_dir, code=code_files("segmentation.py", "ct_series_hygiene.py",
+            "nonuniform_ct_conversion.py", "nifti_provenance.py"))
+    committed = progress.load()
+    if committed is not None and not force:
+        expected_sidecar = committed["sidecar"]
+        if any(existing_sidecar.get(key) != value for key, value in expected_sidecar.items()):
+            write_json(meta_path, expected_sidecar, indent=2)
+            existing_sidecar = expected_sidecar
+        if conversion_evidence is not None and isinstance(existing_sidecar.get("nifti_conversion"), dict):
+            conversion_evidence.update(existing_sidecar["nifti_conversion"])
+        return target
     regenerated = not target.exists() or force
+    if committed is None:
+        regenerated = True
     existing_conversion = (
         existing_sidecar.get("nifti_conversion")
         if isinstance(existing_sidecar.get("nifti_conversion"), dict)
@@ -1138,9 +1157,10 @@ def _ensure_ct_nifti(
             # The sidecar digest commits this publication. If its later write
             # is interrupted, the old digest cannot authorize the new bytes;
             # the next request must regenerate them, for every conversion method.
-            if target.exists():
-                target.unlink()
-            shutil.move(str(generated), str(target))
+            with staged_file(target) as temporary:
+                shutil.copy2(generated, temporary)
+                import SimpleITK as sitk
+                sitk.ReadImage(str(temporary))
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
     elif isinstance(existing_sidecar.get("nifti_conversion"), dict):
@@ -1158,7 +1178,8 @@ def _ensure_ct_nifti(
         existing_sidecar=existing_sidecar,
     )
     meta_path = nifti_dir / f"{base}.metadata.json"
-    meta_path.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    write_json(meta_path, metadata, indent=2)
+    progress.commit_artifacts([target], sidecar=metadata)
     return target
 
 
@@ -1339,15 +1360,169 @@ def _write_manifest_atomic(path: Path, data: dict) -> None:
     The temp name is PID-qualified so concurrent same-dir writers cannot collide, and any temp
     left behind by a failed write is removed in ``finally`` (the successful ``os.replace`` consumes
     the temp, so cleanup is a no-op on the happy path)."""
-    tmp_path = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    from .artifact_progress import write_json
+    write_json(path, data, indent=2)
+
+
+def _model_progress(config, base_dir, model, source_nifti, extra_args=()):
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    from .stage_completion import environment_record
+    settings = {key: getattr(config, key, None) for key in (
+        "totalseg_cmd", "totalseg_device", "totalseg_fast", "totalseg_force_split",
+        "totalseg_roi_subset", "conda_activate")}
+    settings["extra_args"] = list(extra_args or ())
+    weight_files = _totalseg_weights_identity(config, model, extra_args)
+    item = ArtifactItem(base_dir / ".model-progress", model, settings,
+        {"image": _file_sha256(source_nifti), "weights": weight_files}, base=base_dir,
+        code=code_files("segmentation.py", "rtstruct_geometry.py"),
+        environment=environment_record(("TotalSegmentator", "torch", "nnunetv2", "SimpleITK")))
+    return item
+
+
+def _save_model_configuration(config, base_dir, source_nifti, model, extra_args=()):
+    from .artifact_progress import write_json
+    names = ("totalseg_cmd", "totalseg_device", "totalseg_fast", "totalseg_force_split",
+             "totalseg_roi_subset", "conda_activate", "totalseg_weights_dir", "cbct_totalseg_extra_args")
+    from .extraction_progress import scientific
+    path = base_dir / ".model-progress/settings.json"
     try:
-        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
-    finally:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+        model_args = json.loads(path.read_text()).get("extra_args_by_model", {})
+    except (OSError, ValueError):
+        model_args = {}
+    model_args[model] = list(extra_args or ())
+    write_json(path, {
+        "configuration": scientific({name: getattr(config, name, None) for name in names}),
+        "source": str(source_nifti), "extra_args_by_model": model_args}, indent=2)
+
+
+def _restore_committed_model(base_dir, model, committed, source_nifti, provenance=None):
+    """Recover inventory metadata without repeating validated inference."""
+    if committed is None:
+        return
+    import uuid
+    from .durable_progress import _fsync_dir
+    entry = committed["model_entry"]
+    expected = {base_dir / name for name in entry["masks"]}
+    for path in base_dir.glob(f"{model}--*.nii*"):
+        if path not in expected and "_cropped" not in path.name:
+            quarantine = base_dir / ".model-progress/orphans" / uuid.uuid4().hex
+            quarantine.mkdir(parents=True)
+            os.replace(path, quarantine / path.name)
+            _fsync_dir(quarantine)
+            _fsync_dir(base_dir)
+    manifest_path = base_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        if not isinstance(manifest, dict):
+            manifest = {}
+    except (OSError, ValueError):
+        manifest = {}
+    current = next((item for item in manifest.get("models", []) if isinstance(item, dict) and item.get("model") == model), None)
+    if current is None or current.get("masks") != entry["masks"] or any(
+            manifest.get(key) != value for key, value in (provenance or {}).items()):
+        previous = [item for item in manifest.get("models", []) if isinstance(item, dict) and item.get("model") != model]
+        manifest.update(provenance or {})
+        manifest.update(source_nifti=source_nifti.name, models=[*previous, entry])
+        _write_manifest_atomic(manifest_path, manifest)
+
+
+def _totalseg_weights_identity(config, model, extra_args=(), _seen=(), *, weights_root=None):
+    """Read installed task routing without importing or executing inference."""
+    import ast
+    from importlib.metadata import distribution, PackageNotFoundError
+    from .artifact_progress import inventory
+    root = Path(weights_root or os.environ.get("TOTALSEG_WEIGHTS_PATH") or getattr(config, "totalseg_weights_dir", None) or
+                (Path(os.environ.get("TOTALSEG_HOME_DIR", Path.home() / ".totalsegmentator")) / "nnunet/results"))
+    ids, implementation, crops, crop_models = set(), None, [], []
+    context = {"task": model, "fast": bool(getattr(config, "totalseg_fast", False)), "fastest": False}
+    def condition(node):
+        if isinstance(node, ast.Name):
+            return context.get(node.id)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            value = condition(node.operand)
+            return None if value is None else not value
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right = condition(node.left), condition(node.comparators[0])
+            if left is not None and right is not None:
+                if isinstance(node.ops[0], ast.Eq): return left == right
+                if isinstance(node.ops[0], ast.NotEq): return left != right
+        return None
+    def assignments(statements):
+        for statement in statements:
+            if isinstance(statement, ast.If):
+                value = condition(statement.test)
+                assignments(statement.body if value is True else statement.orelse if value is False else [*statement.body, *statement.orelse])
+            elif isinstance(statement, ast.Assign):
+                try:
+                    value = ast.literal_eval(statement.value)
+                except (ValueError, TypeError):
+                    continue
+                names = {target.id for target in statement.targets if isinstance(target, ast.Name)}
+                if "task_id" in names:
+                    ids.update([value] if type(value) is int else value if isinstance(value, list) else [])
+                if "crop" in names and isinstance(value, list): crops.extend(value)
+                if "crop_model" in names and isinstance(value, str): crop_models.append(value)
+    try:
+        source = Path(distribution("TotalSegmentator").locate_file("totalsegmentator/python_api.py"))
+        implementation = _file_sha256(source)
+        tree = ast.parse(source.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if not (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and
+                    test.left.id == "task" and any(isinstance(v, ast.Constant) and v.value == model for v in test.comparators)):
+                continue
+            assignments(node.body)
+    except PackageNotFoundError:
+        pass
+    extra_args = set(extra_args or ())
+    if crops or getattr(config, "totalseg_roi_subset", None):
+        ids.add(300 if {"body_trunc", "body_extremities"}.intersection(crops) else
+                852 if model.endswith("_mr") else 297 if {"--robust_crop", "--robust_rs"}.intersection(extra_args) else 298)
+    elif "--body_seg" in extra_args:
+        ids.add(300)
+    selected = []
+    if (root / model).is_dir():
+        selected = [root / model]
+    elif root.is_dir():
+        selected = [p for p in root.rglob("*") if p.is_dir() and
+                    (match := re.match(r"(?:Dataset|Task)(\d+)_", p.name)) and int(match[1]) in ids]
+        # Flat explicitly configured weights have no task directory to select.
+        selected.extend(p for p in root.iterdir() if p.is_file())
+    paths = {p for selected_path in selected for p in
+             (selected_path.rglob("*") if selected_path.is_dir() else [selected_path]) if p.is_file()}
+    weights = inventory(paths, root)
+    for crop_model in crop_models:
+        if crop_model not in (*_seen, model):
+            weights.update(_totalseg_weights_identity(config, crop_model, _seen=(*_seen, model), weights_root=root)["weights"])
+    return {"implementation": implementation, "weights": weights}
+
+
+def _commit_series_model(config, base_dir, base_name, model, nifti_path, entry, provenance=None, extra_args=()):
+    import SimpleITK as sitk
+    masks = [base_dir / name for name in entry.get("masks", [])]
+    if not masks:
+        return
+    reference = sitk.ReadImage(str(nifti_path))
+    for path in masks:
+        mask = sitk.ReadImage(str(path))
+        if not _same_image_geometry(mask, reference):
+            raise RuntimeError(f"Segmentation mask geometry mismatch: {path}")
+    manifest_path = base_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, ValueError):
+        manifest = {}
+    previous = [e for e in manifest.get("models", []) if e.get("model") != model]
+    manifest.update(provenance or {})
+    manifest.update(source_nifti=nifti_path.name, models=[*previous, entry],
+                    generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    _write_manifest_atomic(manifest_path, manifest)
+    _model_progress(config, base_dir, model, nifti_path, extra_args).commit_artifacts(masks, model_entry=entry)
+    _save_model_configuration(config, base_dir, nifti_path, model, extra_args)
 
 
 def _series_segmentation_ready(base_dir: Path, base_name: str, model: str) -> bool:
@@ -1630,7 +1805,7 @@ def _series_masks_current(
             path.resolve(strict=False)
             for pattern in (f"{model}--*.nii*", f"{base_name}--{model}--*.nii*")
             for path in base_dir.glob(pattern)
-            if path.is_file()
+            if path.is_file() and "_cropped" not in path.name
         }
         if actual_paths != expected_paths:
             extra = sorted(path.name for path in actual_paths - expected_paths)
@@ -1932,6 +2107,11 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
             )
 
             for model in models:
+                model_extra_args = (list(getattr(config, "cbct_totalseg_extra_args", []) or [])
+                                    if image_class == "cbct" and model == "total" else None)
+                progress = _model_progress(config, base_dir, model, nifti_path, model_extra_args)
+                if not force:
+                    _restore_committed_model(base_dir, model, progress.load(), nifti_path, source_provenance)
                 if not force:
                     current, reason = _series_masks_current(
                         base_dir,
@@ -1941,7 +2121,10 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                         planning_ct_series_uid=series_uid,
                         source_ct_sop_hash=source_provenance["source_ct_sop_hash"],
                     )
+                    if progress.load() is None:
+                        current, reason = False, "no current bound model commit"
                     if current:
+                        _save_model_configuration(config, base_dir, nifti_path, model, model_extra_args)
                         _ensure_model_rtstruct_from_masks(input_dir, base_dir, base_name, model)
                         ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
                         if ready_entry:
@@ -2034,6 +2217,8 @@ def segment_all_series_for_patient(config: PipelineConfig, patient_id: str, *, f
                             else f"{decision_reason}; TotalSegmentator was invoked but did not publish a complete mask inventory"
                         ),
                     }
+                    if run_succeeded:
+                        _commit_series_model(config, base_dir, base_name, model, nifti_path, entry, source_provenance, model_extra_args)
                     if not run_succeeded:
                         failed_models.append(model)
 
@@ -2405,6 +2590,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
     with tempfile.TemporaryDirectory(prefix="seg_", dir=str(tmp_parent)) as tmp_root_str:
         tmp_root = Path(tmp_root_str)
         for model in models:
+            progress = _model_progress(config, base_dir, model, nifti_path)
+            committed = progress.load() if not force else None
+            _restore_committed_model(base_dir, model, committed, nifti_path, source_provenance)
             if not force:
                 current, reason = _series_masks_current(
                     base_dir,
@@ -2414,7 +2602,10 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     planning_ct_series_uid=source_series_uid,
                     source_ct_sop_hash=source_ct_sop_hash,
                 )
+                if committed is None:
+                    current, reason = False, "no current bound model commit"
                 if current:
+                    _save_model_configuration(config, base_dir, nifti_path, model)
                     ready_entry = _series_model_manifest_entry(base_dir, base_name, model)
                     if ready_entry is not None:
                         manifest_entries.append(ready_entry)
@@ -2568,6 +2759,27 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                 manifest_entries.append(model_entry)
 
             run_succeeded = bool(ok_nifti and model_entry["masks"])
+            if run_succeeded:
+                # Publish this model's inventory before invoking another model.
+                # The item binds masks independently of the growing manifest.
+                manifest_path = base_dir / "manifest.json"
+                _write_manifest_atomic(manifest_path, {
+                    "source_nifti": f"{base_name}.nii.gz", **source_provenance,
+                    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "models": manifest_entries,
+                })
+                valid, detail = _series_masks_current(base_dir, base_name, model,
+                    source_nifti=nifti_path, planning_ct_series_uid=source_series_uid,
+                    source_ct_sop_hash=source_ct_sop_hash)
+                if not valid:
+                    run_succeeded = False
+                    logger.error("Model %s output validation failed: %s", model, detail)
+                else:
+                    if _model_progress(config, base_dir, model, nifti_path).binding != progress.binding:
+                        raise RuntimeError("Segmentation inputs changed during inference")
+                    progress.commit_artifacts([base_dir / name for name in model_entry["masks"]],
+                                              model_entry=model_entry)
+                    _save_model_configuration(config, base_dir, nifti_path, model)
             decision_reason = str(resume_decisions[model].get("reason") or "")
             failure_detail = None if run_succeeded else _last_totalseg_failure()
             resume_decisions[model] = {
@@ -2629,8 +2841,8 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             if merged_skipped:
                 manifest["skipped_models"] = merged_skipped
             _write_manifest_atomic(manifest_path, manifest)
-        except Exception as exc:
-            logger.debug("Failed to persist segmentation manifest for %s: %s", course_dir, exc)
+        except Exception:
+            raise
 
     results["nifti_seg_dir"] = str(base_dir)
     if skipped_models:
@@ -2719,7 +2931,12 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
             base_dir_mr.mkdir(parents=True, exist_ok=True)
 
             def _mr_ready(model: str) -> bool:
-                if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+                committed = _model_progress(config, base_dir_mr, model, nifti_path).load()
+                _restore_committed_model(base_dir_mr, model, committed, nifti_path)
+                if committed is not None:
+                    _save_model_configuration(config, base_dir_mr, nifti_path, model)
+                if (_model_progress(config, base_dir_mr, model, nifti_path).load() is None
+                        or not _series_segmentation_ready(base_dir_mr, base_name_mr, model)):
                     return False
                 return _ensure_model_rtstruct_from_masks(
                     source_dir, base_dir_mr, base_name_mr, model,
@@ -2732,6 +2949,9 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                 tmp_root = Path(tmp_root_str)
                 manifest_mr: List[Dict[str, object]] = []
                 for model in mr_models:
+                    if not force and _mr_ready(model):
+                        manifest_mr.append(_series_model_manifest_entry(base_dir_mr, base_name_mr, model))
+                        continue
                     task_name = model
                     model_tmp = tmp_root / model
                     nifti_tmp = model_tmp / "nifti"
@@ -2766,6 +2986,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                                 entry["rtstruct"] = str(derived.relative_to(base_dir_mr))
                     if entry["rtstruct"] or entry["masks"]:
                         manifest_mr.append(entry)
+                        _commit_series_model(config, base_dir_mr, base_name_mr, model, nifti_path, entry)
 
                 if manifest_mr:
                     try:
@@ -2779,8 +3000,8 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                                 "models": manifest_mr,
                             },
                         )
-                    except Exception as exc:
-                        logger.debug("Failed to persist MR segmentation manifest for %s: %s", base_dir_mr, exc)
+                    except Exception:
+                        raise
 
     return results
 
@@ -2949,7 +3170,12 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
         base_dir_mr.mkdir(parents=True, exist_ok=True)
 
         def _mr_ready(model: str) -> bool:
-            if not _series_segmentation_ready(base_dir_mr, base_name_mr, model):
+            committed = _model_progress(config, base_dir_mr, model, nifti_path).load()
+            _restore_committed_model(base_dir_mr, model, committed, nifti_path)
+            if committed is not None:
+                _save_model_configuration(config, base_dir_mr, nifti_path, model)
+            if (_model_progress(config, base_dir_mr, model, nifti_path).load() is None
+                        or not _series_segmentation_ready(base_dir_mr, base_name_mr, model)):
                 return False
             return _ensure_model_rtstruct_from_masks(
                 source_dir, base_dir_mr, base_name_mr, model,
@@ -2962,6 +3188,9 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
             tmp_root = Path(tmp_root_str)
             manifest_mr: List[Dict[str, object]] = []
             for model in mr_models:
+                if not force and _mr_ready(model):
+                    manifest_mr.append(_series_model_manifest_entry(base_dir_mr, base_name_mr, model))
+                    continue
                 task_name = model
                 model_tmp = tmp_root / model
                 nifti_tmp = model_tmp / "nifti"
@@ -2996,6 +3225,7 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
                             entry["rtstruct"] = str(derived.relative_to(base_dir_mr))
                 if entry["rtstruct"] or entry["masks"]:
                     manifest_mr.append(entry)
+                    _commit_series_model(config, base_dir_mr, base_name_mr, model, nifti_path, entry)
 
             if manifest_mr:
                 try:
@@ -3009,8 +3239,8 @@ def _segment_mr_series_for_course(config: PipelineConfig, course_dirs, course_di
                             "models": manifest_mr,
                         },
                     )
-                except Exception as exc:
-                    logger.debug("Failed to persist MR segmentation manifest for %s: %s", base_dir_mr, exc)
+                except Exception:
+                    raise
 
 
 def _scan_mr_series(dicom_root: Path) -> list[tuple[str, str, Path]]:

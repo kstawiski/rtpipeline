@@ -4,7 +4,6 @@ import json
 import hashlib
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -37,20 +36,10 @@ def _clinical_source_hash(workflow: Any) -> str | None:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    from rtpipeline.durable_progress import _atomic_write
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        return
+    _atomic_write(path, text.encode("utf-8"))
 
 
 def _iter_course_dirs(output_dir: Path):
@@ -91,6 +80,16 @@ def _estimate_course_complexity(course_path: Path) -> int:
 def _revoke_all_organized_flags(output_dir: Path) -> None:
     for _, _, course_dir in _iter_course_dirs(output_dir):
         (course_dir / ".organized").unlink(missing_ok=True)
+
+
+def _revoke_invalid_organized_flags(output_dir: Path) -> None:
+    for patient, course, course_dir in _iter_course_dirs(output_dir):
+        sentinel = course_dir / ".organized"
+        try:
+            validate_stage_completion_sentinel(sentinel, expected_stage="organize",
+                expected_patient=patient, expected_course=course)
+        except (OSError, ValueError, KeyError, TypeError):
+            sentinel.unlink(missing_ok=True)
 
 
 def _manifest_payload(ledger: dict, courses: list[dict]) -> dict:
@@ -188,6 +187,8 @@ def _existing_manifest_is_valid(
     if not manifest_path.is_file():
         return False
     try:
+        from rtpipeline.organize_publication import validate
+        validate(output_dir)
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         ledger, validated, invalid = _delegate_validation(
             workflow,
@@ -209,6 +210,8 @@ def _existing_manifest_is_valid(
         if not ledger.get("source_history_current"):
             return False
         if source.get("source_root") != str(Path(workflow.params.dicom_root).resolve()):
+            return False
+        if ledger.get("source_bytes_current") is not True:
             return False
     if ledger["technical_quarantine_count"]:
         return False
@@ -361,10 +364,10 @@ def main(workflow: Any) -> None:
         )
         return
 
-    # Revoke the prior publication before executing the producer. If execution
-    # fails, neither stale manifest bytes nor stale success flags survive.
+    # Revoke the cohort publication and invalid course receipts. Independently
+    # valid courses retain their bytes and mtimes through checkpoint recovery.
     manifest_path.unlink(missing_ok=True)
-    _revoke_all_organized_flags(output_dir)
+    _revoke_invalid_organized_flags(output_dir)
     command = [
         str(workflow.params.python),
         "-m",
@@ -425,6 +428,8 @@ def main(workflow: Any) -> None:
     _write_text_atomic(
         manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n"
     )
+    from rtpipeline.organize_publication import publish
+    publish(output_dir)
 
 
 if "snakemake" in globals():

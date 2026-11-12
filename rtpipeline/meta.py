@@ -761,7 +761,7 @@ class _SourceInventoryAccumulator:
             self._digest.update(b",")
         _update_hash_with_canonical_json(
             self._digest,
-            [relative_path, size, mtime_ns, ctime_ns, device, inode],
+            [relative_path, size, mtime_ns, ctime_ns, device, inode, _sha256_file(path)],
         )
         self.file_count += 1
 
@@ -779,7 +779,7 @@ class _SourceInventoryAccumulator:
         digest = self._digest.copy()
         digest.update(b'],"root":')
         _update_hash_with_canonical_json(digest, str(self.root.resolve(strict=False)))
-        digest.update(b',"schema":"rtpipeline-source-inventory-v1","scope_sha256":')
+        digest.update(b',"schema":"rtpipeline-source-inventory-v2","scope_sha256":')
         _update_hash_with_canonical_json(digest, self.scope_digest)
         digest.update(b"}")
         return MetadataSourceIdentity(
@@ -863,6 +863,9 @@ def _cache_key(identity: MetadataSourceIdentity) -> str:
             "extractor_schema": _METADATA_EXTRACTOR_SCHEMA,
             "source_inventory_sha256": identity.digest,
             "scope_sha256": identity.scope_digest,
+            "code_sha256": _sha256_file(Path(__file__)),
+            "reader_sha256": _sha256_file(Path(__file__).with_name("utils.py")),
+            "pydicom_version": pydicom.__version__,
         }
     )
 
@@ -1059,6 +1062,7 @@ def _publish_metadata_frames(
                 "Metadata source inventory changed during export; refusing to publish mixed-generation outputs"
             )
 
+        from .artifact_progress import staged_file
         for name, xlsx_path in list(outputs.items()):
             parquet_path = _parquet_sibling(xlsx_path)
             staged_path = staged.get(name)
@@ -1066,11 +1070,17 @@ def _publish_metadata_frames(
                 xlsx_path.unlink(missing_ok=True)
                 parquet_path.unlink(missing_ok=True)
             elif name in oversized:
-                os.replace(staged_path, parquet_path)
+                if not _same_metadata_table(staged_path, parquet_path):
+                    with staged_file(parquet_path) as temporary:
+                        import shutil
+                        shutil.copyfile(staged_path, temporary)
                 xlsx_path.unlink(missing_ok=True)
                 outputs[name] = parquet_path
             else:
-                os.replace(staged_path, xlsx_path)
+                if not _same_metadata_table(staged_path, xlsx_path):
+                    with staged_file(xlsx_path) as temporary:
+                        import shutil
+                        shutil.copyfile(staged_path, temporary)
                 parquet_path.unlink(missing_ok=True)
 
     output_records: Dict[str, dict] = {}
@@ -1100,6 +1110,17 @@ def _publish_metadata_frames(
     manifest["manifest_sha256"] = _canonical_sha256(manifest)
     _write_json_atomic(_cache_manifest_path(config.output_root), manifest)
     return outputs
+
+
+def _same_metadata_table(first, second):
+    if not second.is_file():
+        return False
+    try:
+        read = pd.read_parquet if first.suffix == ".parquet" else pd.read_excel
+        pd.testing.assert_frame_equal(read(first), read(second))
+        return True
+    except Exception:
+        return False
 
 
 def export_metadata(
@@ -1135,16 +1156,32 @@ def export_metadata(
             "Metadata export cache miss; reusing %d headers from organize discovery",
             len(snapshot_results),
         )
-        results = snapshot_results
+        snapshots = {result.path: result for result in snapshot_results}
     else:
         logger.info(
             "Metadata export cache miss; reading %d candidate header(s) with %d worker(s)",
             len(candidates),
             workers,
         )
-        results = list(
-            parallel_map_files(candidates, _read_metadata_file, workers)
-        )
+        snapshots = {}
+    from .extraction_progress import BoundItem
+    from .artifact_progress import code_files
+    def extract(path):
+        source_hash = _sha256_file(path)
+        item = BoundItem(config.output_root / "_CACHE/metadata-progress", str(path),
+            {"schema": _METADATA_EXTRACTOR_SCHEMA, "scope": identity.scope_digest},
+            {"source_sha256": source_hash},
+            code=code_files("meta.py", "utils.py"), environment={"pydicom": pydicom.__version__})
+        saved = item.load()
+        if saved is not None:
+            return MetadataReadResult(path, saved["modality"], saved["row"])
+        result = snapshots[path] if path in snapshots else _read_metadata_file(path)
+        if _sha256_file(path) != source_hash:
+            raise MetadataExportError(f"Metadata source changed during extraction: {path}")
+        if not result.extraction_error:
+            item.commit({"modality": result.modality, "row": result.row})
+        return result
+    results = list(parallel_map_files(candidates, extract, workers))
     supported = ("RTPLAN", "RTDOSE", "RTSTRUCT", "RTRECORD", "CT")
     discovered: Dict[str, int] = {modality: 0 for modality in supported}
     rows: Dict[str, List[dict]] = {modality: [] for modality in supported}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .organize_scale import organize_process_resources, prepare_mask_exports
+from .artifact_progress import publish_workbook, propagate_persistence_failure
 
 import copy
 import datetime
@@ -471,28 +472,23 @@ def _safe_copy(
     """
     expected_uid = _sop_instance_uid(src)
     if copy_manager is not None:
-        actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=False, materialize=True)
+        actual, _copied = copy_manager.copy_dicom(src, dst, skip_if_exists=True, materialize=True)
         actual_path = Path(actual)
         if actual_path.is_file() and (
             not expected_uid or _sop_instance_uid(actual_path) == expected_uid
         ):
-            source = actual_path
+            return
         else:
             source = src
     else:
         source = src
     ensure_dir(dst.parent)
-    handle, tmp_name = tempfile.mkstemp(
-        dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp"
-    )
-    os.close(handle)
-    tmp_path = Path(tmp_name)
-    try:
+    from .artifact_progress import staged_file
+    from .durable_progress import file_sha256
+    with staged_file(dst) as tmp_path:
         shutil.copy2(source, tmp_path)
-        os.replace(tmp_path, dst)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+        if file_sha256(tmp_path) != file_sha256(src):
+            raise OSError(f"required DICOM copy did not verify: {dst}")
     if not dst.is_file() or _sop_instance_uid(dst) != expected_uid:
         dst.unlink(missing_ok=True)
         raise OSError(f"required DICOM artifact was not materialised at {dst}")
@@ -530,17 +526,19 @@ def _copy_into(
             source = dest if dest.is_file() else src
             name = f"{prefix}_{src.name}" if prefix else src.name
             target = dst_dir / name
-            if target.is_file() and _sop_instance_uid(target) == _sop_instance_uid(source):
+            from .durable_progress import file_sha256
+            if target.is_file() and file_sha256(target) == file_sha256(source):
                 return target
             stem, suffix = target.stem, target.suffix
             counter = 1
             while target.exists():
                 target = dst_dir / f"{stem}_{counter}{suffix}"
                 counter += 1
-            try:
-                os.link(source, target)
-            except OSError:
-                shutil.copy2(source, target)
+            from .artifact_progress import staged_file
+            with staged_file(target) as temporary:
+                shutil.copy2(source, temporary)
+                if file_sha256(temporary) != file_sha256(source):
+                    raise OSError(f"Fallback DICOM copy did not verify: {target}")
             return target
         return dest
 
@@ -556,7 +554,12 @@ def _copy_into(
         while dest.exists():
             dest = dst_dir / f"{stem}_{counter}{suffix}"
             counter += 1
-    shutil.copy2(src, dest)
+    from .artifact_progress import staged_file
+    from .durable_progress import file_sha256
+    with staged_file(dest) as temporary:
+        shutil.copy2(src, temporary)
+        if file_sha256(temporary) != file_sha256(src):
+            raise OSError(f"Fallback DICOM copy did not verify: {dest}")
     return dest
 
 
@@ -1134,7 +1137,8 @@ def _ensure_planning_ct_nifti(config, ct_dir, nifti_dir, **kwargs):
         sidecar = result.with_name(f"{_strip_nifti_base(result)}.metadata.json")
         metadata = json.loads(sidecar.read_text(encoding="utf-8"))
         metadata["instance_selection"] = selection
-        sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        from .artifact_progress import write_json
+        write_json(sidecar, metadata, indent=2)
         return result
     except PlanningCTLocalizerError as exc:
         if exc.reason_code != "ct_localizer_referenced_by_rtstruct":
@@ -5517,19 +5521,56 @@ def _organize_checkpoint_dir(config: PipelineConfig) -> Path:
     return config.output_root / "_COURSES" / "patients"
 
 
-def _write_json_atomic(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".", suffix=".tmp")
-    tmp_path = Path(tmp_name)
+def _organized_artifacts(course_dir):
+    paths = []
+    for name in ("DICOM", "DICOM_related", "MR", "NIFTI", "Segmentation_Original"):
+        paths.extend(p for p in (course_dir / name).rglob("*")
+                     if p.is_file() and p.suffix != ".age" and "_cropped" not in p.name
+                     and "Segmentation_TotalSegmentator" not in p.relative_to(course_dir).parts
+                     and not any(part.startswith(".") for part in p.relative_to(course_dir).parts))
+    for name in ("RP.dcm", "RD.dcm", "RS.dcm", "metadata/case_metadata.json", "metadata/case_metadata.xlsx",
+                 "fractions.xlsx", "metadata/fractions_raw.xlsx"):
+        path = course_dir / name
+        if path.is_file():
+            paths.append(path)
+    return paths
+
+
+_ORGANIZE_PROGRESS_CODE = ("organize.py", "organize_scale.py", "ct.py", "segmentation.py", "course_contract.py",
+    "dicom_copy.py", "metadata.py", "rt_details.py", "prescription.py", "clinical_prescription.py",
+    "ct_series_hygiene.py", "nifti_provenance.py")
+
+
+def validate_organized_course_progress(course_dir, *, verify_environment=True):
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    course_dir = Path(course_dir)
+    record = json.loads((course_dir / ".organize-progress.json").read_text())
+    output = course_dir.parent.parent
+    environment = None if verify_environment else record["environment"]
+    item = ArtifactItem(output / "_COURSES/.organize-progress/items",
+        str(course_dir.relative_to(output)), record["settings"], inventory(map(Path, record["sources"])),
+        base=course_dir, code=code_files(*_ORGANIZE_PROGRESS_CODE), environment=environment)
+    value = item.load()
+    if value is None or set(value["artifacts"]) != {p.relative_to(course_dir).as_posix() for p in _organized_artifacts(course_dir)}:
+        raise ValueError("Organized course item is missing or stale")
+    return value
+
+
+def _publish_course_progress_marker(course_dir, item):
+    from .durable_progress import final_result_writer
+    path = course_dir / ".organize-progress.json"
+    value = {"sources": item.source_paths, "settings": item.settings, "environment": item.environment}
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+        if json.loads(path.read_text()) == value:
+            return
+    except (OSError, ValueError):
+        pass
+    final_result_writer(path, value)
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    from .artifact_progress import write_json
+    write_json(path, payload, indent=2, sort_keys=True)
 
 
 def _validate_and_publish_case_metadata(
@@ -5542,7 +5583,6 @@ def _validate_and_publish_case_metadata(
     published = metadata_dir / "case_metadata.json"
     candidate = metadata_dir / f".case_metadata.{os.getpid()}.candidate.json"
 
-    published.unlink(missing_ok=True)
     candidate.unlink(missing_ok=True)
     _write_json_atomic(candidate, case_metadata)
     try:
@@ -5556,7 +5596,12 @@ def _validate_and_publish_case_metadata(
                 data=contract_data,
             )
         )
-        os.replace(candidate, published)
+        if published.is_file() and published.read_bytes() == candidate.read_bytes():
+            candidate.unlink()
+        else:
+            os.replace(candidate, published)
+        from .durable_progress import _fsync_dir
+        _fsync_dir(metadata_dir)
         load_course_contract(course_dir)
     except BaseException:
         candidate.unlink(missing_ok=True)
@@ -5565,13 +5610,10 @@ def _validate_and_publish_case_metadata(
 
 
 def _record_expected_courses(config: PipelineConfig, patient_id: str, course_keys: List[str]) -> None:
-    try:
-        _write_json_atomic(
-            _organize_checkpoint_dir(config) / f"{patient_id}.expected.json",
-            {"patient": patient_id, "courses": sorted(set(course_keys))},
-        )
-    except Exception as exc:
-        logger.debug("Could not record expected courses for %s: %s", patient_id, exc)
+    _write_json_atomic(
+        _organize_checkpoint_dir(config) / f"{patient_id}.expected.json",
+        {"patient": patient_id, "courses": sorted(set(course_keys))},
+    )
 
 
 def _course_done_path(config: PipelineConfig, patient_id: str, course_key: str) -> Path:
@@ -5580,13 +5622,10 @@ def _course_done_path(config: PipelineConfig, patient_id: str, course_key: str) 
 
 
 def _record_course_done(config: PipelineConfig, patient_id: str, course_key: str, course_dir: Path) -> None:
-    try:
-        _write_json_atomic(
-            _course_done_path(config, patient_id, course_key),
-            {"patient": patient_id, "course_key": str(course_key), "course_dir": str(course_dir)},
-        )
-    except Exception as exc:
-        logger.debug("Could not record completed course %s/%s: %s", patient_id, course_key, exc)
+    _write_json_atomic(
+        _course_done_path(config, patient_id, course_key),
+        {"patient": patient_id, "course_key": str(course_key), "course_dir": str(course_dir)},
+    )
 
 
 def _remove_course_done(config: PipelineConfig, patient_id: str, course_key: str) -> None:
@@ -5622,6 +5661,17 @@ def _convert_one_related_series(
         base_name = f"{base_name}_{name_suffix}"
     series_metadata = _collect_series_metadata(series_subdir)
     series_uid = series_metadata.get("series_instance_uid")
+    from .artifact_progress import ArtifactItem, code_files, inventory, staged_file, write_json
+    progress = ArtifactItem(nifti_dir / ".conversion-progress", ["related", str(series_subdir), name_suffix],
+        {"command": getattr(config, "dcm2niix_cmd", "dcm2niix"),
+         "activation": getattr(config, "conda_activate", None), "modality": default_modality},
+        inventory(p for p in series_subdir.rglob("*") if p.is_file()), base=nifti_dir,
+        code=code_files("organize.py", "segmentation.py", "nifti_provenance.py"))
+    cached = progress.load()
+    if config.resume and cached is not None:
+        target = nifti_dir / cached["target"]
+        write_json(target.with_name(target.name.removesuffix(".nii.gz") + ".metadata.json"), cached["sidecar"], indent=2)
+        return target
     candidate = base_name
     suffix_counter = 1
     while True:
@@ -5633,8 +5683,6 @@ def _convert_one_related_series(
             except Exception:
                 existing = {}
             if isinstance(existing, dict) and existing.get("series_instance_uid") == series_uid:
-                if not config.resume and nifti_provenance.content_hash_matches(target, existing):
-                    return target
                 break
         if not target.exists():
             break
@@ -5652,9 +5700,9 @@ def _convert_one_related_series(
     if generated is None:
         shutil.rmtree(tmp_out, ignore_errors=True)
         return None
-    if target_path.exists():
-        target_path.unlink()
-    shutil.move(str(generated), str(target_path))
+    with staged_file(target_path) as temporary:
+        shutil.copy2(generated, temporary)
+        sitk.ReadImage(str(temporary))
     metadata = dict(series_metadata)
     nifti_provenance.annotate(
         metadata,
@@ -5664,10 +5712,8 @@ def _convert_one_related_series(
         default_modality=default_modality,
     )
     meta_path = nifti_dir / f"{candidate}.metadata.json"
-    meta_path.write_text(
-        json.dumps(metadata, indent=2),
-        encoding="utf-8",
-    )
+    progress.commit_artifacts([target_path], target=target_path.name, sidecar=metadata)
+    write_json(meta_path, metadata, indent=2)
     shutil.rmtree(tmp_out, ignore_errors=True)
     return target_path
 
@@ -5684,7 +5730,8 @@ def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
         except Exception:
             continue
         patient_id = str(expected.get("patient") or "")
-        wanted = [str(c) for c in (expected.get("courses") or [])]
+        wanted = ["".join(ch if ch.isalnum() else "_" for ch in str(c))[:64]
+                  for c in (expected.get("courses") or [])]
         if not patient_id or not wanted:
             continue
         done_dir = root / patient_id
@@ -5694,9 +5741,14 @@ def _completed_patients(config: PipelineConfig) -> Dict[str, List[dict]]:
         for done_file in done_dir.glob("*.done.json"):
             try:
                 entry = json.loads(done_file.read_text(encoding="utf-8"))
+                path = Path(entry["course_dir"])
+                relative = path.resolve().relative_to(config.output_root.resolve())
+                if len(relative.parts) != 2 or relative.parts[0] != patient_id:
+                    continue
+                validate_organized_course_progress(path)
             except Exception:
                 continue
-            key = str(entry.get("course_key") or "")
+            key = "".join(ch if ch.isalnum() else "_" for ch in str(entry.get("course_key") or ""))[:64]
             if key:
                 done[key] = entry
         if all(key in done for key in wanted):
@@ -5940,6 +5992,81 @@ def organize_and_merge(
     source_dispositions["course_publication_status"] = "pending"
     write_source_plan_dispositions(config.output_root, source_dispositions)
 
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    from .durable_progress import final_result_writer, file_sha256
+    from .meta import _source_candidate_paths
+    discovered_bytes = inventory(_source_candidate_paths(config.dicom_root, scope_ids), config.dicom_root)
+    progress_directory = config.output_root / "_COURSES/.organize-progress"
+    progress_directory.mkdir(parents=True, exist_ok=True)
+    from .durable_progress import _fsync_dir
+    _fsync_dir(progress_directory.parent)
+    final_result_writer(progress_directory / "discovery.json",
+                        {"sources": discovered_bytes})
+    course_progress = {}
+
+    def _unpack_course(value, course_dir):
+        value = dict(value)
+        value["dirs"] = build_course_dirs(course_dir)
+        for key in ("rp_path", "rd_path", "rs_path", "primary_nifti"):
+            if value[key] is not None:
+                value[key] = Path(value[key])
+        value["related_dicom"] = [Path(path) for path in value["related_dicom"]]
+        return CourseOutput(**value)
+
+    def _materialized(function, *args):
+        from dataclasses import asdict
+        from .extraction_progress import scientific
+        result = function(*args)
+        if result is not None:
+            item = course_progress[result.dirs.root].phase
+            if item.load() is None:
+                full = course_progress[result.dirs.root]
+                if inventory(map(Path, full.source_paths)) != full.source_manifest:
+                    raise OrganizeDiscoveryError("Source bytes changed during course materialization")
+                artifacts = [path for path in _organized_artifacts(result.dirs.root)
+                    if path.relative_to(result.dirs.root).parts[0] in {"DICOM", "DICOM_related", "MR", "NIFTI"}
+                    or path.name in {"RP.dcm", "RD.dcm", "RS.dcm"}]
+                item.commit_artifacts(artifacts, course_output=scientific(asdict(result)))
+        return result
+
+    def _progress_for(patient_id, course_dir, paths, studies=(), refs=(), frames=(), include_unregistered_mr=False):
+        paths = set(map(Path, paths))
+        paths.update(rt_file_index.get(patient_id, []))
+        for study, series_map in (ct_index.get(patient_id) or {}).items():
+            for uid, instances in series_map.items():
+                if uid in refs or (not refs and study in studies):
+                    paths.update(instance.path for instance in instances)
+        if include_unregistered_mr:
+            for (pid, uid), candidates in series_index.items():
+                if pid == patient_id and str(series_meta.get((pid, uid), {}).get("modality", "")).upper() == "MR":
+                    paths.update(candidates)
+        for reg in registrations_index.get(patient_id, []):
+            if frames and reg.get("for_uids") and not set(frames).intersection(reg["for_uids"]):
+                continue
+            paths.add(Path(reg["path"]))
+            for uid in reg.get("referenced_series", []):
+                paths.update(series_index.get((patient_id, uid), []))
+        if clinical_source_path:
+            paths.add(Path(clinical_source_path))
+        settings = {key: getattr(config, key, None) for key in (
+            "merge_criteria", "max_days_between_plans", "max_total_dose_gy",
+            "allow_ct_only_courses", "dcm2niix_cmd", "conda_activate", "planning_ct_stack_overrides")}
+        settings["concurrent_components"] = os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "")
+        source_bytes = inventory(paths)
+        item = ArtifactItem(config.output_root / "_COURSES/.organize-progress/items",
+            str(course_dir.relative_to(config.output_root)), settings, source_bytes, base=course_dir,
+            code=code_files(*_ORGANIZE_PROGRESS_CODE))
+        item.phase = ArtifactItem(config.output_root / "_COURSES/.organize-progress/items",
+            [str(course_dir.relative_to(config.output_root)), "materialize"], settings, source_bytes,
+            base=course_dir, code=code_files(*_ORGANIZE_PROGRESS_CODE))
+        item.source_paths = sorted(map(str, paths))
+        item.source_manifest = source_bytes
+        item.settings = settings
+        from .extraction_progress import runtime_environment
+        item.environment = runtime_environment()
+        course_progress[course_dir] = item
+        return item
+
     outputs: List[CourseOutput] = []
 
     existing_names: Dict[str, set[str]] = defaultdict(set)
@@ -5995,7 +6122,12 @@ def organize_and_merge(
         course_dirs = build_course_dirs(course_dir)
         course_dirs.ensure()
 
-        if config.resume and course_dir.exists():
+        progress = _progress_for(patient_id, course_dir,
+            [obj.path for it in items for obj in (it.plan, it.dose, it.struct) if obj is not None],
+            studies={it.ct_study_uid for it in items},
+            refs=referenced_ct_series_uids(authoritative_struct_path) if authoritative_struct_path else (),
+            frames=course_for_uids)
+        if config.resume and progress.load() is not None:
             hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
             if hydrated and (
                 os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip()
@@ -6031,6 +6163,10 @@ def organize_and_merge(
                 if approval_records(source_audit) == approval_records(archived_audit):
                     return hydrated
                 logger.warning("Source approval authority changed. Rebuilding %s/%s", patient_id, course_id)
+
+        cached_phase = progress.phase.load() if config.resume else None
+        if cached_phase is not None:
+            return _unpack_course(cached_phase["course_output"], course_dir)
 
         primary_nifti: Optional[Path] = None
         planning_ct_conversion: dict[str, Any] = {}
@@ -6485,12 +6621,15 @@ def organize_and_merge(
                     config,
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
-                    force=bool(config.resume),
+                    force=not bool(config.resume),
                     authoritative_rtstruct=struct_path,
                     conversion_evidence=planning_ct_conversion,
                     course_key=f"{patient_id}/{course_id}",
                 )
             except Exception as exc:
+                from .durable_progress import DurableProgressError
+                if isinstance(exc, (DurableProgressError, OSError)):
+                    raise
                 logger.warning("CT NIfTI conversion failed for %s: %s", course_dir, exc)
         else:
             if ct_select_status == "unresolved_reference":
@@ -6533,6 +6672,9 @@ def organize_and_merge(
             try:
                 _convert_one_related_series(course_dirs.nifti, series_subdir, config)
             except Exception as exc:
+                from .durable_progress import DurableProgressError
+                if isinstance(exc, (DurableProgressError, OSError)):
+                    raise
                 logger.debug("Failed converting related series %s: %s", series_subdir, exc)
 
         delivery_summary = _calculate_delivery_summary(
@@ -6676,7 +6818,7 @@ def organize_and_merge(
         results = run_tasks_with_adaptive_workers(
             "Organize",
             course_tasks,
-            lambda task: _process_course(task[0], task[1], task[2], task[3]),
+            lambda task: _materialized(_process_course, task[0], task[1], task[2], task[3]),
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
@@ -6739,10 +6881,18 @@ def organize_and_merge(
             course_dirs = build_course_dirs(course_dir)
             course_dirs.ensure()
 
-            if config.resume and course_dir.exists():
+            progress = _progress_for(patient_id, course_dir, [s.path for s in s_list],
+                studies={s.study_uid for s in s_list},
+                refs=set().union(*(referenced_ct_series_uids(s.path) for s in s_list)),
+                frames={s.frame_of_reference_uid for s in s_list if s.frame_of_reference_uid}, include_unregistered_mr=True)
+            if config.resume and progress.load() is not None:
                 hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
                 if hydrated:
                     return hydrated
+
+            cached_phase = progress.phase.load() if config.resume else None
+            if cached_phase is not None:
+                return _unpack_course(cached_phase["course_output"], course_dir)
 
             primary_nifti: Optional[Path] = None
             planning_ct_conversion: dict[str, Any] = {}
@@ -6808,12 +6958,15 @@ def organize_and_merge(
                         config,
                         course_dirs.dicom_ct,
                         course_dirs.nifti,
-                        force=bool(config.resume),
+                        force=not bool(config.resume),
                         authoritative_rtstruct=primary_struct,
                         conversion_evidence=planning_ct_conversion,
                         course_key=f"{patient_id}/{course_id}",
                     )
                 except Exception as exc:
+                    from .durable_progress import DurableProgressError
+                    if isinstance(exc, (DurableProgressError, OSError)):
+                        raise
                     logger.warning("CT NIfTI conversion failed (RS-only) for %s: %s", course_dir, exc)
             else:
                 if ct_select_status == "unresolved_reference":
@@ -6879,6 +7032,9 @@ def organize_and_merge(
                             default_modality=modality_hint or "CT",
                         )
                     except Exception as exc:
+                        from .durable_progress import DurableProgressError
+                        if isinstance(exc, (DurableProgressError, OSError)):
+                            raise
                         logger.debug("Failed converting related series %s: %s", series_root, exc)
 
             def _mr_present() -> bool:
@@ -6953,7 +7109,7 @@ def organize_and_merge(
         results = run_tasks_with_adaptive_workers(
             "Organize (RS-only)",
             rs_entries,
-            lambda task: _process_rs_group(task[0], task[1], task[2], task[3]),
+            lambda task: _materialized(_process_rs_group, task[0], task[1], task[2], task[3]),
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
@@ -7050,10 +7206,15 @@ def organize_and_merge(
             course_dirs = build_course_dirs(course_dir)
             course_dirs.ensure()
 
-            if config.resume and course_dir.exists():
+            progress = _progress_for(patient_id, course_dir, [instance.path for instance in series])
+            if config.resume and progress.load() is not None:
                 hydrated = _hydrate_existing_course(patient_id, course_key, course_dir, meta)
                 if hydrated:
                     return hydrated
+
+            cached_phase = progress.phase.load() if config.resume else None
+            if cached_phase is not None:
+                return _unpack_course(cached_phase["course_output"], course_dir)
 
             primary_nifti: Optional[Path] = None
             planning_ct_conversion: dict[str, Any] = {}
@@ -7063,11 +7224,14 @@ def organize_and_merge(
                     config,
                     course_dirs.dicom_ct,
                     course_dirs.nifti,
-                    force=bool(config.resume),
+                    force=not bool(config.resume),
                     authoritative_rtstruct=None,
                     conversion_evidence=planning_ct_conversion,
                 )
             except Exception as exc:
+                from .durable_progress import DurableProgressError
+                if isinstance(exc, (DurableProgressError, OSError)):
+                    raise
                 logger.warning("CT NIfTI conversion failed (CT-only) for %s: %s", course_dir, exc)
 
             return CourseOutput(
@@ -7090,7 +7254,7 @@ def organize_and_merge(
         results = run_tasks_with_adaptive_workers(
             "Organize (CT-only)",
             ct_entries,
-            lambda task: _process_ct_series(task[0], task[1], task[2], task[3]),
+            lambda task: _materialized(_process_ct_series, task[0], task[1], task[2], task[3]),
             max_workers=config.effective_workers(),
             logger=logger,
             show_progress=True,
@@ -7132,10 +7296,24 @@ def organize_and_merge(
     validated_outputs: list[CourseOutput] = []
     organize_entries: list[dict[str, object]] = []
     quarantine_failures: list[str] = []
-    mask_results = prepare_mask_exports(outputs, overwrite=not config.resume)
+    reusable = {co.dirs.root for co in outputs if config.resume and
+                course_progress.get(co.dirs.root) is not None and course_progress[co.dirs.root].load() is not None}
+    pending_outputs = [co for co in outputs if co.dirs.root not in reusable]
+    pending_masks = iter(prepare_mask_exports(pending_outputs, overwrite=not config.resume))
+    mask_results = [None if co.dirs.root in reusable else next(pending_masks) for co in outputs]
     for co, mask_result in zip(outputs, mask_results):
         patient_dir = co.dirs.root
         meta_dir = co.dirs.metadata
+        if patient_dir in reusable:
+            load_course_contract(patient_dir)
+            _publish_course_progress_marker(patient_dir, course_progress[patient_dir])
+            validated_outputs.append(co)
+            conversion = (co.course_contract.get("planning_ct") or {}).get("nifti_provenance") or {}
+            organize_entries.append({"patient": co.patient_id, "course": co.course_id,
+                "course_key": co.course_key, "path": str(patient_dir), "status": STATUS_VALIDATED,
+                **({"planning_ct_conversion": conversion["nifti_conversion"]} if "nifti_conversion" in conversion else {}),
+                "reason": None, "quarantine_path": None})
+            continue
         try:
             manual_manifest = mask_result.result()
             nifti_files = sorted(co.dirs.nifti.glob("*.nii*"))
@@ -7443,13 +7621,14 @@ def organize_and_merge(
 
                         df_frac = _pd.DataFrame(aggregated_rows)
                         df_frac.sort_values(by=["treatment_date", "fraction_number"], inplace=True, ignore_index=True)
-                        df_frac.to_excel(fractions_path, index=False)
+                        publish_workbook(fractions_path, df_frac)
 
                         raw_export_path = patient_dir / "metadata" / "fractions_raw.xlsx"
                         try:
                             raw_export_path.parent.mkdir(parents=True, exist_ok=True)
-                            df_frac_raw.to_excel(raw_export_path, index=False)
-                        except Exception:
+                            publish_workbook(raw_export_path, df_frac_raw)
+                        except Exception as exc:
+                            propagate_persistence_failure(exc)
                             logger.debug("Failed to export raw fractions detail for %s", patient_dir)
 
                         frac_numbers = df_frac.get("fraction_number")
@@ -7458,9 +7637,10 @@ def organize_and_merge(
                         else:
                             fractions_count = len(df_frac)
                     else:
-                        df_frac_raw.to_excel(fractions_path, index=False)
+                        publish_workbook(fractions_path, df_frac_raw)
                         fractions_count = 0
                 except Exception as exc:
+                    propagate_persistence_failure(exc)
                     logger.warning(
                         "Failed to write fractions summary for %s: %s",
                         patient_dir,
@@ -8520,10 +8700,12 @@ def organize_and_merge(
             try:
                 import pandas as _pd
 
-                _pd.DataFrame([case_meta]).to_excel(meta_dir / "case_metadata.xlsx", index=False)
+                publish_workbook(meta_dir / "case_metadata.xlsx", _pd.DataFrame([case_meta]))
             except Exception as exc:
+                propagate_persistence_failure(exc)
                 logger.debug("Failed to write case metadata XLSX for %s: %s", patient_dir, exc)
         except Exception as exc:
+            propagate_persistence_failure(exc)
             reason = f"{type(exc).__name__}: {exc}"
             if co.planning_ct_conversion.get("method") == "planning_ct_image_type_localizer_exclusion":
                 reason = str(co.planning_ct_conversion.get("reason_code") or "ct_localizer_publication_failed")
@@ -8571,6 +8753,10 @@ def organize_and_merge(
             continue
 
         _record_course_done(config, co.patient_id, co.course_key, patient_dir)
+        if inventory(map(Path, course_progress[patient_dir].source_paths)) != course_progress[patient_dir].source_manifest:
+            raise OrganizeDiscoveryError("Source bytes changed during course contract publication")
+        course_progress[patient_dir].commit_artifacts(_organized_artifacts(patient_dir))
+        _publish_course_progress_marker(patient_dir, course_progress[patient_dir])
         validated_outputs.append(co)
         organize_entries.append(
             {
@@ -8586,6 +8772,8 @@ def organize_and_merge(
             }
         )
 
+    if inventory(_source_candidate_paths(config.dicom_root, scope_ids), config.dicom_root) != discovered_bytes:
+        raise OrganizeDiscoveryError("Source discovery changed during organize")
     source_dispositions = _reconcile_published_plan_dispositions(
         validated_outputs, source_dispositions,
     )

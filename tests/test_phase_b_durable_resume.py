@@ -593,7 +593,12 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
         payload['configuration_dependency_sha256'] = 'stale-synthetic-binding'
         sentinel.write_text(json.dumps(payload))
     elif mutation == 'source':
-        source = sorted(load_course_contract(stale).planning_ct_dir.rglob('*.dcm'))[1]
+        organized = sorted(load_course_contract(stale).planning_ct_dir.rglob('*.dcm'))[1]
+        source_uid = pydicom.dcmread(organized, stop_before_pixels=True).SOPInstanceUID
+        # Mutate authoritative discovery input. Phase C repairs a changed
+        # organized copy from its committed source before downstream work.
+        source = next(path for path in second.rglob('*.dcm')
+            if pydicom.dcmread(path, stop_before_pixels=True).SOPInstanceUID == source_uid)
         original_file = source.read_bytes()
         dataset = pydicom.dcmread(source)
         original = dataset.PixelData
@@ -632,6 +637,16 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
             capture_output=True, text=True, timeout=180)
         log = planned.stdout + planned.stderr
         assert planned.returncode == 0, log
+        if mutation == 'source':
+            assert 'checkpoint organize_courses:' in log, log
+            assert protected == snapshot(valid)
+            # Snakemake cannot expand downstream course jobs until the fresh
+            # source-discovery checkpoint has published its manifest.
+            pipeline.run(pipeline.output / '_COURSES/manifest.json')
+            planned = subprocess.run(pipeline.command('all') + ['--dry-run'], env=pipeline.env,
+                capture_output=True, text=True, timeout=180)
+            log = planned.stdout + planned.stderr
+            assert planned.returncode == 0, log
         assert 'rule radiomics_course:' in log, log
         assert 'patient=SYNTHETIC2, course=2024-01' in log, log
         if mutation != 'code':
@@ -760,6 +775,11 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
     pipeline.env["PYTHONPATH"] = os.pathsep.join((str(hook), str(pipeline.source)))
     shutil.rmtree(pipeline.output)
     shutil.copytree(clean, pipeline.output, symlinks=True)
+    # This historical base predates the hidden conversion journal and its
+    # organize glob counts every file below NIFTI. Preserve all scientific
+    # bytes while excluding the new operational records from that old reader.
+    for progress in pipeline.output.glob('*/*/NIFTI/.conversion-progress'):
+        shutil.rmtree(progress)
     pipeline.run("all")
     evidence = {"base": "3f94c631d44d9452b0299341fa8fb01e93d1fd3c", "parquet": {}, "workbooks": {}, 'dispositions': {}}
     disposition_hashes = {}

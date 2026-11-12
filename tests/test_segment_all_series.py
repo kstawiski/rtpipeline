@@ -281,7 +281,7 @@ def test_segment_all_series_rtstruct_failure_keeps_successful_nifti_segmented(tm
     def fake_ensure_nifti(config, input_dir, nifti_dir, force=False, dcm2niix_depth=None):
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / "planning.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkInt16), str(path))
         return path
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
@@ -290,7 +290,9 @@ def test_segment_all_series_rtstruct_failure_keeps_successful_nifti_segmented(tm
         output_path.mkdir(parents=True, exist_ok=True)
         masks = output_path / "segmentations"
         masks.mkdir(parents=True, exist_ok=True)
-        (masks / "liver.nii.gz").write_text("fake mask", encoding="utf-8")
+        mask = sitk.Image([2, 2, 2], sitk.sitkUInt8)
+        mask[0, 0, 0] = 1
+        sitk.WriteImage(mask, str(masks / "liver.nii.gz"))
         return True
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)
@@ -328,7 +330,7 @@ def test_segment_all_series_nifti_failure_isolates_row(tmp_path, monkeypatch):
             return None
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / "diagnostic.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkInt16), str(path))
         return path
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):
@@ -412,7 +414,7 @@ def test_segment_all_series_force_uses_sibling_outputs_and_depth_zero(tmp_path, 
         assert not is_under(Path(nifti_dir), input_dir)
         nifti_dir.mkdir(parents=True, exist_ok=True)
         path = nifti_dir / "planning.nii.gz"
-        path.write_text("fake nifti", encoding="utf-8")
+        sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkInt16), str(path))
         return path
 
     def fake_totalseg(config, input_path, output_path, output_type, task=None, extra_args=None):

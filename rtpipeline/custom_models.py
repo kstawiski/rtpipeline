@@ -625,10 +625,28 @@ def run_custom_models_for_course(
     skipped_models: Dict[str, str] = {}
 
     for model in models:
-        if (not force and _model_outputs_ready(course.dirs.root, model)
-                and not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir)):
+        progress = _custom_progress(cfg, course.dirs.root, model, contract.planning_ct_nifti)
+        committed = progress.load() if not force else None
+        if committed is not None:
+            _save_custom_configuration(cfg, course.dirs.root, model)
+            if committed.get("disposition") == "skipped":
+                skipped_models[model.name] = committed["reason"]
+                continue
+            output = course.dirs.root / "Segmentation_CustomModels" / model.name
+            declared = {entry["file"] for entry in json.loads((output / "manifest.json").read_text())["structures"]}
+            for path in output.glob("*.nii*"):
+                if path.name not in declared:
+                    import uuid
+                    from .durable_progress import _fsync_dir
+                    quarantine = course.dirs.root / ".custom-model-progress/orphans" / uuid.uuid4().hex
+                    quarantine.mkdir(parents=True)
+                    os.replace(path, quarantine / path.name)
+                    _fsync_dir(quarantine)
+                    _fsync_dir(output)
+        if (committed is not None and not force
+                and not _model_geometry_ready(course.dirs.root, model, ct_dir=ct_dir)):
             _rebuild_model_rtstruct_from_masks(course.dirs.root, model, ct_dir)
-        if force or not _model_outputs_ready(course.dirs.root, model, ct_dir=ct_dir):
+        if force or committed is None or not _model_geometry_ready(course.dirs.root, model, ct_dir=ct_dir):
             # Check body region eligibility before adding to run list
             eligible, reason = _check_custom_model_eligibility(cfg, course.dirs.root, model)
             if not eligible:
@@ -639,6 +657,8 @@ def run_custom_models_for_course(
                         model.name, course.patient_id, course.course_id, reason
                     )
                     skipped_models[model.name] = reason
+                    progress.commit_artifacts([], disposition="skipped", reason=reason)
+                    _save_custom_configuration(cfg, course.dirs.root, model)
                     continue
                 else:
                     logger.warning(
@@ -673,6 +693,16 @@ def run_custom_models_for_course(
 
     for model in models_to_run:
         _run_single_model(cfg, course, nifti_path, ct_dir, model)
+        output = course.dirs.segmentation_custom_models / model.name
+        manifest = json.loads((output / "manifest.json").read_text())
+        if manifest.get("missing_structures"):
+            raise RuntimeError(f"Custom model {model.name} omitted required structures")
+        for entry in manifest["structures"]:
+            sitk.ReadImage(str(output / entry["file"]))
+        _custom_progress(cfg, course.dirs.root, model, nifti_path).commit_artifacts(
+            [p for p in output.rglob("*") if p.is_file() and not p.name.startswith(".")
+             and not p.name.startswith("rtstruct")])
+        _save_custom_configuration(cfg, course.dirs.root, model)
 
     sentinel_content = "ok\n"
     if skipped_models:
@@ -697,14 +727,52 @@ def _rebuild_model_rtstruct_from_masks(course_root: Path, model: CustomModelDefi
 
 
 def _model_outputs_ready(course_root: Path, model: CustomModelDefinition, *, ct_dir: Path | None = None) -> bool:
+    """Require current inference binding and mask bytes before writer readiness."""
+    from types import SimpleNamespace
+    try:
+        config_path = course_root / ".custom-model-progress/configuration" / (model.name + ".json")
+        record = json.loads(config_path.read_text())
+        contract = load_course_contract(course_root)
+        value = _custom_progress(SimpleNamespace(**record["configuration"]), course_root,
+                                 model, contract.planning_ct_nifti).load()
+        if value is None or value.get("disposition") == "skipped":
+            return False
+        output = course_root / "Segmentation_CustomModels" / model.name
+        declared = {entry["file"] for entry in json.loads((output / "manifest.json").read_text())["structures"]}
+        if {p.name for p in output.glob("*.nii*")} != declared:
+            return False
+        return _model_geometry_ready(course_root, model, ct_dir=ct_dir)
+    except (OSError, ValueError, KeyError, RuntimeError):
+        return False
+
+
+def _save_custom_configuration(cfg, course_root, model):
+    from .artifact_progress import write_json
+    from .extraction_progress import scientific
+    names = ("totalseg_device", "totalseg_fast", "totalseg_force_split", "custom_models_conda_activate",
+             "conda_activate", "totalseg_weights_dir", "model_region_requirements", "body_region_qc_block_missing")
+    write_json(course_root / ".custom-model-progress/configuration" / (model.name + ".json"), {
+        "configuration": scientific({name: getattr(cfg, name, None) for name in names}),
+        "model_directory": str(model.directory), "model_name": model.name}, indent=2)
+
+
+def _model_geometry_ready(course_root: Path, model: CustomModelDefinition, *, ct_dir: Path | None = None) -> bool:
     output_dir = course_root / "Segmentation_CustomModels" / model.name
     if not output_dir.exists():
         return False
     rtstruct_path = output_dir / "rtstruct.dcm"
     if not rtstruct_path.exists():
-        return False
+        try:
+            manifest = json.loads((output_dir / "manifest.json").read_text())
+            if manifest.get("rtstruct", "missing") is not None:
+                return False
+            for entry in manifest["structures"]:
+                if np.any(sitk.GetArrayFromImage(sitk.ReadImage(str(output_dir / entry["file"])))):
+                    return False
+        except (OSError, ValueError, KeyError, RuntimeError):
+            return False
     from .rtstruct_geometry import geometry_adapter_output_current
-    if ct_dir is not None and not geometry_adapter_output_current(rtstruct_path, ct_dir):
+    if rtstruct_path.exists() and ct_dir is not None and not geometry_adapter_output_current(rtstruct_path, ct_dir):
         return False
     expected_structures = model.expected_structures()
     for struct_name in expected_structures:
@@ -712,6 +780,65 @@ def _model_outputs_ready(course_root: Path, model: CustomModelDefinition, *, ct_
         if not (output_dir / fname).exists():
             return False
     return True
+
+
+def _custom_progress(cfg, course_root, model, nifti_path, network=None):
+    from dataclasses import asdict
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    from .stage_completion import environment_record
+    definition = asdict(model)
+    networks = [network] if network else model.networks
+    if network:
+        definition["networks"] = [asdict(network)]
+        definition.pop("combine_order", None)
+        definition.pop("ensemble", None)
+    inputs = {"image": inventory([nifti_path]) if nifti_path else {}, "weights": {}, "prompts": {}}
+    region_requirements = getattr(cfg, "model_region_requirements", {}) or {}
+    body_regions = course_root / "qc_reports/body_regions.json"
+    if (model.required_body_regions or region_requirements.get(model.name)) and body_regions.is_file():
+        inputs["body_regions"] = inventory([body_regions])
+    for net in networks:
+        paths = []
+        for path in (net.archive_path, net.checkpoint_path):
+            if path and Path(path).is_file():
+                paths.append(Path(path))
+        if not paths:
+            source = (model.directory / net.source_dir) if net.source_dir else model.results_root() / net.dataset_dir
+            if source.is_dir():
+                paths.extend(p for p in source.rglob("*") if p.is_file())
+        inputs["weights"][net.alias] = inventory(paths)
+        if model.interface == "totalsegmentator":
+            from .segmentation import _totalseg_weights_identity
+            inputs["weights"][net.alias] = _totalseg_weights_identity(cfg, net.task or net.network_id, net.predict_args,
+                weights_root=getattr(cfg, "totalseg_weights_dir", None))
+        prompt = _optional_prompt_mask_path(course_root, net.prompt_model, net.prompt_structure)
+        if prompt:
+            inputs["prompts"].update(inventory([prompt]))
+        if net.anchor_source:
+            import glob
+            paths = ([Path(p) for p in glob.glob(_anchor_pattern(course_root, net.anchor_glob))]
+                     if net.anchor_source == "specialist_reference" else
+                     [Path(_anchor_pattern(course_root, net.anchor_manifest_path))])
+            inputs["prompts"].update(inventory(p for p in paths if p.is_file()))
+        if net.confine_to_lung_mask:
+            inputs["prompts"].update(inventory(p for p in
+                (course_root / "Segmentation_TotalSegmentator").rglob("*lung*.nii.gz")
+                if "_cropped" not in p.name))
+    if model.ensemble and model.ensemble.postprocessing_json and network is None:
+        path = Path(model.ensemble.postprocessing_json)
+        if not path.is_absolute():
+            path = model.directory / path
+        inputs["ensemble_postprocessing"] = inventory([path])
+    settings = {"definition": definition,
+        "eligibility": {"requirements": region_requirements.get(model.name),
+                        "block_missing": getattr(cfg, "body_region_qc_block_missing", True)},
+        "inference": {key: getattr(cfg, key, None) for key in
+                ("totalseg_device", "totalseg_fast", "totalseg_force_split", "custom_models_conda_activate", "conda_activate")}}
+    return ArtifactItem(course_root / ".custom-model-progress/items",
+        [model.name, network.alias if network else "model"], settings, inputs,
+        base=course_root, code=code_files("custom_models.py", "rtstruct_geometry.py",
+            "segmenters/postprocessing.py", "segmenters/medsam_boxprompt.py", "segmenters/totalsegmentator.py"),
+        environment=environment_record(("numpy", "SimpleITK", "torch", "nnunetv2", "TotalSegmentator")))
 
 
 def _combined_env(base_env: Dict[str, str], extra: Dict[str, str]) -> Dict[str, str]:
@@ -994,52 +1121,57 @@ def _safe_extract_network_archive(zf: zipfile.ZipFile, destination: Path) -> Non
 
 
 def _prepare_network_weights(model: CustomModelDefinition, network: NetworkDefinition) -> Path:
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    from .durable_progress import _fsync_dir
     results_root = model.results_root()
     dataset_dir = results_root / network.dataset_dir
-    if dataset_dir.exists():
-        return dataset_dir
-
+    dataset_dir.resolve().relative_to(results_root.resolve())
     results_root.mkdir(parents=True, exist_ok=True)
-    archive_path = network.archive_path
-    if archive_path and archive_path.exists() and archive_path.is_file():
-        logger.info("Extracting weights for model %s network %s", model.name, network.network_id)
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            _safe_extract_network_archive(zf, results_root)
-        if model.interface == "nnunetv1" and not dataset_dir.exists():
-            parts = Path(network.dataset_dir).parts
-            if parts and parts[0] == "nnUNet":
-                extracted_without_prefix = results_root.joinpath(*parts[1:])
-                if extracted_without_prefix.exists():
-                    target = results_root / parts[0] / Path(*parts[1:])
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if not target.exists():
-                        shutil.move(str(extracted_without_prefix), str(target))
-    else:
-        source_dir = network.source_dir
-        candidate_source: Optional[Path] = None
-        if source_dir:
-            candidate = (model.directory / source_dir).resolve()
-            if candidate.exists():
-                candidate_source = candidate
-        if candidate_source is None and archive_path and archive_path.exists() and archive_path.is_dir():
-            candidate_source = archive_path.resolve()
-        if candidate_source is None:
-            raise FileNotFoundError(
-                f"Unable to locate weights for network {network.network_id}: "
-                f"archive={archive_path}, source_dir={network.source_dir}"
-            )
-        dest_parent = dataset_dir.parent
-        dest_parent.mkdir(parents=True, exist_ok=True)
-        if dataset_dir.exists():
-            return dataset_dir
-        logger.info("Copying weights for model %s network %s", model.name, network.network_id)
-        shutil.copytree(candidate_source, dataset_dir)
-
-    if not dataset_dir.exists():
-        available = sorted(str(p.relative_to(results_root)) for p in results_root.rglob("*"))
-        raise FileNotFoundError(
-            f"After preparing weights, expected directory '{network.dataset_dir}' under {results_root} but it is missing."
-        )
+    archive = network.archive_path
+    source = (model.directory / network.source_dir).resolve() if network.source_dir else None
+    if source is None and archive and Path(archive).is_dir():
+        source = Path(archive).resolve()
+    packaged = archive is not None and Path(archive).is_file()
+    installed = not packaged and (source is None or source == dataset_dir.resolve())
+    if installed:
+        source = dataset_dir
+    if not packaged and (source is None or not source.is_dir()):
+        raise FileNotFoundError(f"Unable to locate weights for {model.name}/{network.network_id}")
+    inputs = inventory([archive] if packaged else (p for p in source.rglob("*") if p.is_file()))
+    item = ArtifactItem(results_root / ".weights-progress", str(network.dataset_dir),
+        {"interface": model.interface}, inputs, base=results_root,
+        code=code_files("custom_models.py"), environment={})
+    if item.load() is not None:
+        return dataset_dir
+    if not installed:
+        with tempfile.TemporaryDirectory(prefix=".prepare-weights-", dir=results_root.parent) as scratch:
+            staging = Path(scratch)
+            if packaged:
+                with zipfile.ZipFile(archive) as zf:
+                    _safe_extract_network_archive(zf, staging)
+                prepared = staging / network.dataset_dir
+                if not prepared.is_dir() and model.interface == "nnunetv1":
+                    parts = Path(network.dataset_dir).parts
+                    if parts and parts[0] == "nnUNet":
+                        prepared = staging.joinpath(*parts[1:])
+                if not prepared.is_dir():
+                    raise FileNotFoundError(f"Archive has no weight directory {network.dataset_dir}")
+            else:
+                prepared = staging / "prepared"
+                shutil.copytree(source, prepared)
+                if inventory((p for p in source.rglob("*") if p.is_file()), source) != inventory(
+                        (p for p in prepared.rglob("*") if p.is_file()), prepared):
+                    raise RuntimeError("Prepared network weights failed read-back")
+            for path in prepared.rglob("*"):
+                if path.is_file():
+                    with path.open("rb") as stream:
+                        os.fsync(stream.fileno())
+            dataset_dir.parent.mkdir(parents=True, exist_ok=True)
+            if dataset_dir.exists():
+                os.replace(dataset_dir, staging / "previous")
+            os.replace(prepared, dataset_dir)
+            _fsync_dir(dataset_dir.parent)
+    item.commit_artifacts([p for p in dataset_dir.rglob("*") if p.is_file()])
     return dataset_dir
 
 
@@ -1381,10 +1513,46 @@ def _run_single_model(
         output_dirs: Dict[str, Path] = {}
         anchor_diagnostics: Dict[str, Any] = {}
 
+        def commit_network(network, progress, output_dir):
+            # Preserve raw ensemble inputs as well as postprocessed masks before
+            # another network starts. Temporary inference directories may die.
+            saved = course.dirs.root / ".custom-model-progress/data" / progress.key / progress.binding.inputs_sha256 / progress.binding.config_sha256
+            saved.mkdir(parents=True, exist_ok=True)
+            raw = saved / "raw"
+            if raw.exists():
+                shutil.rmtree(raw)
+            shutil.copytree(output_dir, raw)
+            masks = {}
+            for index, (name, image) in enumerate(structures_by_network[network.alias].items()):
+                path = saved / f"mask-{index}.nii.gz"
+                sitk.WriteImage(image, str(path))
+                sitk.ReadImage(str(path))
+                masks[name] = path.relative_to(course.dirs.root).as_posix()
+            if _custom_progress(cfg, course.dirs.root, model, nifti_path, network).binding != progress.binding:
+                raise RuntimeError("Custom network inputs changed during inference")
+            progress.commit_artifacts([p for p in saved.rglob("*") if p.is_file()],
+                masks=masks, raw=raw.relative_to(course.dirs.root).as_posix(),
+                diagnostics=anchor_diagnostics.get(network.alias))
+
+
         for network in model.networks:
             network_env = _combined_env(env, network.env)
+            if getattr(cfg, "totalseg_weights_dir", None):
+                network_env["TOTALSEG_WEIGHTS_PATH"] = str(cfg.totalseg_weights_dir)
             output_dir = tmp_root / f"output_{_sanitize_token(network.alias)}"
             output_dir.mkdir(parents=True, exist_ok=True)
+            progress = _custom_progress(cfg, course.dirs.root, model, nifti_path, network)
+            cached = progress.load()
+            if cached is not None:
+                structures_by_network[network.alias] = {
+                    name: sitk.ReadImage(str(course.dirs.root / path))
+                    for name, path in cached["masks"].items()}
+                if cached.get("diagnostics") is not None:
+                    anchor_diagnostics[network.alias] = cached["diagnostics"]
+                raw = course.dirs.root / cached["raw"]
+                shutil.copytree(raw, output_dir, dirs_exist_ok=True)
+                output_dirs[network.alias] = output_dir
+                continue
             anchor, anchor_diag = _derive_anchor_for_network(
                 course.dirs.root,
                 course.patient_id,
@@ -1407,6 +1575,7 @@ def _run_single_model(
                 anchor_diag["status"] = "skipped_no_anchor"
                 anchor_diagnostics[network.alias] = anchor_diag
                 output_dirs[network.alias] = output_dir
+                commit_network(network, progress, output_dir)
                 continue
             if model.interface not in {"totalsegmentator", "medsam_boxprompt"}:
                 _prepare_network_weights(model, network)
@@ -1494,6 +1663,7 @@ def _run_single_model(
                 if network.anchor_source or network.confine_to_lung_mask:
                     anchor_diagnostics[network.alias] = anchor_diag
             output_dirs[network.alias] = output_dir
+            commit_network(network, progress, output_dir)
 
         if model.ensemble:
             ensemble_inputs: List[Path] = []
