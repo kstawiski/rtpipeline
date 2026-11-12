@@ -581,3 +581,29 @@ def test_current_rejection_excludes_that_candidate_for_the_whole_decision(tmp_pa
     assert measure(root)
     assert (root / ".dvh/current").resolve() != rejected
     assert not any(e["event"] == "recovered_commit" for e in events(root))
+
+
+def test_preflight_routes_legacy_upstream_before_any_dvh_state_exists(tmp_path):
+    root = course(tmp_path / "Output")
+    receipt = root / ".segmentation_done"
+    receipt.write_text('{"status":"disabled"}')
+    assert not (root / ".dvh").exists()
+    config = tmp_path / "config.yaml"
+    config.write_text("{}")
+    assert gen.preflight(root.parents[1], config)["courses"] == [{
+        "course": str(root), "reusable": False,
+        "reason_code": "DVH_UPSTREAM_RECOMPUTE_REQUIRED"}]
+    assert not receipt.exists()
+    assert json.loads((root / ".dvh/upstream-recompute.json").read_text())["upstream"] == [".segmentation_done"]
+
+
+@pytest.mark.parametrize("failed", ["failed\n", '{"status":"failed"}\n'])
+def test_preflight_keeps_failed_upstream_closed_without_automatic_retry(tmp_path, failed):
+    root = course(tmp_path / "Output")
+    receipt = root / ".segmentation_done"
+    receipt.write_text(failed)
+    config = tmp_path / "config.yaml"
+    config.write_text("{}")
+    assert gen.preflight(root.parents[1], config)["courses"] == []
+    assert receipt.read_text() == failed
+    assert not (root / ".dvh").exists()

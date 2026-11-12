@@ -364,3 +364,27 @@ def test_real_snakefile_reruns_legacy_upstream_and_binds_fresh_receipt(tmp_path)
     assert bound["generation"]["code_identity_sha256"] == fresh["code_identity_sha256"]
     assert current(course)["binding"] == effective["binding"]
     assert not (course / ".dvh/upstream-recompute.json").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.requires_snakemake
+def test_real_snakefile_routes_legacy_stage_before_first_dvh(tmp_path):
+    pipeline = Production(tmp_path)
+    course = pipeline.organize()
+    pipeline.run(course / ".crop_ct_done")
+    assert not (course / ".dvh").exists()
+    receipt = course / ".segmentation_done"
+    receipt.write_text('{"status":"disabled"}\n')
+    pipeline.run(course / ".dvh_done")
+    from rtpipeline.stage_completion import validate_stage_completion_sentinel
+    fresh = validate_stage_completion_sentinel(receipt, expected_stage="segmentation",
+        expected_patient=course.parent.name, expected_course=course.name)
+    assert fresh["status"] == "disabled"
+    from rtpipeline.dvh_generation import current, input_manifest
+    bound = next(item for item in input_manifest(course) if item.get("path") == ".segmentation_done")
+    assert bound["generation"]["code_identity_sha256"] == fresh["code_identity_sha256"]
+    assert current(course)["binding"] == json.loads((course / ".dvh_done").read_text())["binding"]
+    assert not (course / ".dvh/upstream-recompute.json").exists()
+    count = pipeline.count()
+    pipeline.run(course / ".dvh_done")
+    assert pipeline.count() == count

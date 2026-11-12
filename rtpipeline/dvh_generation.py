@@ -333,6 +333,21 @@ def _event(journal, event, **fields):
     journal.append({"event": event, **fields})
 
 
+def _upstream_requires_recompute(path):
+    text = Path(path).read_text()
+    # A failed course is an explicit negative outcome, not an unbound success
+    # to retry. The workflow's upstream gate continues to close that course.
+    if text.strip().lower() == "failed":
+        return False
+    try:
+        receipt = json.loads(text)
+    except (ValueError, TypeError):
+        return True
+    if isinstance(receipt, dict) and receipt.get("status") == "failed":
+        return False
+    return not (isinstance(receipt, dict) and all(key in receipt for key in _UPSTREAM_FIELDS))
+
+
 def route_legacy_upstream(course, journal):
     """Invalidate unbound stage receipts so their DAG producers must run again."""
     course = Path(course)
@@ -342,12 +357,7 @@ def route_legacy_upstream(course, journal):
         path = course / name
         if not path.is_file():
             continue
-        try:
-            receipt = _read(path)
-            bound = isinstance(receipt, dict) and all(key in receipt for key in _UPSTREAM_FIELDS)
-        except (ValueError, TypeError):
-            bound = False
-        if not bound:
+        if _upstream_requires_recompute(path):
             invalid.add(name)
             # Persist the rerouting requirement before invalidating the alias.
             # A second run must still refuse until a fresh receipt is present.
@@ -663,6 +673,11 @@ def preflight(output, configfile, custom_config=None):
     result = []
     courses = {p.parent for p in Path(output).glob("*/*/.dvh_done")}
     courses.update(p.parent for p in Path(output).glob("*/*/.dvh"))
+    # A legacy receipt can precede the first DVH publication. Scan the small
+    # receipts as well; valid courses without DVH state need no source hashing.
+    for name in _UPSTREAM_RECEIPTS:
+        courses.update(p.parent for p in Path(output).glob("*/*/" + name)
+                       if p.is_file() and _upstream_requires_recompute(p))
     for course in sorted(courses):
         root = course / ".dvh"
         root.mkdir(exist_ok=True)

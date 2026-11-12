@@ -952,7 +952,7 @@ os.environ["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(_DVH_RULE_PARAMETERS, 
 
 # DVH performs a fresh per-course code/config/input check before every DAG
 # decision. Invalidate only that completion alias; preserve committed artifacts.
-if list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
+if COURSE_MANIFEST.exists() or list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
     from rtpipeline.snakemake_delegate import invoke as _dvh_invoke, runtime_environment as _dvh_environment
     from types import SimpleNamespace as _DvhParams
     _dvh_arguments = ["--output-dir", str(OUTPUT_DIR), "--configfile", str(EFFECTIVE_CONFIGFILE)]
