@@ -219,3 +219,62 @@ def test_native_mr_roi_sigkill_resume_and_base_bytes(tmp_path, mode):
     if destination:
         Path(destination,f'mr-{mode}-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n')
         shutil.copyfile(tmp_path/'mr.log',Path(destination,f'mr-{mode}.log'))
+
+
+@pytest.mark.usefixtures('rasterizer_guard_stub')
+@pytest.mark.parametrize('change', ['image_voxels','raw_image_bytes','code_bytes','runtime'])
+def test_mr_series_resume_rejects_bound_image_code_and_runtime(tmp_path, monkeypatch, change):
+    from test_mr_series_dispositions import _env
+    from rtpipeline import radiomics, extraction_progress as ep
+    config, series, _, output = _env(monkeypatch,tmp_path)
+    config.resume = True
+    code = tmp_path/'deciding.py';code.write_text('# A\n')
+    monkeypatch.setattr(ep,'code_manifest',lambda: {'deciding.py':code})
+    runtime = {'version':'A'}
+    monkeypatch.setattr(ep,'runtime_environment',lambda: dict(runtime))
+    image = sitk.Image([3,3,3],sitk.sitkInt16)
+    monkeypatch.setattr(radiomics,'_load_series_image',lambda *a,**k: image)
+    raw = series.dir/'image-instance'  # GDCM does not require a .dcm suffix.
+    raw.write_bytes(b'synthetic header A')
+    extractor = radiomics._extractor(config,'MR')
+    execute = extractor.execute
+    calls = []
+    def counted(*args,**kwargs):
+        calls.append(1)
+        return execute(*args,**kwargs)
+    monkeypatch.setattr(extractor,'execute',counted)
+    radiomics.radiomics_for_mr_series(config,series)
+    assert len(calls) == 1
+    before = output.with_suffix('.parquet').stat().st_mtime_ns
+    radiomics.radiomics_for_mr_series(config,series)
+    assert len(calls) == 1
+    assert output.with_suffix('.parquet').stat().st_mtime_ns == before
+    if change == 'image_voxels': image[0,0,0] = 12
+    elif change == 'raw_image_bytes': raw.write_bytes(b'synthetic header B')
+    elif change == 'code_bytes': code.write_text('# B\n')
+    else: runtime['version'] = 'B'
+    radiomics.radiomics_for_mr_series(config,series)
+    assert len(calls) == 2
+    radiomics.radiomics_for_mr_series(config,series)
+    assert len(calls) == 2
+
+
+@pytest.mark.usefixtures('rasterizer_guard_stub')
+@pytest.mark.parametrize('source', ['manual','auto'])
+def test_mr_persistence_failure_cannot_publish_optional_roi(tmp_path, monkeypatch, source):
+    from test_mr_series_dispositions import _env, _plant_stale
+    from test_mr_series_acceptance import _auto_source
+    from rtpipeline import radiomics, extraction_progress as ep, durable_progress as dp
+    from rtpipeline.radiomics_outcomes import RadiomicsCourseExtractionError
+    config, series, _, output = _env(monkeypatch,tmp_path)
+    if source == 'auto':
+        monkeypatch.setattr(radiomics,'_find_mr_manual_rs',lambda *a,**k: [])
+        _auto_source(monkeypatch,output)
+    _plant_stale(output)
+    def fail(*args,**kwargs):
+        raise dp.DurableProgressError('SYNTHETIC_MR_WRITE_FAILED')
+    monkeypatch.setattr(ep.BoundItem,'commit',fail)
+    with pytest.raises(RadiomicsCourseExtractionError,match='SYNTHETIC_MR_WRITE_FAILED'):
+        radiomics.radiomics_for_mr_series(config,series)
+    assert not output.exists() and not output.with_suffix('.parquet').exists()
+    assert not list(output.parent.rglob('commit.json'))

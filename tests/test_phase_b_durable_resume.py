@@ -472,6 +472,9 @@ def test_real_phase_b_three_sigkill_legs(tmp_path, backend):
             if key[0] in {"radiomics", "robustness", "reduction"}:
                 assert before[key] == previous_counts[key], key
         previous_committed, previous_counts = committed, before
+        if leg == 'native_roi':
+            assert sum(stage == 'radiomics' for stage, _ in committed) >= 2
+            assert list(course.glob('.radiomics-progress/arms/**/commit.json'))
         read_all_commits(pipeline.output)
         # Proceed to the next deterministic kill boundary on the same workflow.
         # The final resume below checks all committed extraction keys together.
@@ -562,6 +565,7 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
         sentinel.write_text(json.dumps(payload))
     elif mutation == 'source':
         source = sorted(load_course_contract(stale).planning_ct_dir.rglob('*.dcm'))[1]
+        original_file = source.read_bytes()
         dataset = pydicom.dcmread(source)
         original = dataset.PixelData
         pixels = bytearray(original)
@@ -569,6 +573,9 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
         dataset.PixelData = bytes(pixels)
         dataset.save_as(source, enforce_file_format=True)
         assert sum(a != b for a, b in zip(original, dataset.PixelData)) == 1
+        changed_file = source.read_bytes()
+        assert len(original_file) == len(changed_file)
+        assert sum(a != b for a, b in zip(original_file, changed_file)) == 1
     elif mutation == 'code':
         code = pipeline.source / 'rtpipeline/radiomics_schema.py'
         code.write_text(code.read_text() + '\n# synthetic deciding-code identity mutation\n')
