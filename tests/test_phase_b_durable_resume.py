@@ -277,9 +277,23 @@ def read_all_commits(output):
     return dict(counts)
 
 
+def require_process_semaphores():
+    import multiprocessing
+    try:
+        lock = multiprocessing.Lock()
+    except Exception as exc:
+        pytest.skip(f'native ProcessPool requires multiprocessing.Lock(): {type(exc).__name__}: {exc}')
+    del lock
+
+
 class PhaseBProduction(Production):
     run_timeout = 480
-    def __init__(self, root):
+    def __init__(self, root, *, backend='conda'):
+        self.backend = backend
+        if backend == 'native_processpool':
+            require_process_semaphores()
+            assert Path(os.environ['RTPIPELINE_TEST_SNAKEMAKE']).is_file()
+            assert (Path(os.environ['RTPIPELINE_RADIOMICS_ENV_PREFIX']) / 'bin/python').is_file()
         super().__init__(root)
         self.radiomics = Path(os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX",
             "/home/konrad/rtpipeline_release/b29a324/envs/rtpipeline-radiomics"))
@@ -317,6 +331,14 @@ class PhaseBProduction(Production):
             if path.name != "__pycache__":
                 (sites / path.name).symlink_to(path, target_is_directory=path.is_dir())
         self.env["WS516_RAD_SITES"] = str(sites)
+        if backend == 'native_processpool':
+            self.env['WS516_NATIVE'] = '1'
+            self.env['RTPIPELINE_USE_PARALLEL_RADIOMICS'] = '1'
+            self.env.pop('RTPIPELINE_RADIOMICS_SEQUENTIAL', None)
+            config['radiomics']['sequential'] = False
+            config['max_workers'] = 2
+            self.config.write_text(yaml.safe_dump(config))
+            self.cores = 2
         hook = root / "instrumentation/sitecustomize.py"
         with hook.open("a") as stream:
             stream.write('''
@@ -375,7 +397,21 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         return summarize(group, *args, **kwargs)
     rr.summarize_feature_stability = counted_summary
     import rtpipeline.radiomics as nominal
-    nominal._extractor = lambda *args, **kwargs: None
+    if os.environ.get('WS516_NATIVE') != '1':
+        nominal._extractor = lambda *args, **kwargs: None
+    else:
+        import rtpipeline.radiomics_parallel as parallel
+        from dataclasses import asdict
+        original_roi = parallel._extract_one_uncached
+        def native_roi(task):
+            global active_stage
+            active_stage = 'radiomics'
+            identity = asdict(task)
+            identity.pop('course_dir'); identity.pop('rs_path')
+            event({'event':'extract', 'stage':'radiomics', 'key':ep.digest(identity),
+                   'backend':'native_processpool', 'pid':os.getpid()})
+            return original_roi(task)
+        parallel._extract_one_uncached = native_roi
     import rtpipeline.utils as utils
     adaptive = utils.run_tasks_with_adaptive_workers
     def fixture_workers(label, *args, **kwargs):
@@ -395,6 +431,7 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
                   if line.strip()]
         n = sum(e["event"]=="commit" and e["stage"]==stage for e in counts)
         if stage=="radiomics" and n==2: pause_b("conda_stream")
+        if stage=="radiomics" and n==2: pause_b("native_roi")
         if stage=="reduction" and n==1: pause_b("aggregate_reduction")
         return result
     ep.BoundItem.commit = committed
@@ -408,8 +445,9 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
 
 @pytest.mark.integration
 @pytest.mark.requires_snakemake
-def test_real_phase_b_three_sigkill_legs(tmp_path):
-    pipeline = PhaseBProduction(tmp_path)
+@pytest.mark.parametrize('backend', ['conda', 'native_processpool'])
+def test_real_phase_b_three_sigkill_legs(tmp_path, backend):
+    pipeline = PhaseBProduction(tmp_path, backend=backend)
     course = pipeline.organize()
     clean = tmp_path / "organized"
     shutil.copytree(pipeline.output, clean, symlinks=True)
@@ -424,7 +462,9 @@ def test_real_phase_b_three_sigkill_legs(tmp_path):
     shutil.copytree(clean, pipeline.output, symlinks=True)
     pipeline.events.unlink()
     previous_committed, previous_counts = set(), Counter()
-    for leg in ("conda_stream", "robustness_later", "aggregate_reduction"):
+    legs = ['native_roi' if backend == 'native_processpool' else 'conda_stream',
+            'robustness_later', 'aggregate_reduction']
+    for leg in legs:
         pipeline.run(target, kill=leg)
         committed = {(e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "commit"}
         before = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
@@ -468,10 +508,12 @@ def test_real_phase_b_three_sigkill_legs(tmp_path):
     assert "Nothing to be done" in log.read_text()
     assert calls == Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
     readback = read_all_commits(pipeline.output)
+    if backend == 'native_processpool':
+        assert any(e.get('backend') == backend for e in pipeline.event_rows())
     destination = os.environ.get("WS516_EVIDENCE_DIR")
     if destination:
-        Path(destination, "interrupt-resume-evidence.json").write_text(json.dumps({
-            "legs": ["conda_stream", "robustness_later", "aggregate_reduction"],
+        Path(destination, f"interrupt-resume-evidence-{backend}.json").write_text(json.dumps({
+            'backend': backend, "legs": legs,
             "repeated_committed_extractions": 0, "worker_only_scientific_jobs": 0,
             "byte_equal_parquet": {"radiomics_ct.parquet": hashlib.sha256(control_bytes).hexdigest(),
                 "radiomics_robustness_ct.parquet": hashlib.sha256(robustness_bytes).hexdigest(),
@@ -480,61 +522,123 @@ def test_real_phase_b_three_sigkill_legs(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.requires_snakemake
-def test_two_course_production_invalidation_is_local(tmp_path):
-    """One stale receipt cannot advance a shared dependency past its peer."""
+@pytest.mark.parametrize('mutation', ['receipt', 'source', 'code', 'parameter'])
+def test_two_course_production_invalidation_is_local(tmp_path, mutation):
+    """Exercise shared-DAG invalidation and an explicitly course-scoped parameter run."""
     import pydicom
     from test_dvh_durable_resume import synthetic_course
+    from rtpipeline.course_contract import load_course_contract
     pipeline = PhaseBProduction(tmp_path)
-    second = tmp_path / "Input/second"
+    second = tmp_path / 'Input/second'
     synthetic_course(second)
-    for path in second.rglob("*.dcm"):
+    for path in second.rglob('*.dcm'):
         dataset = pydicom.dcmread(path)
-        dataset.PatientID = "SYNTHETIC2"
+        dataset.PatientID = 'SYNTHETIC2'
         dataset.save_as(path, enforce_file_format=True)
     config = yaml.safe_load(pipeline.config.read_text())
-    config["radiomics_robustness"]["enabled"] = False
+    config['radiomics_robustness']['enabled'] = False
     pipeline.config.write_text(yaml.safe_dump(config))
-    pipeline.run(pipeline.output / "_COURSES/manifest.json")
-    manifest = json.loads((pipeline.output / "_COURSES/manifest.json").read_text())
-    assert len(manifest["courses"]) == 2
-    pipeline.run("all")
-    valid = pipeline.output / "SYNTHETIC/2024-01"
-    stale = pipeline.output / "SYNTHETIC2/2024-01"
-    protected = {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
-                 for name in (".radiomics_done", "radiomics_ct.parquet", "radiomics_ct.xlsx")}
+    pipeline.run(pipeline.output / '_COURSES/manifest.json')
+    manifest = json.loads((pipeline.output / '_COURSES/manifest.json').read_text())
+    assert len(manifest['courses']) == 2
+    pipeline.run('all')
+    valid = pipeline.output / 'SYNTHETIC/2024-01'
+    stale = pipeline.output / 'SYNTHETIC2/2024-01'
+    names = ('.radiomics_done', 'radiomics_ct.parquet', 'radiomics_ct.xlsx')
+    def snapshot(root):
+        return {name: ((root / name).read_bytes(), (root / name).stat().st_mtime_ns) for name in names}
+    protected = snapshot(valid)
     dependencies = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
-                    for p in (pipeline.source / ".snakemake/rtpipeline-config-dependencies").rglob("*.json")}
-    sentinel = stale / ".radiomics_done"
-    payload = json.loads(sentinel.read_text())
-    payload["configuration_dependency_sha256"] = "stale-synthetic-binding"
-    sentinel.write_text(json.dumps(payload))
-    before = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
-    command = pipeline.command("all") + ["--dry-run"]
-    planned = subprocess.run(command, env=pipeline.env, capture_output=True, text=True, timeout=180)
-    log = planned.stdout + planned.stderr
-    assert planned.returncode == 0, log
-    assert "rule radiomics_course:" in log, log
-    assert f"patient=SYNTHETIC2, course=2024-01" in log, log
-    assert "patient=SYNTHETIC, course=2024-01" not in log, log
-    assert not sentinel.exists()
-    assert protected == {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
-                         for name in protected}
+        for p in (pipeline.source / '.snakemake/rtpipeline-config-dependencies').rglob('*.json')}
+    before = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'extract')
+    old_keys = {root: {json.loads(p.read_text())['item_key']
+        for p in (root / 'metadata/.radiomics_ct-progress').rglob('commit.json')}
+        for root in (valid, stale)}
+    assert all(old_keys.values())
+    sentinel = stale / '.radiomics_done'
+    if mutation == 'receipt':
+        payload = json.loads(sentinel.read_text())
+        payload['configuration_dependency_sha256'] = 'stale-synthetic-binding'
+        sentinel.write_text(json.dumps(payload))
+    elif mutation == 'source':
+        source = sorted(load_course_contract(stale).planning_ct_dir.rglob('*.dcm'))[1]
+        dataset = pydicom.dcmread(source)
+        original = dataset.PixelData
+        pixels = bytearray(original)
+        pixels[0] ^= 1  # Exactly one raw-source byte; identifiers and parameters stay fixed.
+        dataset.PixelData = bytes(pixels)
+        dataset.save_as(source, enforce_file_format=True)
+        assert sum(a != b for a, b in zip(original, dataset.PixelData)) == 1
+    elif mutation == 'code':
+        code = pipeline.source / 'rtpipeline/radiomics_schema.py'
+        code.write_text(code.read_text() + '\n# synthetic deciding-code identity mutation\n')
+    else:
+        # The public CLI supports a course filter and an explicit parameter file.
+        # Keep the peer's configuration fixed; apply binWidth=50 only to this
+        # selected course, using the same production entry point as the DAG.
+        params = tmp_path / 'course2-parameters.yaml'
+        settings = yaml.safe_load(Path(config['radiomics']['params_file']).read_text())
+        settings['setting']['binWidth'] = 50
+        params.write_text(yaml.safe_dump(settings))
+        command = [str(pipeline.radiomics / 'bin/python'), '-m', 'rtpipeline.cli',
+            '--dicom-root', str(tmp_path / 'Input'), '--outdir', str(pipeline.output),
+            '--logs', str(tmp_path / 'Logs'), '--stage', 'radiomics',
+            '--course-filter', 'SYNTHETIC2/2024-01', '--manifest', str(pipeline.output / '_COURSES/manifest.json'),
+            '--max-workers', '1', '--sequential-radiomics', '--radiomics-params', str(params),
+            '--custom-structures', str(pipeline.custom)]
+        env = dict(pipeline.env, RTPIPELINE_CONFIGFILE=str(pipeline.config))
+        completed = subprocess.run(command, env=env, cwd=pipeline.source,
+            capture_output=True, text=True, timeout=240)
+        log = completed.stdout + completed.stderr
+        assert completed.returncode == 0, log
+    if mutation != 'parameter':
+        planned = subprocess.run(pipeline.command('all') + ['--dry-run'], env=pipeline.env,
+            capture_output=True, text=True, timeout=180)
+        log = planned.stdout + planned.stderr
+        assert planned.returncode == 0, log
+        assert 'rule radiomics_course:' in log, log
+        assert 'patient=SYNTHETIC2, course=2024-01' in log, log
+        if mutation != 'code':
+            assert 'patient=SYNTHETIC, course=2024-01' not in log, log
+            assert protected == snapshot(valid)
+        else:
+            assert 'patient=SYNTHETIC, course=2024-01' in log, log
+        assert not sentinel.exists()
+        pipeline.run('all')
+    if mutation != 'code':
+        assert protected == snapshot(valid)
     assert dependencies == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
-                            for p in (pipeline.source / ".snakemake/rtpipeline-config-dependencies").rglob("*.json")}
-    pipeline.run("all")
-    assert protected == {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
-                         for name in protected}
-    after = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
-    assert after == before  # The repaired receipt reuses its own bound ROI items.
+        for p in (pipeline.source / '.snakemake/rtpipeline-config-dependencies').rglob('*.json')}
+    after = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'extract')
+    changed_keys = {key for stage, key in after if after[stage, key] > before[stage, key] and stage == 'radiomics'}
+    expected_keys = set() if mutation == 'receipt' else old_keys[stale]
+    if mutation == 'code':
+        expected_keys |= old_keys[valid]
+    assert changed_keys == expected_keys, (mutation, changed_keys, expected_keys)
+    for key in expected_keys:
+        assert after['radiomics', key] == before['radiomics', key] + 1
+    reason = {'source': 'EXTRACTION_INPUTS_CHANGED', 'code': 'EXTRACTION_CODE_CHANGED',
+              'parameter': 'EXTRACTION_CONFIGURATION_CHANGED'}.get(mutation)
+    reason_evidence = {}
+    if reason:
+        for root in (valid, stale):
+            records = [entry['body'] for p in root.rglob('.lock-*.jsonl')
+                for entry in dp.ProgressJournal.read(p).records]
+            invalidated = {entry['item_key'] for entry in records
+                if entry.get('event') == 'item_invalidated' and reason in entry.get('reason_codes', [])}
+            expected = old_keys[root] if root == stale or mutation == 'code' else set()
+            assert invalidated & old_keys[root] == expected, (root, reason, invalidated, expected)
+            reason_evidence[root.parent.name] = sorted(invalidated & old_keys[root])
     readback = read_all_commits(pipeline.output)
-    destination = os.environ.get("WS516_EVIDENCE_DIR")
+    destination = os.environ.get('WS516_EVIDENCE_DIR')
     if destination:
-        Path(destination, "two-course-invalidation.json").write_text(json.dumps({
-            "valid_course_unchanged_bytes_and_mtimes": True,
-            "shared_dependencies_unchanged_bytes_and_mtimes": True,
-            "scheduled_radiomics_courses": ["SYNTHETIC2/2024-01"],
-            "repeated_extractor_calls": 0, "readback": readback}, indent=2) + "\n")
-        evidence_log = Path(destination, "production-evidence/two-course-dry-run.log")
+        Path(destination, f'two-course-invalidation-{mutation}.json').write_text(json.dumps({
+            'mutation': mutation, 'peer_bytes_and_mtimes_unchanged': mutation != 'code',
+            'shared_dependencies_unchanged_bytes_and_mtimes': True,
+            'recomputed_keys': sorted(changed_keys), 'reason_code': reason,
+            'reason_evidence': reason_evidence, 'parameter_scope': 'public CLI --course-filter' if mutation == 'parameter' else None,
+            'readback': readback}, indent=2) + '\n')
+        evidence_log = Path(destination, f'production-evidence/two-course-{mutation}.log')
         evidence_log.parent.mkdir(parents=True, exist_ok=True)
         evidence_log.write_text(log)
 
@@ -556,6 +660,9 @@ def test_uninterrupted_scientific_bytes_match_base(tmp_path):
     candidate_books = {p.relative_to(pipeline.output).as_posix(): p.read_bytes()
                  for p in pipeline.output.rglob("*.xlsx")
                  if not any(part.startswith(".") for part in p.relative_to(pipeline.output).parts)}
+    candidate_dispositions = {p.relative_to(pipeline.output).as_posix(): p.read_bytes()
+        for p in pipeline.output.rglob('radiomics_robustness_source_dispositions.json')}
+    assert candidate_dispositions
     for name in ("rtpipeline", "workflow", "envs"):
         shutil.rmtree(pipeline.source / name)
     archive = subprocess.run(["git", "archive", "3f94c63", "rtpipeline", "workflow", "envs", "Snakefile", "config.yaml"],
@@ -595,7 +702,36 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
     shutil.rmtree(pipeline.output)
     shutil.copytree(clean, pipeline.output, symlinks=True)
     pipeline.run("all")
-    evidence = {"base": "3f94c631d44d9452b0299341fa8fb01e93d1fd3c", "parquet": {}, "workbooks": {}}
+    evidence = {"base": "3f94c631d44d9452b0299341fa8fb01e93d1fd3c", "parquet": {}, "workbooks": {}, 'dispositions': {}}
+    disposition_hashes = {}
+    for name, expected in candidate_dispositions.items():
+        actual = (pipeline.output / name).read_bytes()
+        left, right = json.loads(expected), json.loads(actual)
+        assert left.keys() == right.keys()
+        changed_fields = [field for field in left if left[field] != right[field]]
+        assert changed_fields == ['code_identity'], (name, changed_fields)
+        assert left['rows'] == right['rows']  # Every disposition, in publication order.
+        assert left['rows_sha256'] == right['rows_sha256']
+        assert {k: v for k, v in left.items() if k != 'code_identity'} == {
+            k: v for k, v in right.items() if k != 'code_identity'}
+        # Serialization outside code identity must also retain exact bytes.
+        def without_code(raw):
+            return re.sub(rb'  "code_identity": \{.*?\n  \},\n', b'', raw, flags=re.S)
+        assert without_code(expected) == without_code(actual)
+        sources_left = {item['path']: item['sha256'] for item in left['code_identity']['sources']}
+        sources_right = {item['path']: item['sha256'] for item in right['code_identity']['sources']}
+        assert sources_left.keys() - sources_right.keys() == {'extraction_progress.py', 'durable_progress.py'}
+        assert not sources_right.keys() - sources_left.keys()
+        assert left['code_identity']['pipeline_version'] == right['code_identity']['pipeline_version']
+        code_changes = {path: {'candidate_sha256': sources_left[path], 'base_sha256': sources_right.get(path)}
+            for path in sources_left if sources_left[path] != sources_right.get(path)}
+        disposition_hashes[name.split('/metadata/')[0]] = (hashlib.sha256(expected).hexdigest(), hashlib.sha256(actual).hexdigest())
+        evidence['dispositions'][name] = {'changed_fields': changed_fields,
+            'records_equal_in_order': True, 'record_count': len(left['rows']),
+            'serialization_outside_code_identity_byte_equal': True,
+            'code_changes': code_changes, 'candidate_code_identity': left['code_identity'],
+            'base_code_identity': right['code_identity'],
+            'candidate_sha256': hashlib.sha256(expected).hexdigest(), 'base_sha256': hashlib.sha256(actual).hexdigest()}
     for name, expected in candidate.items():
         actual = (pipeline.output / name).read_bytes()
         if actual != expected:
@@ -615,6 +751,13 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
                 # These columns explicitly report producing code/receipt hashes;
                 # changed implementation bytes necessarily change those hashes.
                 provenance = [c for c in left if c in {"source_dispositions_sha256"}]
+                for column in provenance:
+                    assert right.columns.get_loc(column) == left.columns.get_loc(column)
+                    for index in left.index:
+                        first_hash, second_hash = left.at[index, column], right.at[index, column]
+                        if pd.isna(first_hash) and pd.isna(second_hash):
+                            continue
+                        assert (first_hash, second_hash) in disposition_hashes.values(), (name, sheet, index)
                 provenance_columns[first.sheet_names.index(sheet) + 1] = {
                     left.columns.get_loc(c) + 1 for c in provenance}
                 pd.testing.assert_frame_equal(left.drop(columns=provenance),
