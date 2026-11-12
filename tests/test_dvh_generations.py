@@ -537,7 +537,7 @@ def test_legacy_upstream_is_routed_and_cannot_be_trusted_on_repeated_runs(tmp_pa
     for _ in range(2):
         with pytest.raises(DurableProgressError, match="DVH_UPSTREAM_RECOMPUTE_REQUIRED"):
             gen.run(root, gen.effective_settings(), None, lambda: pytest.fail("legacy upstream trusted"))
-    assert not (root / ".organized").exists()
+    assert json.loads((root / ".organized").read_text()) == {"status": "ok"}
     assert json.loads((root / ".dvh/upstream-recompute.json").read_text())["upstream"] == [".organized"]
     assert any(e.get("reason_code") == "DVH_UPSTREAM_LEGACY_UNBOUND" for e in events(root))
 

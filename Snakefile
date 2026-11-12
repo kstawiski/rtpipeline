@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 from rtpipeline.config_dependencies import (
@@ -910,13 +909,12 @@ if COURSE_MANIFEST.exists():
                 expected_course=_course,
             )
     except (OSError, ValueError, KeyError, TypeError) as _exc:
-        _organize_dependency = Path(ORGANIZE_CONFIG_DEPENDENCY)
-        _target_ns = max(
-            time.time_ns(),
-            _organize_dependency.stat().st_mtime_ns + 1_000_000_000,
-            COURSE_MANIFEST.stat().st_mtime_ns + 1_000_000_000,
-        )
-        os.utime(_organize_dependency, ns=(_target_ns, _target_ns))
+        # This is the checkpoint's declared output. Removing it defers course
+        # input expansion until organize republishes fresh receipts. Merely
+        # touching its small configuration input can be ignored when Snakemake
+        # finds the same input checksum; deleting .organized instead orphans a
+        # side-effect input that has no independent producer rule.
+        COURSE_MANIFEST.unlink()
         sys.stderr.write(
             "[rtpipeline] Re-running organize for invalid manifest course "
             f"completion: {_exc}\n"

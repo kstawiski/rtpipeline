@@ -355,8 +355,13 @@ def route_legacy_upstream(course, journal):
                                 "reason_code": "DVH_UPSTREAM_RECOMPUTE_REQUIRED"})
             _event(journal, "upstream_recompute_required", upstream=name,
                    reason_code="DVH_UPSTREAM_LEGACY_UNBOUND")
-            path.unlink()
-            _fsync_dir(path.parent)
+            # Organize publishes this path as a checkpoint side effect, with
+            # no independent producing rule. Keep the rejected receipt until
+            # its checkpoint reruns; deleting it would prevent DAG construction.
+            # Its legacy identity and the pending record still forbid DVH use.
+            if name != ".organized":
+                path.unlink()
+                _fsync_dir(path.parent)
         else:
             invalid.discard(name)
     if invalid:
