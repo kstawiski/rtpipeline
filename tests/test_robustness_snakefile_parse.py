@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import ast
 import io
+import json
+import os
+import shutil
+import subprocess
 import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-parse = pytest.importorskip("snakemake.parser", reason="snakemake is not installed").parse
 
 SNAKEFILE_PATH = Path(__file__).resolve().parents[1] / "Snakefile"
 
@@ -48,6 +51,38 @@ def parse_snakefile_source(
     Uses snakemake.parser.parse without initializing a full Workflow or executing
     any top-level statements.
     """
+    try:
+        from snakemake.parser import parse
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"snakemake", "snakemake.parser"}:
+            raise
+        executable = os.environ.get("RTPIPELINE_TEST_SNAKEMAKE") or shutil.which("snakemake")
+        if not executable:
+            raise RuntimeError("The supplied Snakemake runtime is required for parser checks") from exc
+        interpreter = Path(executable).parent / "python"
+        environment = os.environ.copy()
+        environment["LD_LIBRARY_PATH"] = str(interpreter.parent.parent / "lib")
+        environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
+            str(Path(__file__).parent), str(SNAKEFILE_PATH.parent), environment.get("PYTHONPATH"))))
+        code = """import json,sys
+from test_robustness_snakefile_parse import parse_snakefile_source
+content,path=json.load(sys.stdin)
+try:
+    value=parse_snakefile_source(content,path)
+    print(json.dumps({"value":value}))
+except SyntaxError as error:
+    print(json.dumps({"syntax_error":str(error)}))
+"""
+        result = subprocess.run([str(interpreter), "-c", code],
+            input=json.dumps([content, path_str]), env=environment,
+            capture_output=True, text=True, check=False, timeout=120)
+        if result.returncode:
+            raise RuntimeError("Workflow parser failed: " + result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        if "syntax_error" in payload:
+            raise SyntaxError(payload["syntax_error"])
+        text, count, lines = payload["value"]
+        return text, count, {int(key): value for key, value in lines.items()}
     linemap: dict[int, int] = {}
     path_adapter = _InMemorySourcePath(path_str)
     workflow_adapter = _InMemoryWorkflow(content)
