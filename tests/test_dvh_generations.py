@@ -389,7 +389,7 @@ def write_synthetic_products(root, frame):
     gen.output_path(root, "dvh_curves.json").write_text("{}")
 
 
-def derived_generation(tmp_path, *, materialize_during_compute=False):
+def derived_generation(tmp_path, *, materialize_during_compute=False, external_attempt=False):
     import numpy as np
     import SimpleITK as sitk
     from rtpipeline.dvh_support import publish_derived_mask
@@ -417,6 +417,10 @@ def derived_generation(tmp_path, *, materialize_during_compute=False):
             "structure_provenance_path": str(fresh),
             "structure_provenance_sha256": file_sha256(fresh)}])
         write_synthetic_products(root, frame)
+    if external_attempt:
+        from workflow.scripts import campaign_ledger
+        campaign_ledger.begin_attempt(root.parents[1], root.parent.name, root.name, "dvh",
+                                     binding=gen.binding(root, gen.effective_settings(), custom).as_dict())
     assert gen.run(root, gen.effective_settings(), custom, compute)
     return root, closure or next((root / "metadata/dvh_derived_masks").glob("*.json")), custom, gen.binding(root, gen.effective_settings(), custom)
 
@@ -454,11 +458,31 @@ def test_derived_dependency_change_recomputes_and_binds_fresh_bytes(tmp_path, ch
     assert computes == [1]
 
 
-def test_derived_materialization_during_compute_is_bound_before_commit(tmp_path):
-    root, closure, custom, expected = derived_generation(tmp_path, materialize_during_compute=True)
+@pytest.mark.parametrize("point", [None, "committed_before_activation"])
+def test_derived_materialization_binds_generation_and_both_attempt_projections(tmp_path, monkeypatch, point):
+    if point:
+        def stop(name):
+            if name == point:
+                raise RuntimeError("synthetic controller loss")
+        monkeypatch.setattr(gen, "_failpoint", stop)
+        with pytest.raises(RuntimeError, match="controller loss"):
+            derived_generation(tmp_path, materialize_during_compute=True, external_attempt=True)
+        monkeypatch.setattr(gen, "_failpoint", lambda _: None)
+        root = tmp_path / "Output/SYNTH_P/SYNTH_C"
+        custom = tmp_path / "custom.yaml"
+        closure = next((root / "metadata/dvh_derived_masks").glob("*.json"))
+        expected = gen.binding(root, gen.effective_settings(), custom)
+        assert gen.run(root, gen.effective_settings(), custom, lambda: pytest.fail("recomputed valid commit"))
+    else:
+        root, closure, custom, expected = derived_generation(tmp_path, materialize_during_compute=True, external_attempt=True)
     assert closure.is_file()
     assert gen.current(root, expected)["binding"] == expected.as_dict()
     assert any(e["event"] == "derived_inputs_finalized" for e in events(root))
+    for attempt_path in (root / ".dvh/attempt.json",
+            root.parents[1] / "_campaign_ledger/attempts/SYNTH_P__SYNTH_C__dvh.json"):
+        attempt = json.loads(attempt_path.read_text())
+        assert attempt["binding"] == expected.as_dict()
+        assert attempt["state"] == "committed"
     assert gen.run(root, gen.effective_settings(), custom, lambda: pytest.fail("recomputed valid derived generation"))
 
 

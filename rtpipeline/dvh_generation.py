@@ -420,12 +420,19 @@ def reconcile_ledger(course, marker):
     # durable attempt projections without launching a child or repeating a ROI.
     attempt_paths = (course / ".dvh/attempt.json",
         directory.parent / "attempts" / target.name)
+    accepted_bindings = [marker["binding"]]
+    if attempt_paths[0].is_file():
+        local_attempt = _read(attempt_paths[0])
+        if local_attempt.get("binding") == marker["binding"] and local_attempt.get("launch_binding"):
+            accepted_bindings.append(local_attempt["launch_binding"])
     for path in attempt_paths:
         if not path.is_file():
             continue
         attempt = _read(path)
-        if attempt.get("binding") == marker["binding"] and attempt.get("state") != "committed":
-            final_result_writer(path, {**attempt, "state": "committed", "reason_code": None})
+        if attempt.get("binding") in accepted_bindings and (
+                attempt.get("state") != "committed" or attempt.get("binding") != marker["binding"]):
+            final_result_writer(path, {**attempt, "binding": marker["binding"],
+                                      "state": "committed", "reason_code": None})
 
 
 def _validate_products(course, destination):
@@ -555,8 +562,8 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                 if finalized != expected:
                     _event(journal, "derived_inputs_finalized",
                            reason_code="DVH_BINDING_INPUTS_CHANGED", binding=finalized.as_dict())
+                    attempt = {**attempt, "launch_binding": expected.as_dict(), "binding": finalized.as_dict()}
                     expected = finalized
-                    attempt = {**attempt, "binding": expected.as_dict()}
                     final_result_writer(attempt_path, attempt)
                 outcome = "computed" if (destination / "dvh_metrics.parquet").exists() else "not_measured"
                 product_hashes = {name: file_sha256(destination / name) if (destination / name).is_file() else None
