@@ -25,6 +25,10 @@ ARTIFACTS = ("dvh_metrics.parquet", "dvh_metrics.xlsx", "dvh_curves.json",
              "metadata/dvh_qc.json", "RS_custom.dcm", "metadata/rs_custom_meta.json",
              "metadata/custom_structure_warnings.json")
 _PUBLICATION = ContextVar("dvh_publication", default=None)
+_UPSTREAM_RECEIPTS = (".organized", ".segmentation_done", ".custom_models_done", ".crop_ct_done")
+_UPSTREAM_FIELDS = ("schema", "status", "stage", "stage_name", "patient_id", "course_id",
+                    "content_closure_sha256", "output_set_sha256",
+                    "configuration_dependency_sha256", "code_identity_sha256", "environment_fingerprint")
 
 
 def output_path(course, relative):
@@ -55,16 +59,23 @@ def publication(course, destination, roi_progress=None):
         _PUBLICATION.reset(token)
 
 
-def input_manifest(course):
+def input_manifest(course, *, include_derived=True):
     """Hash complete source inventories, including every CT and mask byte.
 
     DICOM bytes include SOP/series/reference identities. Outputs, runtime audit
     logs and the DVH generation itself are deliberately outside this inventory.
     """
     course = Path(course)
+    pending = course / ".dvh/upstream-recompute.json"
+    if pending.is_file() and any(not (course / name).is_file() for name in _read(pending)["upstream"]):
+        raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
     files = set()
     for name in ("DICOM", "CT", "NIFTI", "Segmentation_TotalSegmentator", "Segmentation_CustomModels"):
         root = course / name
+        if root.exists():
+            files.update(p for p in root.rglob("*") if p.is_file() and p.suffix != ".age")
+    if include_derived:
+        root = course / "metadata/dvh_derived_masks"
         if root.exists():
             files.update(p for p in root.rglob("*") if p.is_file() and p.suffix != ".age")
     for name in ("RS_auto.dcm", "RS_auto_cropped.dcm", "cropping_metadata.json",
@@ -77,20 +88,36 @@ def input_manifest(course):
                 for p in sorted(files)]
     # The upstream generation identity binds content, code, configuration and
     # environment. Receipt creation time and host are audit fields, not inputs.
-    for name in (".organized", ".segmentation_done", ".custom_models_done", ".crop_ct_done"):
+    for name in _UPSTREAM_RECEIPTS:
         path = course / name
         if path.is_file():
             receipt = _read(path)
-            fields = ("schema", "status", "stage", "stage_name", "patient_id", "course_id",
-                      "content_closure_sha256", "output_set_sha256",
-                      "configuration_dependency_sha256", "code_identity_sha256", "environment_fingerprint")
-            if any(field not in receipt for field in fields):
+            if not isinstance(receipt, dict) or any(field not in receipt for field in _UPSTREAM_FIELDS):
                 raise DurableProgressError("DVH_UPSTREAM_LEGACY_UNBOUND")
-            manifest.append({"path": name, "generation": {key: receipt[key] for key in fields}})
+            manifest.append({"path": name, "generation": {key: receipt[key] for key in _UPSTREAM_FIELDS}})
     return manifest
 
 
-def binding(course, settings, custom_config=None, *, custom_only=False, extra_inputs=()):
+def dvh_rule_text(snakefile):
+    """Extract the single top-level DVH rule, excluding neighboring statements.
+
+    Snakemake's rule suite is indented. Preserve its exact text (including
+    comments inside it), but exclude trailing blank lines and all other rules.
+    Missing/duplicate rules refuse a binding instead of falling back to a file.
+    """
+    lines = Path(snakefile).read_text().splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.rstrip() == "rule dvh_course:"]
+    if len(starts) != 1:
+        raise ValueError("DVH rule is missing or ambiguous")
+    start = starts[0]
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace()):
+        end += 1
+    return "".join(lines[start:end]).rstrip() + "\n"
+
+
+def binding(course, settings, custom_config=None, *, custom_only=False, extra_inputs=(),
+            _include_derived=True):
     from .dvh import DVH_MEASUREMENT_CODE_SOURCES
     from .custom_structures_rtstruct import RS_CUSTOM_GENERATOR_CODE_SOURCES
     from .stage_completion import environment_record
@@ -111,17 +138,30 @@ def binding(course, settings, custom_config=None, *, custom_only=False, extra_in
         # caller runtime cannot become the identity of the NumPy 2 producer.
         config["builder_contract"] = "numpy2-opencv5"
     else:
+        try:
+            parameters = json.loads(os.environ.get("RTPIPELINE_DVH_RULE_PARAMETERS", "{}"))
+            if not isinstance(parameters, dict):
+                raise ValueError("workflow parameters must be an object")
+            config["workflow_parameters"] = parameters
+        except (ValueError, TypeError) as exc:
+            raise DurableProgressError("DVH_BINDING_UNREADABLE") from exc
         config["environment"] = environment_record(("numpy", "pandas", "pydicom", "SimpleITK",
             "scipy", "xlsxwriter", "openpyxl", "dicompyler-core", "rt-utils", "opencv-python", "opencv-python-headless", "pyarrow"))
     try:
-        inputs = input_manifest(course)
+        inputs = input_manifest(course, include_derived=_include_derived and not custom_only)
         inputs.extend({"source": name, "sha256": file_sha256(path)} for name, path in extra_inputs)
         code_files = {name: package / name for name in sources}
         if not custom_only:
-            for name in ("Snakefile", "workflow/scripts/run_course_stage.py",
-                         "workflow/scripts/campaign_ledger.py", "rtpipeline/workflow_delegate.py"):
+            for name in ("workflow/scripts/run_course_stage.py", "workflow/scripts/campaign_ledger.py",
+                         "rtpipeline/workflow_delegate.py", "rtpipeline/snakemake_delegate.py"):
                 code_files[name] = package.parent / name
-        return make_binding(code_files, config, inputs)
+        result = make_binding(code_files, config, inputs)
+        if not custom_only:
+            code = {"modules_sha256": result.code_sha256,
+                    "dvh_rule": dvh_rule_text(package.parent / "Snakefile")}
+            result = Binding(hashlib.sha256(json.dumps(code, sort_keys=True).encode()).hexdigest(),
+                             result.config_sha256, result.inputs_sha256)
+        return result
     except (OSError, ValueError, TypeError) as exc:
         raise DurableProgressError("DVH_BINDING_UNREADABLE") from exc
 
@@ -272,6 +312,10 @@ def verify(directory, expected=None):
         raise DurableProgressError("DVH_GENERATION_OUTCOME_INVALID")
     if receipt.get("binding") != saved.as_dict() or receipt.get("generation_id") != marker["generation_id"]:
         raise DurableProgressError("DVH_GENERATION_RECEIPT_INVALID")
+    if artifacts["dvh_metrics.parquet"]:
+        import pandas as pd
+        for row in pd.read_parquet(directory / "dvh_metrics.parquet").to_dict("records"):
+            validate_row_sources(row)
     return marker
 
 
@@ -279,12 +323,7 @@ def current(course, expected=None):
     try:
         directory = (Path(course) / ".dvh/current").resolve(strict=True)
         directory.relative_to((Path(course) / ".dvh/generations").resolve())
-        marker = verify(directory, expected)
-        if expected is not None and marker["artifacts"]["dvh_metrics.parquet"]:
-            import pandas as pd
-            for row in pd.read_parquet(directory / "dvh_metrics.parquet").to_dict("records"):
-                validate_row_sources(row)
-        return marker
+        return verify(directory, expected)
     except FileNotFoundError as exc:
         raise DurableProgressError("DVH_LEGACY_UNBOUND" if (Path(course) / ".dvh_done").exists()
                                    else "DVH_GENERATION_MISSING") from exc
@@ -292,6 +331,41 @@ def current(course, expected=None):
 
 def _event(journal, event, **fields):
     journal.append({"event": event, **fields})
+
+
+def route_legacy_upstream(course, journal):
+    """Invalidate unbound stage receipts so their DAG producers must run again."""
+    course = Path(course)
+    pending = course / ".dvh/upstream-recompute.json"
+    invalid = set(_read(pending)["upstream"] if pending.is_file() else ())
+    for name in _UPSTREAM_RECEIPTS:
+        path = course / name
+        if not path.is_file():
+            continue
+        try:
+            receipt = _read(path)
+            bound = isinstance(receipt, dict) and all(key in receipt for key in _UPSTREAM_FIELDS)
+        except (ValueError, TypeError):
+            bound = False
+        if not bound:
+            invalid.add(name)
+            # Persist the rerouting requirement before invalidating the alias.
+            # A second run must still refuse until a fresh receipt is present.
+            final_result_writer(pending, {"upstream": sorted(invalid),
+                                "reason_code": "DVH_UPSTREAM_RECOMPUTE_REQUIRED"})
+            _event(journal, "upstream_recompute_required", upstream=name,
+                   reason_code="DVH_UPSTREAM_LEGACY_UNBOUND")
+            path.unlink()
+            _fsync_dir(path.parent)
+        else:
+            invalid.discard(name)
+    if invalid:
+        final_result_writer(pending, {"upstream": sorted(invalid),
+                            "reason_code": "DVH_UPSTREAM_RECOMPUTE_REQUIRED"})
+    elif pending.exists():
+        pending.unlink()
+        _fsync_dir(pending.parent)
+    return sorted(invalid)
 
 
 def _failpoint(name):
@@ -403,14 +477,24 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
     _fsync_dir(course)
     with (root / "writer.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        with ProgressJournal.recover(root / "progress.jsonl") as journal:
+            if route_legacy_upstream(course, journal):
+                raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
         expected = binding(course, settings, custom_config)
-        with ProgressJournal(root / "progress.jsonl") as journal:
+        # Derived masks are materialized by compute(). Bind their determinants
+        # for ROI checkpoints and validate each cached row's exact provenance.
+        # The generation additionally binds the materialized closure/mask bytes.
+        source_expected = binding(course, settings, custom_config, _include_derived=False)
+        with ProgressJournal.recover(root / "progress.jsonl") as journal:
             discard_incomplete(root, journal)
             reason = None
+            rejected = set()
+            current_directory = (root / "current").resolve()
             try:
                 marker = current(course, expected)
             except (DurableProgressError, ValueError, KeyError, TypeError, OSError) as exc:
                 reason = getattr(exc, "code", "DVH_GENERATION_CORRUPT")
+                rejected.add(current_directory)
             else:
                 _aliases(course)
                 reconcile_ledger(course, marker)
@@ -422,6 +506,8 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
             # A complete generation can outlive the controller before activation
             # or ledger projection. Reuse only after fresh exact binding checks.
             for candidate in sorted(generations.iterdir()):
+                if candidate.resolve() in rejected:
+                    continue
                 try:
                     recovered = verify(candidate, expected)
                 except (DurableProgressError, ValueError, KeyError, TypeError, OSError):
@@ -454,12 +540,19 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                 if not cache_root.exists():
                     cache_root.mkdir()
                     _fsync_dir(root)
-                roi_progress = (ResultCache(cache_root), expected, journal)
+                roi_progress = (ResultCache(cache_root), source_expected, journal)
                 with publication(course, destination, roi_progress):
                     compute()
-                if binding(course, settings, custom_config) != expected:
+                if binding(course, settings, custom_config, _include_derived=False) != source_expected:
                     raise DurableProgressError("DVH_BINDING_CHANGED_DURING_ATTEMPT")
                 _validate_products(course, destination)
+                finalized = binding(course, settings, custom_config)
+                if finalized != expected:
+                    _event(journal, "derived_inputs_finalized",
+                           reason_code="DVH_BINDING_INPUTS_CHANGED", binding=finalized.as_dict())
+                    expected = finalized
+                    attempt = {**attempt, "binding": expected.as_dict()}
+                    final_result_writer(attempt_path, attempt)
                 outcome = "computed" if (destination / "dvh_metrics.parquet").exists() else "not_measured"
                 product_hashes = {name: file_sha256(destination / name) if (destination / name).is_file() else None
                                   for name in ARTIFACTS}
@@ -491,6 +584,7 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                 marker = dict(schema=SCHEMA, generation_id=generation_id, binding=expected.as_dict(), artifacts=artifacts)
                 final_result_writer(published / "commit.json", marker)
                 verify(published, expected)
+                _failpoint("committed_before_activation")
                 _activate(course, published)
                 _failpoint("committed_before_ledger")
                 reconcile_ledger(course, marker)
@@ -562,7 +656,11 @@ def preflight(output, configfile, custom_config=None):
         root.mkdir(exist_ok=True)
         with (root / "writer.lock").open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            with ProgressJournal.recover(root / "progress.jsonl") as journal:
+                upstream_recompute = route_legacy_upstream(course, journal)
             try:
+                if upstream_recompute:
+                    raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
                 sentinel = course / ".dvh_done"
                 try:
                     receipt = _read(sentinel) if sentinel.is_file() else {}
@@ -584,7 +682,7 @@ def preflight(output, configfile, custom_config=None):
                 result.append(dict(course=str(course), reusable=True))
             except (DurableProgressError, OSError, ValueError, KeyError, TypeError) as exc:
                 reason = getattr(exc, "code", "DVH_GENERATION_CORRUPT")
-                with ProgressJournal(root / "progress.jsonl") as journal:
+                with ProgressJournal.recover(root / "progress.jsonl") as journal:
                     _event(journal, "preflight", reason_code=reason)
                 (course / ".dvh_done").unlink(missing_ok=True)
                 result.append(dict(course=str(course), reusable=False, reason_code=reason))

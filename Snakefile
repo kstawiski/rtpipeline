@@ -941,6 +941,17 @@ for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPEND
             "completion sentinel(s) that lack configuration-bound stage evidence.\n"
         )
 
+# Keep the effective DVH publication parameters identical in DAG preflight and
+# the stage subprocess. Worker budgets are execution controls, outside binding.
+_DVH_RULE_PARAMETERS = {
+    "campaign_mode": CAMPAIGN_MODE, "stage": "dvh", "python": PYTHON_MAIN,
+    "python_bin": PYTHON_MAIN_BIN, "root_dir": str(ROOT_DIR),
+    "configfile": str(EFFECTIVE_CONFIGFILE), "dicom_root": str(DICOM_ROOT),
+    "output_dir": str(OUTPUT_DIR), "logs_dir": str(LOGS_DIR),
+    "custom_structures": CUSTOM_STRUCTURES_CONFIG,
+}
+os.environ["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(_DVH_RULE_PARAMETERS, sort_keys=True)
+
 # DVH performs a fresh per-course code/config/input check before every DAG
 # decision. Invalidate only that completion alias; preserve committed artifacts.
 if list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
@@ -1263,17 +1274,17 @@ rule dvh_course:
     conda:
         "envs/rtpipeline.yaml"
     params:
-        campaign_mode=CAMPAIGN_MODE,
-        stage="dvh",
-        python=PYTHON_MAIN,
-        python_bin=PYTHON_MAIN_BIN,
-        root_dir=lambda w: str(ROOT_DIR),
-        configfile=str(EFFECTIVE_CONFIGFILE),
+        campaign_mode=_DVH_RULE_PARAMETERS["campaign_mode"],
+        stage=_DVH_RULE_PARAMETERS["stage"],
+        python=_DVH_RULE_PARAMETERS["python"],
+        python_bin=_DVH_RULE_PARAMETERS["python_bin"],
+        root_dir=_DVH_RULE_PARAMETERS["root_dir"],
+        configfile=_DVH_RULE_PARAMETERS["configfile"],
         radiomics_env=_ENV_RADIOMICS,
-        dicom_root=str(DICOM_ROOT),
-        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-        logs_dir=str(LOGS_DIR),
-        custom_structures=CUSTOM_STRUCTURES_CONFIG
+        dicom_root=_DVH_RULE_PARAMETERS["dicom_root"],
+        output_dir=_DVH_RULE_PARAMETERS["output_dir"],
+        logs_dir=_DVH_RULE_PARAMETERS["logs_dir"],
+        custom_structures=_DVH_RULE_PARAMETERS["custom_structures"]
     script:
         "workflow/scripts/run_course_stage.py"
 

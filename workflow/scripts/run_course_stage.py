@@ -15,6 +15,21 @@ import campaign_ledger
 from rtpipeline.snakemake_delegate import invoke, runtime_environment
 
 
+def _stage_environment(params):
+    env = runtime_environment(params)
+    if str(getattr(params, "stage", "")) == "dvh":
+        # Freeze evaluated parameters, including rule-level overrides, for
+        # launch binding, CLI compute and completion publication alike.
+        names = ("campaign_mode", "stage", "python", "python_bin", "root_dir",
+                 "configfile", "dicom_root", "output_dir", "logs_dir", "custom_structures")
+        effective = {name: getattr(params, name) for name in names}
+        for name in ("enabled", "extra_args"):
+            if hasattr(params, name):
+                effective[name] = getattr(params, name)
+        env["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(effective, sort_keys=True)
+    return env
+
+
 def _require_upstream_status(
     value: object, label: str, allowed_statuses: set[str]
 ) -> None:
@@ -72,7 +87,7 @@ def _require_segmentation_content(workflow: Any, course_dir: Path) -> str:
         operation="assess-segmentation",
         arguments=("--course-dir", str(course_dir)),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     expected_course = str(course_dir.resolve(strict=False))
     if payload.get("course_dir") != expected_course:
@@ -120,7 +135,7 @@ def _publish_radiomics_completion(
             str(sentinel_path),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     expected_path = str(sentinel_path.resolve(strict=False))
     sentinel = payload.get("sentinel")
@@ -170,7 +185,7 @@ def _publish_radiomics_not_applicable(
             str(configuration),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     sentinel = payload.get("sentinel")
     if (
@@ -237,7 +252,7 @@ def _publish_stage_completion(
             str(configuration),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     if (
         payload.get("course_dir") != str(course_dir.resolve(strict=False))
@@ -422,7 +437,7 @@ def main(workflow: Any) -> None:
     if extra_args:
         command.extend(shlex.split(extra_args))
 
-    stage_environment = runtime_environment(workflow.params)
+    stage_environment = _stage_environment(workflow.params)
     if stage_name == "radiomics":
         worker_limit = str(max(1, int(workflow.threads)))
         stage_environment.update(

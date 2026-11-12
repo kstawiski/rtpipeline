@@ -105,9 +105,10 @@ def test_code_identity_is_rechecked_inside_same_process(tmp_path, monkeypatch):
     shutil.copy2(package.parent / "Snakefile", tmp_path / "Snakefile")
     shutil.copytree(package.parent / "workflow", tmp_path / "workflow")
     # The shadow package is logically rooted at tmp_path/package rather than
-    # tmp_path/rtpipeline; retain the wrapper's stable repository-relative name.
+    # tmp_path/rtpipeline; retain the wrappers' stable repository-relative names.
     (tmp_path / "rtpipeline").mkdir()
-    shutil.copy2(package / "workflow_delegate.py", tmp_path / "rtpipeline/workflow_delegate.py")
+    for name in ("workflow_delegate.py", "snakemake_delegate.py"):
+        shutil.copy2(package / name, tmp_path / "rtpipeline" / name)
     monkeypatch.setattr(gen, "__file__", str(shadow / "dvh_generation.py"))
     root = course(tmp_path / "fixture")
     assert measure(root)
@@ -339,3 +340,220 @@ def test_degraded_qc_keeps_measurements_and_negative_disposition(tmp_path, monke
     assert (root / "dvh_metrics.parquet").read_bytes() == before
     assert json.loads((root / "metadata/dvh_qc.json").read_text()) == qc
     assert not dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx")
+
+
+@pytest.mark.parametrize("entrypoint", ["current", "verify", "preflight", "recovery"])
+def test_all_acceptance_paths_reject_changed_derived_mask(tmp_path, monkeypatch, entrypoint):
+    root, closure, custom, expected = derived_generation(tmp_path)
+    mask = Path(json.loads(closure.read_text())["mask"]["path"])
+    stat = mask.stat()
+    mask.write_bytes(mask.read_bytes() + b"\x00")
+    os.utime(mask, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    changed = gen.binding(root, gen.effective_settings(), custom)
+    assert changed.inputs_sha256 != expected.inputs_sha256
+    assert changed.code_sha256 == expected.code_sha256
+    rejected = (root / ".dvh/current").resolve()
+    if entrypoint in {"current", "verify"}:
+        action = (lambda: gen.current(root, expected)) if entrypoint == "current" else (lambda: gen.verify(rejected, expected))
+        with pytest.raises(DurableProgressError, match="DVH_MASK_PROVENANCE_INVALID"):
+            action()
+    elif entrypoint == "preflight":
+        config = tmp_path / "config.yaml"
+        config.write_text("ct_cropping:\n  use_cropped_for_dvh: true\n")
+        result = gen.preflight(root.parents[1], config, custom)["courses"]
+        assert result == [{"course": str(root), "reusable": False,
+                           "reason_code": "DVH_BINDING_INPUTS_CHANGED"}]
+    else:
+        # Force an unchanged binding as a second defense: recovery itself must
+        # validate provenance, even when a source was missed by an inventory.
+        monkeypatch.setattr(gen, "binding", lambda *args, **kwargs: expected)
+        computes = []
+        def compute():
+            computes.append(1)
+            write_synthetic_products(root, pd.DataFrame([{"ROI_Name": "Recomputed", "D95Gy": 1.0}]))
+        assert gen.run(root, gen.effective_settings(), custom, compute)
+        assert computes == [1]
+        assert (root / ".dvh/current").resolve() != rejected
+        assert not any(event["event"] == "recovered_commit" for event in events(root))
+        assert gen.verify(root / ".dvh/current", expected)
+
+
+def write_synthetic_products(root, frame):
+    parquet = gen.output_path(root, "dvh_metrics.parquet")
+    parquet.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(parquet, index=False)
+    frame.to_excel(gen.output_path(root, "dvh_metrics.xlsx"), index=False)
+    qc = gen.output_path(root, "metadata/dvh_qc.json")
+    qc.parent.mkdir(parents=True, exist_ok=True)
+    qc.write_text(json.dumps({"status": "ok"}))
+    gen.output_path(root, "dvh_curves.json").write_text("{}")
+
+
+def derived_generation(tmp_path, *, materialize_during_compute=False):
+    import numpy as np
+    import SimpleITK as sitk
+    from rtpipeline.dvh_support import publish_derived_mask
+    from rtpipeline.durable_progress import file_sha256
+    root = course(tmp_path / "Output")
+    image = sitk.Image([4, 4, 4], sitk.sitkUInt8)
+    image += 1
+    component = root / "Segmentation_TotalSegmentator/organ.nii.gz"
+    component.parent.mkdir()
+    sitk.WriteImage(image, str(component))
+    ct = tmp_path / "ct.bin"
+    ct.write_bytes(b"synthetic CT source")
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("structures: []\n")
+    def derive():
+        return publish_derived_mask(root / "metadata/dvh_derived_masks", "Union",
+            sitk.GetArrayFromImage(image), image, [component], custom,
+            [{"name": "Union", "operation": "union", "sources": ["organ"]}],
+            {"Union": {"status": "ok"}}, [ct])
+    closure = None if materialize_during_compute else derive()
+    def compute():
+        fresh = derive()
+        frame = pd.DataFrame([{"ROI_Name": "Union", "D95Gy": 1.0,
+            "structure_provenance_type": "DERIVED_NIFTI_MASK",
+            "structure_provenance_path": str(fresh),
+            "structure_provenance_sha256": file_sha256(fresh)}])
+        write_synthetic_products(root, frame)
+    assert gen.run(root, gen.effective_settings(), custom, compute)
+    return root, closure or next((root / "metadata/dvh_derived_masks").glob("*.json")), custom, gen.binding(root, gen.effective_settings(), custom)
+
+
+@pytest.mark.parametrize("changed", ["mask", "closure"])
+def test_derived_dependency_change_recomputes_and_binds_fresh_bytes(tmp_path, changed):
+    root, closure, custom, expected = derived_generation(tmp_path)
+    previous = (root / ".dvh/current").resolve()
+    target = closure if changed == "closure" else Path(json.loads(closure.read_text())["mask"]["path"])
+    stat = target.stat()
+    target.write_bytes(target.read_bytes() + (b" " if changed == "closure" else b"\x00"))
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    from rtpipeline.durable_progress import file_sha256
+    from rtpipeline.dvh_support import publish_derived_mask
+    import SimpleITK as sitk
+    record = json.loads(closure.read_text())
+    component = Path(record["components"][0]["path"])
+    image = sitk.ReadImage(str(component))
+    computes = []
+    def compute():
+        computes.append(1)
+        fresh = publish_derived_mask(closure.parent, "Union", sitk.GetArrayFromImage(image), image,
+            [component], custom, record["definitions"], record["outcomes"],
+            [item["path"] for item in record["ct_sources"]])
+        write_synthetic_products(root, pd.DataFrame([{"ROI_Name": "Union", "D95Gy": 1.0,
+            "structure_provenance_type": "DERIVED_NIFTI_MASK",
+            "structure_provenance_path": str(fresh), "structure_provenance_sha256": file_sha256(fresh)}]))
+    assert gen.run(root, gen.effective_settings(), custom, compute)
+    assert computes == [1]
+    assert (root / ".dvh/current").resolve() != previous
+    assert any(e.get("reason_code") == "DVH_BINDING_INPUTS_CHANGED" for e in events(root))
+    final = gen.binding(root, gen.effective_settings(), custom)
+    assert gen.current(root, final)["binding"] == final.as_dict()
+    assert gen.run(root, gen.effective_settings(), custom, compute)
+    assert computes == [1]
+
+
+def test_derived_materialization_during_compute_is_bound_before_commit(tmp_path):
+    root, closure, custom, expected = derived_generation(tmp_path, materialize_during_compute=True)
+    assert closure.is_file()
+    assert gen.current(root, expected)["binding"] == expected.as_dict()
+    assert any(e["event"] == "derived_inputs_finalized" for e in events(root))
+    assert gen.run(root, gen.effective_settings(), custom, lambda: pytest.fail("recomputed valid derived generation"))
+
+
+def test_valid_commit_before_activation_is_recovered_without_compute(tmp_path, monkeypatch):
+    root = course(tmp_path)
+    def stop(point):
+        if point == "committed_before_activation":
+            raise RuntimeError("synthetic controller loss")
+    monkeypatch.setattr(gen, "_failpoint", stop)
+    with pytest.raises(RuntimeError, match="controller loss"):
+        measure(root)
+    assert not (root / ".dvh/current").exists()
+    monkeypatch.setattr(gen, "_failpoint", lambda _: None)
+    monkeypatch.setattr(dvh, "_compute_dvh_for_course", lambda *a, **k: pytest.fail("recomputed valid commit"))
+    assert measure(root)
+    assert any(e["event"] == "recovered_commit" for e in events(root))
+
+
+@pytest.mark.parametrize("entrypoint", ["run", "preflight"])
+def test_torn_journal_tail_recovers_without_recomputing_valid_generation(tmp_path, monkeypatch, entrypoint):
+    root = course(tmp_path / "Output")
+    assert measure(root)
+    marker = gen.current(root)
+    path = root / ".dvh/progress.jsonl"
+    with path.open("ab") as stream:
+        stream.write(b'{"interrupted":')
+    monkeypatch.setattr(dvh, "_compute_dvh_for_course", lambda *a, **k: pytest.fail("recomputed valid commit"))
+    if entrypoint == "run":
+        assert measure(root)
+    else:
+        config = tmp_path / "config.yaml"
+        config.write_text("ct_cropping:\n  use_cropped_for_dvh: true\n")
+        assert gen.preflight(root.parents[1], config)["courses"] == [{"course": str(root), "reusable": True}]
+    assert gen.current(root) == marker
+    assert any(e.get("reason_code") == "DURABLE_JOURNAL_TAIL_RECOVERED" for e in events(root))
+    assert list(path.parent.glob("progress.jsonl.torn-*"))
+
+
+@pytest.mark.parametrize("change", ["other_rule", "trailing_comment", "dvh_rule", "parameters"])
+def test_binding_scopes_rule_text_and_effective_parameters(tmp_path, monkeypatch, change):
+    import shutil
+    shadow = tmp_path / "source"
+    shadow.mkdir()
+    for name in ("rtpipeline", "workflow"):
+        shutil.copytree(Path(gen.__file__).parent.parent / name, shadow / name,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    snake = shadow / "Snakefile"
+    shutil.copy2(Path(gen.__file__).parent.parent / "Snakefile", snake)
+    monkeypatch.setattr(gen, "__file__", str(shadow / "rtpipeline/dvh_generation.py"))
+    monkeypatch.delenv("RTPIPELINE_DVH_RULE_PARAMETERS", raising=False)
+    root = course(tmp_path / "fixture")
+    before = gen.binding(root, gen.effective_settings())
+    original = snake.read_text()
+    if change == "other_rule":
+        snake.write_text(original.replace("rule segmentation_course:", "rule segmentation_course:\n    # unrelated rule edit"))
+    elif change == "trailing_comment":
+        snake.write_text(original + "\n# unrelated radiomics comment\n")
+    elif change == "dvh_rule":
+        snake.write_text(original.replace("rule dvh_course:", "rule dvh_course:\n    # changed DVH rule"))
+    else:
+        monkeypatch.setenv("RTPIPELINE_DVH_RULE_PARAMETERS", json.dumps({"extra_args": "--max-total-dose-gy 80"}))
+    after = gen.binding(root, gen.effective_settings())
+    if change in {"other_rule", "trailing_comment"}:
+        assert after == before
+    elif change == "dvh_rule":
+        assert after.code_sha256 != before.code_sha256
+        assert after.config_sha256 == before.config_sha256
+    else:
+        assert after.config_sha256 != before.config_sha256
+        assert after.code_sha256 == before.code_sha256
+
+
+def test_legacy_upstream_is_routed_and_cannot_be_trusted_on_repeated_runs(tmp_path):
+    root = course(tmp_path)
+    (root / ".organized").write_text('{"status":"ok"}')
+    for _ in range(2):
+        with pytest.raises(DurableProgressError, match="DVH_UPSTREAM_RECOMPUTE_REQUIRED"):
+            gen.run(root, gen.effective_settings(), None, lambda: pytest.fail("legacy upstream trusted"))
+    assert not (root / ".organized").exists()
+    assert json.loads((root / ".dvh/upstream-recompute.json").read_text())["upstream"] == [".organized"]
+    assert any(e.get("reason_code") == "DVH_UPSTREAM_LEGACY_UNBOUND" for e in events(root))
+
+
+def test_current_rejection_excludes_that_candidate_for_the_whole_decision(tmp_path, monkeypatch):
+    root = course(tmp_path)
+    assert measure(root)
+    rejected = (root / ".dvh/current").resolve()
+    def reject(*args):
+        raise DurableProgressError("DVH_MASK_PROVENANCE_INVALID")
+    monkeypatch.setattr(gen, "current", reject)
+    real_verify = gen.verify
+    def verify(directory, expected=None):
+        assert Path(directory).resolve() != rejected
+        return real_verify(directory, expected)
+    monkeypatch.setattr(gen, "verify", verify)
+    assert measure(root)
+    assert (root / ".dvh/current").resolve() != rejected
+    assert not any(e["event"] == "recovered_commit" for e in events(root))

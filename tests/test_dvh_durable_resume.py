@@ -255,7 +255,7 @@ def test_real_production_interrupt_resume(tmp_path):
     pipeline.run(target)
     assert pipeline.count() == count
     assert snapshot(course)[0] == baseline
-    for point in ("staging", "published_before_commit", "committed_before_ledger"):
+    for point in ("staging", "published_before_commit", "committed_before_activation", "committed_before_ledger"):
         shutil.rmtree(pipeline.output)
         shutil.copytree(clean, pipeline.output, symlinks=True)
         # Snakemake metadata belongs to the same fixture; incomplete jobs are
@@ -288,6 +288,8 @@ def test_real_production_interrupt_resume(tmp_path):
                             "published_before_commit": "DVH_INCOMPLETE_GENERATION"}.get(point)
         if expected_discard:
             assert any(entry.get("reason_code") == expected_discard for entry in journal)
+        if point == "committed_before_activation":
+            assert any(entry["event"] == "recovered_commit" for entry in journal)
         sample_keys = [json.loads(line)["key"] for line in pipeline.calls.read_text().splitlines()[before:after_resume]]
         assert len(sample_keys) == len(set(sample_keys)) == baseline_calls
         assert json.loads((course / ".dvh/attempt.json").read_text())["state"] == "committed"
@@ -330,3 +332,35 @@ def test_real_production_interrupt_resume(tmp_path):
     path = os.environ.get("WS515_EVIDENCE")
     if path:
         Path(path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+
+
+@pytest.mark.integration
+@pytest.mark.requires_snakemake
+def test_real_snakefile_reruns_legacy_upstream_and_binds_fresh_receipt(tmp_path):
+    pipeline = Production(tmp_path)
+    course = pipeline.organize()
+    target = course / ".dvh_done"
+    pipeline.run(target)
+    legacy = {"status": "ok", "stage": "organize"}
+    receipt = course / ".organized"
+    receipt.write_text(json.dumps(legacy) + "\n")
+    log = pipeline.run(target)
+    assert "Re-running organize for invalid manifest course completion" in log.read_text()
+    fresh = json.loads(receipt.read_text())
+    assert fresh != legacy
+    from rtpipeline.stage_completion import validate_stage_completion_sentinel
+    validated = validate_stage_completion_sentinel(receipt, expected_stage="organize",
+        expected_patient=course.parent.name, expected_course=course.name)
+    assert validated["content_closure_sha256"] == fresh["content_closure_sha256"]
+    from rtpipeline.dvh_generation import current, input_manifest
+    effective = json.loads((course / ".dvh/current/.dvh_done").read_text())
+    # Validate in the actual workflow runtime: its preflight uses the evaluated
+    # rule parameters, effective configuration, and the newly published receipt.
+    before = pipeline.count()
+    pipeline.run(target)
+    assert pipeline.count() == before
+    bound = next(item for item in input_manifest(course) if item.get("path") == ".organized")
+    assert bound["generation"]["content_closure_sha256"] == fresh["content_closure_sha256"]
+    assert bound["generation"]["code_identity_sha256"] == fresh["code_identity_sha256"]
+    assert current(course)["binding"] == effective["binding"]
+    assert not (course / ".dvh/upstream-recompute.json").exists()
