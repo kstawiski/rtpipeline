@@ -643,7 +643,10 @@ def _is_rs_custom_stale(
                 logger.info("Contracted planning CT input is newer than RS_custom.dcm, regenerating")
                 return True
 
-        if config_path:
+        # Authoritative reuse already compared the exact scientific binding
+        # above. A worker-only edit changes mtime without changing that binding.
+        # The contractless utility mode still needs its historical mtime check.
+        if config_path and allow_contractless:
             config_path = Path(config_path)
             if config_path.exists() and config_path.stat().st_mtime > rs_custom_mtime:
                 logger.info("Custom structures config is newer than RS_custom.dcm, regenerating")
