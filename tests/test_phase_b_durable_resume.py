@@ -480,6 +480,67 @@ def test_real_phase_b_three_sigkill_legs(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.requires_snakemake
+def test_two_course_production_invalidation_is_local(tmp_path):
+    """One stale receipt cannot advance a shared dependency past its peer."""
+    import pydicom
+    from test_dvh_durable_resume import synthetic_course
+    pipeline = PhaseBProduction(tmp_path)
+    second = tmp_path / "Input/second"
+    synthetic_course(second)
+    for path in second.rglob("*.dcm"):
+        dataset = pydicom.dcmread(path)
+        dataset.PatientID = "SYNTHETIC2"
+        dataset.save_as(path, enforce_file_format=True)
+    config = yaml.safe_load(pipeline.config.read_text())
+    config["radiomics_robustness"]["enabled"] = False
+    pipeline.config.write_text(yaml.safe_dump(config))
+    pipeline.run(pipeline.output / "_COURSES/manifest.json")
+    manifest = json.loads((pipeline.output / "_COURSES/manifest.json").read_text())
+    assert len(manifest["courses"]) == 2
+    pipeline.run("all")
+    valid = pipeline.output / "SYNTHETIC/2024-01"
+    stale = pipeline.output / "SYNTHETIC2/2024-01"
+    protected = {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
+                 for name in (".radiomics_done", "radiomics_ct.parquet", "radiomics_ct.xlsx")}
+    dependencies = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                    for p in (pipeline.source / ".snakemake/rtpipeline-config-dependencies").rglob("*.json")}
+    sentinel = stale / ".radiomics_done"
+    payload = json.loads(sentinel.read_text())
+    payload["configuration_dependency_sha256"] = "stale-synthetic-binding"
+    sentinel.write_text(json.dumps(payload))
+    before = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
+    command = pipeline.command("all") + ["--dry-run"]
+    planned = subprocess.run(command, env=pipeline.env, capture_output=True, text=True, timeout=180)
+    log = planned.stdout + planned.stderr
+    assert planned.returncode == 0, log
+    assert "rule radiomics_course:" in log, log
+    assert f"patient=SYNTHETIC2, course=2024-01" in log, log
+    assert "patient=SYNTHETIC, course=2024-01" not in log, log
+    assert not sentinel.exists()
+    assert protected == {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
+                         for name in protected}
+    assert dependencies == {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                            for p in (pipeline.source / ".snakemake/rtpipeline-config-dependencies").rglob("*.json")}
+    pipeline.run("all")
+    assert protected == {name: ((valid / name).read_bytes(), (valid / name).stat().st_mtime_ns)
+                         for name in protected}
+    after = Counter((e["stage"], e["key"]) for e in pipeline.event_rows() if e["event"] == "extract")
+    assert after == before  # The repaired receipt reuses its own bound ROI items.
+    readback = read_all_commits(pipeline.output)
+    destination = os.environ.get("WS516_EVIDENCE_DIR")
+    if destination:
+        Path(destination, "two-course-invalidation.json").write_text(json.dumps({
+            "valid_course_unchanged_bytes_and_mtimes": True,
+            "shared_dependencies_unchanged_bytes_and_mtimes": True,
+            "scheduled_radiomics_courses": ["SYNTHETIC2/2024-01"],
+            "repeated_extractor_calls": 0, "readback": readback}, indent=2) + "\n")
+        evidence_log = Path(destination, "production-evidence/two-course-dry-run.log")
+        evidence_log.parent.mkdir(parents=True, exist_ok=True)
+        evidence_log.write_text(log)
+
+
+@pytest.mark.integration
+@pytest.mark.requires_snakemake
 def test_uninterrupted_scientific_bytes_match_base(tmp_path):
     """Same source bytes, paths, parameters and runtimes against actual 3f94c63."""
     from io import BytesIO
