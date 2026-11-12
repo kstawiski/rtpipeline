@@ -35,8 +35,8 @@ def test_any_input_order_gives_the_same_rows_in_the_same_order():
         pd.testing.assert_frame_equal(rr._order_robustness_rows(shuffled), reference,
                                       check_exact=True)
     # Same rows, values and dtypes; only the order differs.
-    key = lambda f: f.astype(str).agg("|".join, axis=1).sort_values().tolist()
-    assert key(reference) == key(table)
+    canonical = lambda frame: frame.sort_values(list(frame.columns)).reset_index(drop=True)
+    pd.testing.assert_frame_equal(canonical(reference), canonical(table), check_exact=True)
     assert list(reference.dtypes) == list(table.dtypes)
     assert list(reference.index) == list(range(len(table)))
 

@@ -86,8 +86,27 @@ def _streaming_contract(test):
 
 for _module in (admission, snapshots):
     for _name, _test in vars(_module).items():
-        if _name.startswith("test_"):
+        if (_name.startswith("test_") and _name !=
+                'test_summary_uses_admitted_bytes_when_an_input_drifts_mid_aggregation'):
             globals()["test_streaming_" + _name[5:]] = _streaming_contract(_test)
+
+
+def test_streaming_mid_aggregation_source_drift_refuses_publication(tmp_path, monkeypatch):
+    """A durable publication rechecks source bytes after completing reductions."""
+    cohort = admission._build_cohort(tmp_path, monkeypatch)
+    summarize = rr.summarize_feature_stability
+
+    def drifting(frame, config, group_columns=None):
+        cohort.tables[0].write_bytes(b'no longer a parquet file')
+        return summarize(frame, config, group_columns)
+
+    monkeypatch.setattr(rr, 'summarize_feature_stability', drifting)
+    output, raw = admission._summary_paths(tmp_path)
+    admission._plant_stale_outputs(output, raw)
+    with pytest.raises(RuntimeError, match='failed to read robustness input'):
+        ra.aggregate_robustness_results(cohort.tables, output, cohort.rob)
+    admission._assert_no_nominal_outputs(output, raw)
+    assert not output.with_suffix('.commit.json').exists()
 
 
 @pytest.mark.parametrize("failure", ["technical_failure", "geometrically_impossible", "duplicate", "missing_grid", "missing_feature"])
