@@ -172,6 +172,8 @@ def _atomic_write(path: Path, raw: bytes) -> dict:
 class JournalRead:
     records: list
     report: dict
+    verified_bytes: int = 0
+    tail: bytes = b""
 
 
 class ProgressJournal:
@@ -179,12 +181,13 @@ class ProgressJournal:
 
     An exclusive, nonblocking POSIX advisory lock is held until close(). A
     competing writer fails with DURABLE_JOURNAL_LOCKED before reading sequence.
-    read() excludes and reports a last line lacking its newline. Reopening that
-    file for append refuses DURABLE_JOURNAL_TRUNCATED: archive the damaged
-    journal explicitly and use a new one; no repair silently deletes evidence.
+    read() excludes and reports a last line lacking its newline. The ordinary
+    constructor refuses that tail. recover() explicitly quarantines a damaged
+    final line before truncating it under the writer lock. Earlier corruption
+    always refuses recovery. Journal records never establish result validity.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, *, _recover_tail=False):
         self.path = Path(path)
         self._stream = None
         self._failed = False
@@ -206,10 +209,27 @@ class ProgressJournal:
                 raise
             # Recovery must run under the lock, otherwise a competing writer
             # could append after our read and leave us with a stale sequence.
-            previous = self.read(self.path)
-            if previous.report["truncated_last_line"]:
+            previous = (self.read(self.path, _recover_tail=True) if _recover_tail
+                        else self.read(self.path))
+            if previous.tail and not _recover_tail:
                 raise DurableProgressError("DURABLE_JOURNAL_TRUNCATED")
             self._sequence = len(previous.records)
+            if previous.tail:
+                digest = _sha(previous.tail)
+                quarantine = self.path.with_name(self.path.name + ".torn-" + digest)
+                # Keep exact bytes and independently readable hash evidence.
+                # Both publications are durable before any original byte goes.
+                _atomic_write(quarantine, previous.tail)
+                evidence = {"sha256": digest, "bytes": len(previous.tail),
+                            "verified_bytes": previous.verified_bytes}
+                _atomic_write(quarantine.with_name(quarantine.name + ".json"),
+                              _json(evidence) + b"\n")
+                os.ftruncate(self._stream.fileno(), previous.verified_bytes)
+                os.fsync(self._stream.fileno())
+                _fsync_dir(self.path.parent)
+                self.append({"event": "journal_tail_recovered",
+                             "reason_code": "DURABLE_JOURNAL_TAIL_RECOVERED",
+                             "quarantine": quarantine.name, **evidence})
             os.fsync(self._stream.fileno())
             _fsync_dir(self.path.parent)
         except OSError as error:
@@ -219,10 +239,22 @@ class ProgressJournal:
             self.close()
             raise
 
+    @classmethod
+    def recover(cls, path):
+        """Open for append, preserving and repairing only a damaged final line.
+
+        A final complete line with invalid JSON/integrity is also quarantined;
+        any subsequent byte makes that corruption fatal instead. The sequence
+        continues after verified records, including a fixed recovery event.
+        """
+        return cls(path, _recover_tail=True)
+
     @staticmethod
-    def read(path) -> JournalRead:
+    def read(path, *, _recover_tail=False) -> JournalRead:
         records = []
         truncated = 0
+        verified_bytes = 0
+        tail = b""
         try:
             stream = open(path, "rb")
         except FileNotFoundError:
@@ -234,6 +266,7 @@ class ProgressJournal:
                 for line in stream:
                     if not line.endswith(b"\n"):
                         truncated = 1
+                        tail = line
                         break
                     try:
                         record = _loads(line)
@@ -253,11 +286,17 @@ class ProgressJournal:
                             raise ValueError("UTC required")
                         datetime.fromisoformat(utc[:-1] + "+00:00")
                     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as error:
+                        if _recover_tail and not stream.read(1):
+                            truncated = 1
+                            tail = line
+                            break
                         raise DurableProgressError("DURABLE_JOURNAL_CORRUPT") from error
                     records.append(record)
+                    verified_bytes += len(line)
         except OSError as error:
             raise DurableProgressError(READ_FAILED) from error
-        return JournalRead(records, {"records": len(records), "truncated_last_line": truncated})
+        return JournalRead(records, {"records": len(records), "truncated_last_line": truncated},
+                           verified_bytes, tail)
 
     def append(self, body: dict) -> dict:
         if not isinstance(body, dict):
@@ -366,14 +405,11 @@ class ResultCache:
             directories = sorted(self.root.iterdir())
             for directory in directories:
                 counts["total"] += 1
-                if not directory.is_dir():
-                    counts["corrupt"] += 1
-                    continue
-                marker_path = directory / "commit.json"
-                if not marker_path.exists():
-                    counts["incomplete"] += 1
-                    continue
                 try:
+                    if not directory.is_dir():
+                        counts["corrupt"] += 1
+                        continue
+                    marker_path = directory / "commit.json"
                     marker = _loads(marker_path.read_bytes())
                     if not isinstance(marker, dict) or set(marker) != {
                             "schema_version", "item_key", "key_sha256", "binding", "payload_sha256", "sealed"}:
@@ -408,10 +444,11 @@ class ResultCache:
                     hashes[item] = result_hash
                     entries[item] = result
                     accepted_counts[item] = accepted_counts.get(item, 0) + 1
-                except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, DurableProgressError):
-                    counts["corrupt"] += 1
                 except FileNotFoundError:
                     counts["incomplete"] += 1
+                except (OSError, ValueError, TypeError, KeyError, UnicodeError,
+                        RecursionError, DurableProgressError):
+                    counts["corrupt"] += 1
             for item in conflicts:
                 entries.pop(item)
                 counts["conflict"] += accepted_counts.pop(item)
@@ -633,7 +670,7 @@ def _writer_main(journal_path: str, cache_root: str) -> int:
                 # Computing process died. Keep draining requests already in pipe.
                 output_alive = False
     try:
-        journal = ProgressJournal(journal_path)
+        journal = ProgressJournal.recover(journal_path)
     except DurableProgressError as error:
         reply({"ok": False, "code": error.code})
         return 1

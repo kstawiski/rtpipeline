@@ -329,7 +329,7 @@ def _is_valid_rtstruct(path: Path) -> bool:
 
 def _write_rtstruct_atomic(out_path: Path, write_fn, validate_fn=None) -> None:
     """Write an RTSTRUCT by calling `write_fn(tmp_path_str)`, then atomically publish it
-    at `out_path` via os.replace().
+    at `out_path` via os.replace(), directory fsync and hash read-back.
 
     rt_utils' RTStruct.save() writes straight to the destination path; a process killed
     mid-write would leave a truncated RTSTRUCT that a presence-only resume check accepts
@@ -345,7 +345,14 @@ def _write_rtstruct_atomic(out_path: Path, write_fn, validate_fn=None) -> None:
         write_fn(str(tmp_path))
         if validate_fn is not None:
             validate_fn(tmp_path)
+        from .durable_progress import _fsync_dir, file_sha256, DurableProgressError
+        with tmp_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        expected = file_sha256(tmp_path)
         os.replace(tmp_path, out_path)
+        _fsync_dir(out_path.parent)
+        if file_sha256(out_path) != expected:
+            raise DurableProgressError("DVH_RS_CUSTOM_READBACK_FAILED")
     finally:
         try:
             tmp_path.unlink()

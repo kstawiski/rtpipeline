@@ -4,7 +4,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 from rtpipeline.config_dependencies import (
@@ -913,13 +912,12 @@ if COURSE_MANIFEST.exists():
                 expected_course=_course,
             )
     except (OSError, ValueError, KeyError, TypeError) as _exc:
-        _organize_dependency = Path(ORGANIZE_CONFIG_DEPENDENCY)
-        _target_ns = max(
-            time.time_ns(),
-            _organize_dependency.stat().st_mtime_ns + 1_000_000_000,
-            COURSE_MANIFEST.stat().st_mtime_ns + 1_000_000_000,
-        )
-        os.utime(_organize_dependency, ns=(_target_ns, _target_ns))
+        # This is the checkpoint's declared output. Removing it defers course
+        # input expansion until organize republishes fresh receipts. Merely
+        # touching its small configuration input can be ignored when Snakemake
+        # finds the same input checksum; deleting .organized instead orphans a
+        # side-effect input that has no independent producer rule.
+        COURSE_MANIFEST.unlink()
         sys.stderr.write(
             "[rtpipeline] Re-running organize for invalid manifest course "
             f"completion: {_exc}\n"
@@ -945,9 +943,21 @@ for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPEND
             "completion sentinel(s) that lack configuration-bound stage evidence.\n"
         )
 
+# Keep the effective DVH publication parameters identical in DAG preflight and
+# the stage subprocess. Worker budgets are execution controls, outside binding.
+_DVH_RULE_PARAMETERS = {
+    "campaign_mode": CAMPAIGN_MODE, "stage": "dvh", "python": PYTHON_MAIN,
+    "python_bin": PYTHON_MAIN_BIN, "root_dir": str(ROOT_DIR),
+    "configfile": str(EFFECTIVE_CONFIGFILE), "dicom_root": str(DICOM_ROOT),
+    "output_dir": str(OUTPUT_DIR), "logs_dir": str(LOGS_DIR),
+    "custom_structures": CUSTOM_STRUCTURES_CONFIG,
+}
+os.environ["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(
+    {"stage": _DVH_RULE_PARAMETERS["stage"]}, sort_keys=True)
+
 # DVH performs a fresh per-course code/config/input check before every DAG
 # decision. Invalidate only that completion alias; preserve committed artifacts.
-if list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
+if COURSE_MANIFEST.exists() or list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
     from rtpipeline.snakemake_delegate import invoke as _dvh_invoke, runtime_environment as _dvh_environment
     from types import SimpleNamespace as _DvhParams
     _dvh_arguments = ["--output-dir", str(OUTPUT_DIR), "--configfile", str(EFFECTIVE_CONFIGFILE)]
@@ -1297,17 +1307,17 @@ rule dvh_course:
     conda:
         "envs/rtpipeline.yaml"
     params:
-        campaign_mode=CAMPAIGN_MODE,
-        stage="dvh",
-        python=PYTHON_MAIN,
-        python_bin=PYTHON_MAIN_BIN,
-        root_dir=lambda w: str(ROOT_DIR),
-        configfile=str(EFFECTIVE_CONFIGFILE),
+        campaign_mode=_DVH_RULE_PARAMETERS["campaign_mode"],
+        stage=_DVH_RULE_PARAMETERS["stage"],
+        python=_DVH_RULE_PARAMETERS["python"],
+        python_bin=_DVH_RULE_PARAMETERS["python_bin"],
+        root_dir=_DVH_RULE_PARAMETERS["root_dir"],
+        configfile=_DVH_RULE_PARAMETERS["configfile"],
         radiomics_env=_ENV_RADIOMICS,
-        dicom_root=str(DICOM_ROOT),
-        output_dir=lambda w, output: str(Path(output.sentinel).parents[2]),
-        logs_dir=str(LOGS_DIR),
-        custom_structures=CUSTOM_STRUCTURES_CONFIG
+        dicom_root=_DVH_RULE_PARAMETERS["dicom_root"],
+        output_dir=_DVH_RULE_PARAMETERS["output_dir"],
+        logs_dir=_DVH_RULE_PARAMETERS["logs_dir"],
+        custom_structures=_DVH_RULE_PARAMETERS["custom_structures"]
     script:
         "workflow/scripts/run_course_stage.py"
 

@@ -410,3 +410,47 @@ def test_strict_mode_surfaces_the_upstream_error_unflattened(tmp_path):
         _run(workflow)
 
     assert not Path(workflow.output.sentinel).exists()
+
+
+@pytest.mark.parametrize("campaign_mode", [False, True])
+def test_corrupt_launch_attempt_is_durably_closed_with_fixed_code(tmp_path, campaign_mode):
+    import json
+    from rtpipeline.durable_progress import DurableProgressError
+    workflow = _workflow(tmp_path, campaign_mode=campaign_mode)
+    attempt = tmp_path / "_campaign_ledger/attempts/PT001__COURSE_A__dvh.json"
+    attempt.parent.mkdir(parents=True)
+    attempt.write_text('{"state":')
+    expected_error = SystemExit if campaign_mode else DurableProgressError
+    with pytest.raises(expected_error) as caught:
+        _run(workflow)
+    if campaign_mode:
+        assert caught.value.code == 0
+    else:
+        assert caught.value.code == "DVH_LEDGER_ATTEMPT_CORRUPT"
+    failed = json.loads(attempt.read_text())
+    assert failed["state"] == "failed" and failed["reason_code"] == "DVH_LEDGER_ATTEMPT_CORRUPT"
+    record = tmp_path / "_campaign_ledger/records/PT001__COURSE_A__dvh.json"
+    payload = json.loads(record.read_text())
+    assert payload["status"] == "failed" and payload["reason_code"] == "DVH_LEDGER_ATTEMPT_CORRUPT"
+
+
+@pytest.mark.parametrize("campaign_mode", [False, True])
+def test_corrupt_finish_attempt_cannot_report_success(tmp_path, monkeypatch, campaign_mode):
+    import json
+    from rtpipeline.durable_progress import DurableProgressError
+    workflow = _workflow(tmp_path, campaign_mode=campaign_mode)
+    namespace = runpy.run_path(str(RUN_COURSE_STAGE))
+    entrypoint = namespace["main"]
+    attempt = tmp_path / "_campaign_ledger/attempts/PT001__COURSE_A__dvh.json"
+    def launched(*args, **kwargs):
+        attempt.write_text('{"state":')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setitem(entrypoint.__globals__, "_publish_stage_completion", lambda *a, **k: None)
+    monkeypatch.setattr(namespace["subprocess"], "run", launched)
+    with pytest.raises(SystemExit if campaign_mode else DurableProgressError) as caught:
+        entrypoint(workflow)
+    assert caught.value.code == (0 if campaign_mode else "DVH_LEDGER_ATTEMPT_CORRUPT")
+    failed = json.loads(attempt.read_text())
+    assert failed["state"] == "failed" and failed["reason_code"] == "DVH_LEDGER_ATTEMPT_CORRUPT"
+    payload = json.loads((tmp_path / "_campaign_ledger/records/PT001__COURSE_A__dvh.json").read_text())
+    assert payload["status"] == "failed" and payload["reason_code"] == "DVH_LEDGER_ATTEMPT_CORRUPT"

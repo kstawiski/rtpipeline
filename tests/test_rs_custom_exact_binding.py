@@ -48,3 +48,55 @@ def test_main_publication_binding_does_not_depend_on_reader_runtime(tmp_path, mo
     from rtpipeline import stage_completion
     monkeypatch.setattr(stage_completion, "environment_record", lambda _: {"reader_runtime": "numpy1"})
     assert not custom._is_rs_custom_stale(item.out, item.config, item.rs_manual, item.rs_auto)
+
+
+def test_atomic_rtstruct_fsyncs_file_and_directory_then_reads_published_bytes(tmp_path, monkeypatch):
+    import stat
+    from rtpipeline import durable_progress
+    target = tmp_path / "RS_custom.dcm"
+    target.write_bytes(b"previous synthetic RTSTRUCT")
+    steps = []
+    original_fsync = os.fsync
+    original_replace = os.replace
+    original_hash = durable_progress.file_sha256
+    def synced(fd):
+        steps.append("directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync")
+        return original_fsync(fd)
+    def replaced(source, destination):
+        steps.append("replace")
+        return original_replace(source, destination)
+    def hashed(path):
+        steps.append("published_readback" if path == target else "temporary_readback")
+        return original_hash(path)
+    monkeypatch.setattr(os, "fsync", synced)
+    monkeypatch.setattr(os, "replace", replaced)
+    monkeypatch.setattr(durable_progress, "file_sha256", hashed)
+    custom._write_rtstruct_atomic(target, lambda name: Path(name).write_bytes(b"new synthetic RTSTRUCT"))
+    assert steps == ["file_fsync", "temporary_readback", "replace", "directory_fsync", "published_readback"]
+    assert target.read_bytes() == b"new synthetic RTSTRUCT"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_rtstruct_readback_mismatch_refuses_success(tmp_path, monkeypatch):
+    from rtpipeline import durable_progress
+    target = tmp_path / "RS_custom.dcm"
+    original = durable_progress.file_sha256
+    def hashed(path):
+        return "0" * 64 if path == target else original(path)
+    monkeypatch.setattr(durable_progress, "file_sha256", hashed)
+    with pytest.raises(durable_progress.DurableProgressError, match="DVH_RS_CUSTOM_READBACK_FAILED"):
+        custom._write_rtstruct_atomic(target, lambda name: Path(name).write_bytes(b"synthetic RTSTRUCT"))
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_rtstruct_fsync_failure_keeps_previous_publication(tmp_path, monkeypatch):
+    import errno
+    target = tmp_path / "RS_custom.dcm"
+    target.write_bytes(b"previous synthetic RTSTRUCT")
+    def failed(fd):
+        raise OSError(errno.EIO, "synthetic fsync failure")
+    monkeypatch.setattr(os, "fsync", failed)
+    with pytest.raises(OSError):
+        custom._write_rtstruct_atomic(target, lambda name: Path(name).write_bytes(b"new synthetic RTSTRUCT"))
+    assert target.read_bytes() == b"previous synthetic RTSTRUCT"
+    assert list(tmp_path.iterdir()) == [target]

@@ -234,6 +234,7 @@ def record(
     detail: str | None = None,
     started_at: str | None = None,
     duration_seconds: float | None = None,
+    reason_code: str | None = None,
 ) -> Path:
     """Publish one course/stage outcome record atomically."""
     entry = {
@@ -248,23 +249,40 @@ def record(
         "finished_at": _utcnow(),
         "duration_seconds": duration_seconds,
     }
+    evidence_error = None
     if stage == "dvh" and status != STATUS_FAILED:
+        from rtpipeline.durable_progress import Binding, DurableProgressError
         sentinel = Path(output_dir) / patient / course / ".dvh_done"
-        if sentinel.is_file():
+        try:
             evidence = json.loads(sentinel.read_text())
-            entry.update(binding=evidence.get("dvh_binding", evidence.get("binding")),
-                         attempt_state="committed")
+            saved = evidence.get("dvh_binding", evidence.get("binding"))
+            Binding(**saved)
+            entry.update(binding=saved, attempt_state="committed")
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, DurableProgressError) as exc:
+            evidence_error = exc
+            entry.update(status=STATUS_FAILED, returncode=returncode or 1,
+                         attempt_state="failed", reason_code="DVH_LEDGER_EVIDENCE_UNREADABLE")
+            finish_attempt(output_dir, patient, course, stage, "failed",
+                           "DVH_LEDGER_EVIDENCE_UNREADABLE")
     if stage == "dvh" and status == STATUS_FAILED:
+        from rtpipeline.dvh_generation import read_attempt
+        from rtpipeline.durable_progress import DurableProgressError
         attempt = Path(output_dir) / patient / course / ".dvh/attempt.json"
-        if attempt.is_file():
-            evidence = json.loads(attempt.read_text())
-            entry.update(binding=evidence.get("binding"), attempt_state="failed",
-                         reason_code=evidence.get("reason_code", "DVH_CHILD_FAILED"))
+        try:
+            evidence = read_attempt(attempt, "DVH_ATTEMPT_CORRUPT")
+        except DurableProgressError as exc:
+            if exc.code != "DVH_ATTEMPT_CORRUPT":
+                raise
+            evidence = {"reason_code": exc.code}
+        entry.update(binding=evidence.get("binding"), attempt_state="failed",
+                     reason_code=evidence.get("reason_code") or reason_code or "DVH_CHILD_FAILED")
     target = records_dir(output_dir) / f"{_unit_key(patient, course, stage)}.json"
     if stage == "dvh":
         from rtpipeline.durable_progress import final_result_writer
         target.parent.mkdir(parents=True, exist_ok=True)
         final_result_writer(target, entry)
+        if evidence_error is not None:
+            raise DurableProgressError("DVH_LEDGER_EVIDENCE_UNREADABLE") from evidence_error
     else:
         _write_atomic(target, json.dumps(entry, indent=2, sort_keys=True) + "\n")
     return target
@@ -670,9 +688,12 @@ def _attempt_path(output_dir, patient, course, stage):
 def begin_attempt(output_dir, patient, course, stage, *, binding=None):
     """Durable launch state; a started predecessor is interrupted, never closed."""
     from rtpipeline.durable_progress import final_result_writer
+    from rtpipeline.dvh_generation import read_attempt
     path = _attempt_path(output_dir, patient, course, stage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous = json.loads(path.read_text()) if path.exists() else {}
+    previous = read_attempt(path, "DVH_LEDGER_ATTEMPT_CORRUPT",
+                            failure_fields=dict(patient=patient, course=course,
+                                                stage=stage, binding=binding))
     entry = dict(patient=patient, course=course, stage=stage, state="started", binding=binding,
                  attempt_number=previous.get("attempt_number", 0) + 1,
                  previous_state=("interrupted" if previous.get("state") == "started"
@@ -685,12 +706,16 @@ def begin_attempt(output_dir, patient, course, stage, *, binding=None):
 
 def finish_attempt(output_dir, patient, course, stage, state, reason_code=None):
     from rtpipeline.durable_progress import final_result_writer
+    from rtpipeline.dvh_generation import read_attempt
     if state not in {"committed", "failed"}:
         raise ValueError("unsupported attempt state")
     path = _attempt_path(output_dir, patient, course, stage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous = json.loads(path.read_text()) if path.exists() else {}
+    previous = read_attempt(path, "DVH_LEDGER_ATTEMPT_CORRUPT",
+                            failure_fields=dict(patient=patient, course=course, stage=stage))
     final_result_writer(path, {**previous, "patient": patient, "course": course, "stage": stage,
+                               "binding": previous.get("binding"),
+                               "attempt_number": previous.get("attempt_number", 1),
                                "state": state, "reason_code": reason_code})
 
 

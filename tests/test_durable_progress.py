@@ -204,6 +204,72 @@ def test_truncated_last_line_is_reported_and_append_refused(tmp_path, tail):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("tail", [b'{"body":', b'not JSON\n', b'{"body":{}}\n'])
+def test_explicit_tail_recovery_quarantines_hash_fsyncs_and_continues(tmp_path, monkeypatch, tail):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        first = journal.append({"item": "SYNTH_A"})
+    prefix = path.read_bytes()
+    path.write_bytes(prefix + tail)
+    syncs = []
+    real_fsync = os.fsync
+    def synced(fd):
+        # At truncation durability, evidence must already exist on disk.
+        if path.stat().st_size == len(prefix):
+            assert quarantine.read_bytes() == tail
+            assert json.loads(evidence.read_bytes())["sha256"] == digest
+        syncs.append(os.fstat(fd).st_mode)
+        real_fsync(fd)
+    digest = hashlib.sha256(tail).hexdigest()
+    quarantine = path.with_name(path.name + ".torn-" + digest)
+    evidence = quarantine.with_name(quarantine.name + ".json")
+    monkeypatch.setattr(os, "fsync", synced)
+    with dp.ProgressJournal.recover(path) as journal:
+        assert journal.append({"item": "SYNTH_B"})["sequence"] == 3
+    assert quarantine.read_bytes() == tail
+    assert json.loads(evidence.read_bytes()) == {
+        "sha256": digest, "bytes": len(tail), "verified_bytes": len(prefix)}
+    read = dp.ProgressJournal.read(path)
+    assert read.records[0] == first
+    recovered = read.records[1]
+    assert recovered["body"]["reason_code"] == "DURABLE_JOURNAL_TAIL_RECOVERED"
+    assert recovered["body"]["quarantine"] == quarantine.name
+    assert [r["sequence"] for r in read.records] == [1, 2, 3]
+    import stat
+    assert any(stat.S_ISDIR(mode) for mode in syncs)
+    assert any(stat.S_ISREG(mode) for mode in syncs)
+    with dp.ProgressJournal.recover(path) as journal:
+        assert journal.append({"done": True})["sequence"] == 4
+    assert len(list(tmp_path.glob("journal.torn-*"))) == 2
+
+
+def test_explicit_tail_recovery_refuses_midfile_corruption_without_mutation(tmp_path):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        journal.append({"verified": True})
+    raw = path.read_bytes() + b'not JSON\n' + b'{"partial":'
+    path.write_bytes(raw)
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_JOURNAL_CORRUPT"):
+        dp.ProgressJournal.recover(path)
+    assert path.read_bytes() == raw
+    assert not list(tmp_path.glob("journal.torn-*"))
+
+
+def test_failed_quarantine_leaves_original_tail_and_releases_lock(tmp_path, monkeypatch):
+    path = tmp_path / "journal"
+    raw = b'{"partial":'
+    path.write_bytes(raw)
+    with monkeypatch.context() as patch:
+        def failed(*args):
+            raise dp.DurableProgressError(dp.WRITE_FAILED)
+        patch.setattr(dp, "_atomic_write", failed)
+        with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+            dp.ProgressJournal.recover(path)
+    assert path.read_bytes() == raw
+    with dp.ProgressJournal.recover(path) as journal:
+        assert journal.append({"done": True})["sequence"] == 2
+
+
 @pytest.mark.parametrize("fault", ["hash", "sequence", "schema", "json", "duplicate", "utc", "nested"])
 def test_complete_corrupt_journal_line_is_never_accepted(tmp_path, fault):
     path = tmp_path / "journal"
@@ -253,6 +319,20 @@ def test_cache_roundtrip_two_phase_and_readback(tmp_path, monkeypatch):
     assert loaded.entries == {"SYNTH_A": {"value": 42}}
     assert loaded.report == {"total": 1, "valid": 1, "stale": 0, "incomplete": 0,
                              "corrupt": 0, "conflict": 0}
+
+
+def test_directory_commit_marker_is_corrupt_and_valid_cache_entries_are_reused(tmp_path):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", {"value": 42}, BINDING)
+    malformed = cache.root / "malformed"
+    (malformed / "commit.json").mkdir(parents=True)
+    reuse, compute, report = dp.resume_plan(["SYNTH_A", "SYNTH_B"], cache, BINDING)
+    assert reuse == {"SYNTH_A": {"value": 42}}
+    assert compute == ["SYNTH_B"]
+    assert report == {"items": 2, "reuse": 1, "compute": 1,
+                      "cache_total": 2, "cache_valid": 1, "cache_corrupt": 1,
+                      "cache_stale": 0, "cache_incomplete": 0, "cache_conflict": 0}
+    assert (malformed / "commit.json").is_dir()
 
 
 @pytest.mark.parametrize("field", ["code_sha256", "config_sha256", "inputs_sha256"])
@@ -890,3 +970,37 @@ assert not any(name in sys.modules for name in ('numpy', 'pandas', 'pydicom', 't
 print('STDLIB_OK')
 '''
     assert run_child(code).strip() == "STDLIB_OK"
+
+
+@pytest.mark.parametrize("error_number", [errno.EIO, errno.EACCES])
+@pytest.mark.parametrize("filename", ["payload.json", "commit.json"])
+def test_per_entry_io_error_excludes_only_that_transaction(tmp_path, monkeypatch, error_number, filename):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_BAD", {"value": 1}, BINDING)
+    bad = transaction(cache)
+    cache.put("SYNTH_GOOD", {"value": 2}, BINDING)
+    original = Path.read_bytes
+    def read(path):
+        if path == bad / filename:
+            raise OSError(error_number, "synthetic per-entry read failure")
+        return original(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", read)
+        reused, pending, report = dp.resume_plan(["SYNTH_BAD", "SYNTH_GOOD"], cache, BINDING)
+    assert reused == {"SYNTH_GOOD": {"value": 2}} and pending == ["SYNTH_BAD"]
+    assert report["cache_corrupt"] == 1 and report["cache_valid"] == 1
+    assert (bad / filename).is_file()
+    assert cache.load_valid(BINDING).report["valid"] == 2
+
+
+def test_cache_root_listing_error_keeps_fixed_read_failure(tmp_path, monkeypatch):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_GOOD", 1, BINDING)
+    original = Path.iterdir
+    def listed(path):
+        if path == cache.root:
+            raise OSError(errno.EIO, "synthetic root listing failure")
+        return original(path)
+    monkeypatch.setattr(Path, "iterdir", listed)
+    with pytest.raises(dp.DurableProgressError, match=dp.READ_FAILED):
+        cache.load_valid(BINDING)

@@ -13,6 +13,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import campaign_ledger
 
 from rtpipeline.snakemake_delegate import invoke, runtime_environment
+from rtpipeline.durable_progress import DurableProgressError
+
+
+def _stage_environment(params):
+    env = runtime_environment(params)
+    if str(getattr(params, "stage", "")) == "dvh":
+        # Freeze evaluated parameters, including rule-level overrides, for
+        # launch binding, CLI compute and completion publication alike.
+        names = ("stage",)
+        effective = {name: getattr(params, name) for name in names}
+        for name in ("enabled", "extra_args"):
+            if hasattr(params, name):
+                effective[name] = getattr(params, name)
+        env["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(effective, sort_keys=True)
+    return env
 
 
 def _require_upstream_status(
@@ -72,7 +87,7 @@ def _require_segmentation_content(workflow: Any, course_dir: Path) -> str:
         operation="assess-segmentation",
         arguments=("--course-dir", str(course_dir)),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     expected_course = str(course_dir.resolve(strict=False))
     if payload.get("course_dir") != expected_course:
@@ -120,7 +135,7 @@ def _publish_radiomics_completion(
             str(sentinel_path),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     expected_path = str(sentinel_path.resolve(strict=False))
     sentinel = payload.get("sentinel")
@@ -170,7 +185,7 @@ def _publish_radiomics_not_applicable(
             str(configuration),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     sentinel = payload.get("sentinel")
     if (
@@ -237,7 +252,7 @@ def _publish_stage_completion(
             str(configuration),
         ),
         result_dir=Path(workflow.log[0]).parent,
-        env=runtime_environment(workflow.params),
+        env=_stage_environment(workflow.params),
     )
     if (
         payload.get("course_dir") != str(course_dir.resolve(strict=False))
@@ -281,7 +296,8 @@ def main(workflow: Any) -> None:
     started_monotonic = time.monotonic()
 
     def record(
-        status: str, returncode: int | None = None, detail: str | None = None
+        status: str, returncode: int | None = None, detail: str | None = None,
+        reason_code: str | None = None,
     ) -> None:
         try:
             if stage_name == "dvh" and status == campaign_ledger.STATUS_OK:
@@ -299,9 +315,12 @@ def main(workflow: Any) -> None:
                 detail=detail,
                 started_at=started_at,
                 duration_seconds=round(time.monotonic() - started_monotonic, 3),
+                reason_code=reason_code,
             )
         except Exception as exc:
             if stage_name == "dvh":
+                if isinstance(exc, DurableProgressError):
+                    raise
                 raise RuntimeError("DVH_LEDGER_WRITE_FAILED") from exc
             print(f"[campaign-ledger] could not record {stage_name}: {exc}", file=sys.stderr)
 
@@ -309,13 +328,24 @@ def main(workflow: Any) -> None:
         detail: str,
         returncode: int,
         strict_error: BaseException | None = None,
+        reason_code: str = "DVH_CHILD_FAILED",
     ) -> NoReturn:
         """Close this course while allowing an explicit campaign to continue."""
 
         if stage_name == "dvh":
-            campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name, "failed",
-                                          reason_code="DVH_CHILD_FAILED")
-        record(campaign_ledger.STATUS_FAILED, returncode=returncode, detail=detail)
+            try:
+                campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name,
+                                              "failed", reason_code=reason_code)
+            except DurableProgressError as exc:
+                if exc.code != "DVH_LEDGER_ATTEMPT_CORRUPT":
+                    raise
+                # finish_attempt has durably projected the corrupt predecessor
+                # as failed. Preserve its code in the course failure too.
+                reason_code = exc.code
+                detail = exc.code
+                strict_error = exc
+        record(campaign_ledger.STATUS_FAILED, returncode=returncode, detail=detail,
+               reason_code=reason_code)
         print(detail, file=sys.stderr)
         if bool(getattr(workflow.params, "campaign_mode", False)):
             _publish_sentinel(sentinel_path, "failed")
@@ -422,7 +452,7 @@ def main(workflow: Any) -> None:
     if extra_args:
         command.extend(shlex.split(extra_args))
 
-    stage_environment = runtime_environment(workflow.params)
+    stage_environment = _stage_environment(workflow.params)
     if stage_name == "radiomics":
         worker_limit = str(max(1, int(workflow.threads)))
         stage_environment.update(
@@ -445,8 +475,11 @@ def main(workflow: Any) -> None:
                             arguments=arguments, result_dir=log_path.parent, env=stage_environment)
         except Exception as exc:
             close_course(f"DVH_BINDING_UNAVAILABLE: {exc}", returncode=127)
-        campaign_ledger.begin_attempt(ledger_root, patient_id, course_id, stage_name,
-                                      binding=launch["binding"])
+        try:
+            campaign_ledger.begin_attempt(ledger_root, patient_id, course_id, stage_name,
+                                          binding=launch["binding"])
+        except DurableProgressError as exc:
+            close_course(exc.code, returncode=1, strict_error=exc, reason_code=exc.code)
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
             result = subprocess.run(
@@ -513,7 +546,10 @@ def main(workflow: Any) -> None:
             )
             close_course(str(error), returncode=1, strict_error=error)
     if stage_name == "dvh":
-        campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name, "committed")
+        try:
+            campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name, "committed")
+        except DurableProgressError as exc:
+            close_course(exc.code, returncode=1, strict_error=exc, reason_code=exc.code)
     record(campaign_ledger.STATUS_OK, returncode=0)
 
 
