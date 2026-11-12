@@ -647,7 +647,7 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
         for p in (pipeline.source / '.snakemake/rtpipeline-config-dependencies').rglob('*.json')}
     after = Counter((e['stage'], e['key']) for e in pipeline.event_rows() if e['event'] == 'extract')
     changed_keys = {key for stage, key in after if after[stage, key] > before[stage, key] and stage == 'radiomics'}
-    expected_keys = set() if mutation == 'receipt' else old_keys[stale]
+    expected_keys = set() if mutation == 'receipt' else set(old_keys[stale])
     if mutation == 'code':
         expected_keys |= old_keys[valid]
     assert changed_keys == expected_keys, (mutation, changed_keys, expected_keys)
