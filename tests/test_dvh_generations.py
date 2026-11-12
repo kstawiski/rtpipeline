@@ -742,11 +742,25 @@ def test_workflow_file_override_binds_content_and_deciding_override_changes(tmp_
 
 
 def test_legacy_checker_uses_explicit_nondefault_caller_settings(tmp_path, monkeypatch):
+    import errno
+    from rtpipeline import durable_progress
     root = course(tmp_path)
+    metadata = root / "metadata/case_metadata.json"
+    contract = json.loads(metadata.read_text())
+    contract["course_contract"]["dose_qc"]["threshold_gy"] = 80.0
+    metadata.write_text(json.dumps(contract))
     assert measure(root, use_cropped=False, max_total_dose_gy=80.0)
     settings = gen.effective_settings(use_cropped=False, max_total_dose_gy=80.0)
     assert dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx", settings=settings)
     assert not dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx")
+    original_hash = durable_progress.file_sha256
+    def unreadable(path):
+        if Path(path).name == "dvh.py":
+            raise OSError(errno.EIO, "synthetic unreadable code identity")
+        return original_hash(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(durable_progress, "file_sha256", unreadable)
+        assert not dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx", settings=settings)
     monkeypatch.setattr(dvh, "staging", lambda: False)
     def checked(course_dir, output, custom, *, settings):
         assert settings == gen.effective_settings(False, False, 42.0, 80.0)
