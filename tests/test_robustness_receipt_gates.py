@@ -23,14 +23,26 @@ def test_robustness_shell_gates(tmp_path, stage, status, representation):
         receipt.write_text(status + "\n")
     elif stage == "dvh":
         if status == "ok":
-            (course / "metadata").mkdir()
-            (course / "metadata" / "dvh_qc.json").write_text('{"status":"ok"}')
-            (course / "dvh_metrics.parquet").write_bytes(b"test-output")
+            import pandas as pd
+            from course_contract_test_utils import (write_synthetic_plan_and_dose,
+                write_minimal_course_contract, write_bound_aggregation_sentinels)
+            plan, dose = write_synthetic_plan_and_dose(course)
+            write_minimal_course_contract(course, selected_plans=[plan], selected_doses=[dose])
+            pd.DataFrame([{"ROI_Name": "PTV", "DmeanGy": 1.0}]).to_excel(course / "dvh_metrics.xlsx", index=False)
+            write_bound_aggregation_sentinels(course, tmp_path / "upstream-deps")
         dependency = materialize_stage_dependency(tmp_path / "deps", stage, {"enabled": status == "ok"})
         write_stage_completion_sentinel(course, receipt, stage=stage, status=status, configuration_dependency=dependency)
-        assert len(receipt.read_text().splitlines()) > 1
+        assert json.loads(receipt.read_text())["status"] == status
     else:
         receipt.write_text(json.dumps({"status": status}, indent=2))
+    # Parse a copy: a status-gate test must not corrupt an immutable DVH
+    # generation while testing rejection of an unrelated failed receipt.
+    published = receipt.read_bytes()
+    receipt = tmp_path / "gate-input.json"
+    receipt.write_bytes(published)
+    if representation == "structured":
+        receipt.write_text(json.dumps(json.loads(published), indent=2))
+        published = receipt.read_bytes()
     gates = [line.strip() for line in (ROOT / "Snakefile").read_text().splitlines()
              if line.strip().startswith("if ") and "{input." + stage + "}" in line]
     assert len(gates) == 2
@@ -42,12 +54,7 @@ def test_robustness_shell_gates(tmp_path, stage, status, representation):
         rejected = subprocess.run(["bash", "-c", rendered + "\nexit 41\nfi"], capture_output=True, text=True)
         assert rejected.returncode == 41
         # Restore the original representation for the other workflow branch.
-        if representation == "legacy":
-            receipt.write_text(status + "\n")
-        elif stage == "dvh":
-            write_stage_completion_sentinel(course, receipt, stage=stage, status=status, configuration_dependency=dependency)
-        else:
-            receipt.write_text(json.dumps({"status": status}, indent=2))
+        receipt.write_bytes(published)
 
 
 @pytest.mark.parametrize("status", ["disabled", "legacy", "missing"])

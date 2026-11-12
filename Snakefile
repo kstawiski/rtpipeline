@@ -1063,13 +1063,16 @@ if RADIOMICS_ENABLED:
 if CAMPAIGN_MODE:
     AGGREGATE_RESULTS_OUTPUTS["attrition"] = str(RESULTS_DIR / "campaign_attrition.csv")
 
+ALL_EVIDENCE_OUTPUTS = list(AGGREGATE_RESULTS_OUTPUTS.values())
+if ROBUSTNESS_ENABLED:
+    ALL_EVIDENCE_OUTPUTS.extend([str(RESULTS_DIR / "radiomics_robustness_summary.commit.json"),
+        str(RESULTS_DIR / "radiomics_robustness_summary_raw_values.parquet")])
+
 
 rule all:
     input:
         *(str(path) for path in AGG_OUTPUTS.values()),
-        *AGGREGATE_RESULTS_OUTPUTS.values(),
-        *([str(RESULTS_DIR / "radiomics_robustness_summary.commit.json"),
-           str(RESULTS_DIR / "radiomics_robustness_summary_raw_values.parquet")] if ROBUSTNESS_ENABLED else [])
+        *ALL_EVIDENCE_OUTPUTS
 
 
 checkpoint organize_courses:
