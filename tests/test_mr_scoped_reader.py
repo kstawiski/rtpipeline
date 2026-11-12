@@ -3,8 +3,8 @@
 Exercises:
 1. Mask byte-for-byte and feature row equivalence on clean synthetic MR data.
 2. Defect (a) regression: MR TotalSegmentator RTSTRUCT with area-less (1- or 2-point)
-   contour items next to normal polygons (fails raw rt-utils / OpenCV fillPoly,
-   measured after fix equal to scoped reader).
+   contour items next to normal polygons (raw rt-utils either raises or draws
+   a spurious voxel; the production mask equals the expected scoped mask).
 3. Defect (b) regression: MR RTSTRUCT referencing an SOP outside the MR series
    next to a normal ROI (fails raw rt-utils as a whole, measured normal ROI and
    governed structural_nonmeasurement disposition for out-of-scope ROI after fix).
@@ -176,10 +176,9 @@ def test_clean_mr_masks_and_feature_rows_equivalence(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.usefixtures("rasterizer_guard_stub")
-def test_mr_totalsegmentator_arealess_contour_item_regression(tmp_path: Path):
-    """Regression (a): MR TotalSegmentator RTSTRUCT with an area-less (1-point) contour item
-    fails raw rt-utils / OpenCV fillPoly, but is successfully measured after fix
-    with a mask identical to the scoped reader's."""
+def test_mr_totalsegmentator_arealess_contour_item_regression(tmp_path: Path, monkeypatch):
+    """Area-less MR items never reach production polygon filling or alter its mask."""
+    import cv2
     mr_dir = tmp_path / "MR"
     series_uid, sop_uids = _write_synthetic_mr(mr_dir, rows=16, columns=16, slices=5)
 
@@ -203,16 +202,37 @@ def test_mr_totalsegmentator_arealess_contour_item_regression(tmp_path: Path):
     ds.ROIContourSequence[0].ContourSequence.append(contour)
     ds.save_as(str(rs_path), enforce_file_format=True)
 
-    # 1. On raw rt-utils (ae60f01), reading femur_left raises OpenCV assertion error
+    # OpenCV 4 rejects this raw item; OpenCV 5 silently draws one extra voxel.
     raw_rt = RTStructBuilder.create_from(str(mr_dir), str(rs_path))
-    with pytest.raises(Exception) as exc_info:
-        raw_rt.get_roi_mask_by_name("femur_left")
-    assert "fillPoly" in str(exc_info.value) or "checkVector" in str(exc_info.value)
+    if int(cv2.__version__.split(".")[0]) >= 5:
+        raw_mask = raw_rt.get_roi_mask_by_name("femur_left")
+        raw_expected = mask_femur.copy()
+        assert not raw_expected[5, 5, 2]
+        raw_expected[5, 5, 2] = True
+        np.testing.assert_array_equal(raw_mask, raw_expected)
+        assert not np.array_equal(raw_mask, mask_femur)
+    else:
+        with pytest.raises(cv2.error) as exc_info:
+            raw_rt.get_roi_mask_by_name("femur_left")
+        assert "fillPoly" in str(exc_info.value) or "checkVector" in str(exc_info.value)
 
-    # 2. After fix: _collect_total_mr_masks measures the ROI without failure
+    # The production path must withhold area-less items before polygon filling.
+    fill_poly = cv2.fillPoly
+    filled_polygons = []
+
+    def volumetric_fill_only(*args, **kwargs):
+        polygons = kwargs["pts"] if "pts" in kwargs else args[1]
+        assert all(len(polygon) >= 3 for polygon in polygons)
+        filled_polygons.extend(polygons)
+        return fill_poly(*args, **kwargs)
+
+    monkeypatch.setattr(cv2, "fillPoly", volumetric_fill_only)
+
+    # _collect_total_mr_masks measures the ROI without failure.
     failures: List[Dict[str, str]] = []
     masks = radiomics._collect_total_mr_masks(mr_dir, seg_dir, failures)
 
+    assert filled_polygons
     assert "femur_left" in masks
     assert not failures
     assert masks["femur_left"].sum() > 0
