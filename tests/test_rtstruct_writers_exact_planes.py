@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from legacy_source import legacy_archive
+
 import numpy as np
 import pydicom
 import pytest
@@ -518,13 +520,7 @@ print(json.dumps(out))
 def _old_tree(tmp_path: Path) -> Path:
     tree = tmp_path / "old_tree"
     tree.mkdir()
-    try:
-        archive = subprocess.run(
-            ["git", "-C", str(REPO), "archive", OLD_REVISION, "rtpipeline"],
-            check=True, capture_output=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
-        pytest.skip(f"revision {OLD_REVISION} is unavailable: {exc}")
+    archive = legacy_archive(OLD_REVISION, cwd=REPO)
     subprocess.run(["tar", "-x", "-C", str(tree)], input=archive, check=True)
     return tree
 

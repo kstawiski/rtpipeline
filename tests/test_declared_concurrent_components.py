@@ -12,6 +12,8 @@ from pydicom.sequence import Sequence
 from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 import pytest
 
+from legacy_source import legacy_show
+
 from rtpipeline import organize as org
 from rtpipeline.config import PipelineConfig
 from rtpipeline.plan_disposition import RELATIVE_PATH
@@ -124,14 +126,9 @@ def classify(fixture):
 @pytest.fixture
 def legacy(monkeypatch):
     """Pin undeclared behavior to M-DEDUP-1(a), before the declaration port."""
-    import subprocess
     reference = "f0ed849:rtpipeline/organize.py"
-    try:
-        source = subprocess.check_output(["git", "show", reference],
-                                         cwd=Path(__file__).resolve().parents[1], text=True,
-                                         stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"reference source {reference} needs repository history")
+    source = legacy_show('f0ed849', 'rtpipeline/organize.py',
+                         cwd=Path(__file__).resolve().parents[1]).decode()
     # The reference remains read-only; loading source does not create a bytecode file.
     import types
     module = types.ModuleType("rtpipeline._concurrent_legacy_test")

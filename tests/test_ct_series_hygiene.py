@@ -19,6 +19,8 @@ from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 from pydicom.uid import generate_uid
 
+from legacy_source import legacy_archive
+
 import rtpipeline.segmentation as segmentation
 from rtpipeline.ct_series_hygiene import (
     CTSeriesHygieneError, METHOD, select_ct_instances,
@@ -1397,10 +1399,7 @@ def test_parent_hygiene_contract_remains_loadable_and_detects_tampering(tmp_path
     )
     # Generate the sidecar with the actual release parent, including its selector,
     # converter and provenance writer. No legacy evidence is fabricated here.
-    archive = subprocess.run(
-        ['git', 'archive', '1aeb0c528ad3d2565d0f4cdd379f318c5c2e4d95', 'rtpipeline'],
-        cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True,
-    ).stdout
+    archive = legacy_archive('1aeb0c528ad3d2565d0f4cdd379f318c5c2e4d95')
     parent_tree = tmp_path / 'parent'
     parent_tree.mkdir()
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:

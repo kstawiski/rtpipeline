@@ -4,7 +4,6 @@ import datetime
 import json
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import types
 
@@ -16,6 +15,8 @@ from pydicom.sequence import Sequence
 
 import dvh_plan_target_fixtures as fx
 from course_contract_test_utils import write_minimal_course_contract
+from legacy_source import legacy_show
+
 from rtpipeline import dvh
 from rtpipeline.course_contract import load_course_contract, classify_course_dose_completeness
 from rtpipeline.planning_dose_selection import BASIS, SIDECAR, select_planning_dose, load_planning_dose_sidecar
@@ -288,14 +289,14 @@ def test_planning_dvh_flags_cache_and_stale_refusal(tmp_path):
 
 def historical_dvh(tmp_path):
     root = Path(__file__).resolve().parents[1]
-    code = subprocess.check_output(['git', 'show', '80d5d65:rtpipeline/dvh.py'], cwd=root).decode()
+    code = legacy_show('80d5d65', 'rtpipeline/dvh.py', cwd=root).decode()
     module = types.ModuleType('rtpipeline._rf16_baseline_dvh')
     sys.modules[module.__name__] = module
     shadow = tmp_path/'baseline_package'; shadow.mkdir()
     module.__file__ = str(shadow/'dvh.py')
     exec(compile(code, module.__file__, 'exec'), module.__dict__)
     for name in module.DVH_MEASUREMENT_CODE_SOURCES:
-        source = subprocess.check_output(['git', 'show', f'80d5d65:rtpipeline/{name}'], cwd=root)
+        source = legacy_show('80d5d65', f'rtpipeline/{name}', cwd=root)
         (shadow/name).write_bytes(source)
     return module
 

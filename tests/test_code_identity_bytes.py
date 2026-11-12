@@ -2,8 +2,9 @@
 import ast
 import hashlib
 import json
-import subprocess
 from pathlib import Path
+
+from legacy_source import legacy_show
 
 from rtpipeline import custom_structures_rtstruct as custom
 from rtpipeline import dvh, radiomics_robustness as rr, stage_completion as sc
@@ -17,7 +18,7 @@ def test_rs_custom_generator_byte_identity_with_4ad1c53(monkeypatch):
     root = Path(custom.__file__).resolve().parents[1]
     sources = []
     for relative in sorted(custom.RS_CUSTOM_GENERATOR_CODE_SOURCES):
-        original = subprocess.check_output(["git", "show", f"4ad1c53:rtpipeline/{relative}"], cwd=root)
+        original = legacy_show('4ad1c53', f'rtpipeline/{relative}', cwd=root)
         assert (root / "rtpipeline" / relative).read_bytes() == original, relative
         sources.append({"path": relative, "sha256": hashlib.sha256(original).hexdigest()})
     monkeypatch.setattr(custom, "_RS_CUSTOM_GENERATOR_RESOLVED", False)

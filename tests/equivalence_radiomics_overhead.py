@@ -16,7 +16,6 @@ import math
 from pathlib import Path
 import resource
 import struct
-import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +28,8 @@ from pydicom.uid import generate_uid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from radiomics import featureextractor
+from legacy_source import legacy_show
+
 from rtpipeline import radiomics_ct_contract as current
 from rtpipeline import radiomics_parallel as parallel
 from rtpipeline import robustness_watchdog as watchdog
@@ -60,8 +61,7 @@ def exact(a, b, location="rows"):
 
 
 def baseline_module(name, scratch):
-    source = subprocess.check_output(
-        ["git", "show", f"2369fbb:rtpipeline/{name}.py"], cwd=ROOT)
+    source = legacy_show('2369fbb', f'rtpipeline/{name}.py', cwd=ROOT)
     path = scratch / (name + ".py")
     path.write_bytes(source)
     spec = importlib.util.spec_from_file_location("rtpipeline._baseline_" + name, path)

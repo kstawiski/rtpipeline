@@ -2,7 +2,7 @@
 
 The fix for per-ROI structural statuses and per-perturbation feature gaps must
 not change any output of a course that completes today. This test exports the
-base revision's package with ``git archive`` and runs it and the working tree
+base revision's package from pinned blobs and runs it and the working tree
 through ``robustness_equivalence_driver.py`` on the same synthetic inputs at
 the same absolute paths: the campaign course step (table, disposition sidecar,
 identity ledger, completion receipt) for sequential and parallel extraction,
@@ -44,6 +44,8 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+from legacy_source import legacy_archive
 
 import numpy as np
 import pandas as pd
@@ -129,13 +131,7 @@ def _build_course(course: Path, spec: dict) -> None:
 
 
 def _export_base(target: Path) -> Path:
-    try:
-        archive = subprocess.run(
-            ["git", "-C", str(ROOT), "archive", "--format=tar", BASE_REVISION, "rtpipeline"],
-            check=True, capture_output=True, timeout=120,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
-        pytest.skip(f"base revision {BASE_REVISION} is not available: {exc}")
+    archive = legacy_archive(BASE_REVISION, cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(target)
     return target

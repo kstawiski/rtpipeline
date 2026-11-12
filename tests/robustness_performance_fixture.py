@@ -1,12 +1,13 @@
 """Exact comparisons with the committed pre-optimization implementation."""
 import ast
 import builtins
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import SimpleITK as sitk
+
+from legacy_source import legacy_show
 
 from rtpipeline import radiomics_robustness as rr
 from rtpipeline import radiomics_parallel as rp
@@ -23,7 +24,7 @@ def baseline():
              'generate_ntcv_perturbations', '_perturbed_mask_identity'}
     for module, selected, target in [('radiomics_robustness', names, namespace),
                                     ('radiomics_parallel', {'_prepare_radiomics_task'}, dict(vars(rp)))]:
-        source = subprocess.check_output(['git', 'show', f'{BASE}:rtpipeline/{module}.py'], cwd=ROOT, text=True)
+        source = legacy_show(BASE, f'rtpipeline/{module}.py', cwd=ROOT).decode()
         tree = ast.parse(source)
         definitions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in selected]
         assert len(definitions) == len(selected)

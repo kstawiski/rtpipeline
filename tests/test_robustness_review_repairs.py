@@ -11,6 +11,8 @@ import pytest
 import SimpleITK as sitk
 import yaml
 
+from legacy_source import legacy_show
+
 from rtpipeline import cli, radiomics as rm, radiomics_robustness as rr
 from test_robustness_consumer_integration import (
     _build_courses,
@@ -363,7 +365,6 @@ def test_receipt_only_failure_and_stale_record(tmp_path, monkeypatch):
 def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
     """Run the actual main producer, then admit its untouched artifacts here."""
     import hashlib
-    import subprocess
     import sys
     import types
 
@@ -371,9 +372,7 @@ def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
     baseline = tmp_path / "main-code"
     baseline.mkdir()
     for relative in rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES:
-        content = subprocess.check_output(
-            ["git", "show", f"072b146:rtpipeline/{relative}"], cwd=root
-        )
+        content = legacy_show('072b146', f'rtpipeline/{relative}', cwd=root)
         (baseline / relative).write_bytes(content)
     name = "rtpipeline._main_producer_fixture"
     module = types.ModuleType(name)

@@ -1,6 +1,6 @@
 """Faster robustness preparation publishes what a027945 published.
 
-The base revision's package is exported with ``git archive`` and run, like
+The base revision's package is reconstructed from pinned blobs and run, like
 the working tree, through ``robustness_prep_driver.py`` (the campaign course
 step through the CLI) on the same synthetic courses at the same absolute
 paths. The working tree runs twice more: with a different worker budget and
@@ -45,6 +45,8 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+from legacy_source import legacy_archive
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -193,13 +195,7 @@ CHANGED_COURSES = {"P7", "S1", "S2", "S3"}
 
 
 def _export_base(target: Path) -> Path:
-    try:
-        archive = subprocess.run(
-            ["git", "-C", str(ROOT), "archive", "--format=tar", BASE_REVISION, "rtpipeline"],
-            check=True, capture_output=True, timeout=120,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
-        pytest.skip(f"base revision {BASE_REVISION} is not available: {exc}")
+    archive = legacy_archive(BASE_REVISION, cwd=ROOT)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(target)
     return target

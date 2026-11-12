@@ -13,6 +13,8 @@ import pytest
 import SimpleITK as sitk
 import yaml
 
+from legacy_source import legacy_show
+
 from rtpipeline import cli, radiomics_robustness as rr, robustness_completion as rc
 from rtpipeline.radiomics_ct_contract import classify_ct_roi, load_custom_structure_provenance
 from test_robustness_producer_equivalence import (
@@ -350,8 +352,8 @@ def test_new_7_positive_custom_certificate_real_staleness(tmp_path, monkeypatch,
     baseline_dir = tmp_path / "baseline-4ad1c53"
     baseline_dir.mkdir()
     for relative in (*rr.ROBUSTNESS_DISPOSITION_CODE_SOURCES, "robustness_main_compatibility.json"):
-        (baseline_dir / relative).write_bytes(subprocess.check_output(
-            ["git", "show", f"4ad1c53:rtpipeline/{relative}"], cwd=Path(rr.__file__).parent.parent,
+        (baseline_dir / relative).write_bytes(legacy_show(
+            '4ad1c53', f'rtpipeline/{relative}', cwd=Path(rr.__file__).parent.parent,
         ))
     baseline = ModuleType("rtpipeline._s11g_baseline_reader")
     baseline.__file__ = str(baseline_dir / "radiomics_robustness.py")
