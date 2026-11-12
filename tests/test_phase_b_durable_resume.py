@@ -735,8 +735,13 @@ def test_uninterrupted_scientific_bytes_match_base(tmp_path, nonmeasurement):
     (hook / "sitecustomize.py").write_text('''
 import os,sys
 def guard(event,args):
-    if event in {"socket.connect","socket.connect_ex","socket.bind","socket.getaddrinfo"}:
+    # Multiprocessing uses local AF_UNIX sockets for its forkserver and tracker.
+    if event == "socket.getaddrinfo":
         raise RuntimeError("synthetic tests forbid network")
+    if event in {"socket.connect", "socket.connect_ex", "socket.bind"}:
+        import socket as _socket
+        if getattr(args[0], "family", None) != _socket.AF_UNIX:
+            raise RuntimeError("synthetic tests forbid network")
 sys.addaudithook(guard)
 if sys.prefix == os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX"):
     sys.path[:] = [os.environ["WS516_RAD_SITES"] if p.startswith(sys.prefix+"/lib/python") and p.endswith("site-packages") else p for p in sys.path]
