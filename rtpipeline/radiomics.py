@@ -66,6 +66,7 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
 )
 from .extraction_progress import radiomics_settings
+from .durable_progress import DurableProgressError
 from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
@@ -3190,6 +3191,8 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             )
         return result
 
+    from .radiomics_conda import _mr_source_inventory, _mr_source_drift
+    source_inventory = _mr_source_inventory(mr_root)
     rows: List[Dict[str, object]] = []
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
@@ -3232,7 +3235,7 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
         extractor = _extractor(config, 'MR', normalize_override=normalize_override)
         if extractor is None:
             continue
-        img = _load_series_image(source_dir, series_uid)
+        img = _load_series_image(source_dir, series_uid, use_cache=False)
         if img is None:
             failure = {
                 "roi_name": series_uid,
@@ -3267,8 +3270,18 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
         for roi_name, mask in masks.items():
             try:
                 m_img = _mask_from_array_like(img, mask)
-                res = extractor.execute(img, m_img)
-                rec = normalize_radiomics_result(res)
+                source_files = _mr_image_source_files(source_dir) + tuple(
+                    path for path in sorted(nifti_dir.glob('*')) if path.is_file()) + (nifti_path,)
+                mask_files = tuple(sorted(seg_dir.glob('*--total_mr.dcm')))
+                if backend_out.get('backend') == 'nifti/no-polygon-fill':
+                    mask_files = tuple(sorted(seg_dir.glob(f'total_mr--{roi_name}.nii*')))
+                rec = _mr_roi_features(config, img, m_img, extractor,
+                    root=mr_root / '.radiomics-progress',
+                    identity={'series_uid': series_uid, 'source': MR_AUTO_SOURCE, 'roi': roi_name},
+                    source_files=source_files + mask_files,
+                    provenance=_mr_parameter_provenance(config, extractor,
+                        normalize_override=normalize_override, run_identifier=run_identifier,
+                        code_revision=code_revision))
                 rec.update({
                     'patient_id': getattr(course, 'patient_id', course_dirs.root.parent.name),
                     'course_id': getattr(course, 'course_id', course_dirs.root.name),
@@ -3288,6 +3301,9 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
                 })
                 rec["rasterizer_backend"] = backend_out.get("backend", "rt-utils/cv2.fillPoly")
                 rows.append(rec)
+            except DurableProgressError:
+                _invalidate_radiomics_outputs(out_path)
+                raise
             except Exception as exc:
                 if roi_source_is_required(MR_AUTO_SOURCE):
                     _invalidate_radiomics_outputs(out_path)
@@ -3343,6 +3359,10 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             )
         return None
 
+    drift = _mr_source_drift(source_inventory, _mr_source_inventory(mr_root))
+    if drift:
+        _invalidate_radiomics_outputs(out_path)
+        raise RadiomicsCourseExtractionError(f'MR sources changed during extraction: {drift}')
     required_mr = [
         requirement for requirement in requirements_from_contract(_analysis_contract(config), "MR")
         if requirement.requiredness == Requiredness.ANALYSIS_REQUIRED
@@ -3496,6 +3516,50 @@ def _mr_parameter_arm(normalize_override: Optional[bool]) -> str:
     if normalize_override is None:
         return "mr_configured"
     return "mr_normalized" if normalize_override else "mr_native_intensity"
+
+
+def _mr_roi_features(config, image, mask, extractor, *, root, identity,
+                     source_files, provenance):
+    """Commit normalized scalar features before acknowledging one MR ROI.
+
+    The immutable transaction binds decoded geometry/voxels, every consumed
+    source byte, configured/effective parameters, deciding code and runtime.
+    Failed extraction and failed persistence never become reusable outcomes.
+    """
+    from .extraction_progress import BoundItem, image_identity
+    from .durable_progress import file_sha256
+    item = BoundItem(root, identity,
+        {'configuration': radiomics_settings(config), 'execution': dict(provenance)},
+        {'image': image_identity(image), 'mask': image_identity(mask),
+         'sources': [{'path': str(path), 'sha256': file_sha256(path)}
+                     for path in sorted(set(source_files))]})
+    with item.locked():
+        cached = item.load()
+        if cached is not None:
+            return cached
+        features = normalize_radiomics_result(extractor.execute(image, mask))
+        item.commit(features)
+        return features
+
+
+def _mr_image_source_files(directory):
+    # GDCM accepts image instances without a .dcm suffix. Bind every file in
+    # the directly read image directory; sealed data is never opened.
+    return tuple(path for path in sorted(Path(directory).iterdir())
+                 if path.is_file() and path.suffix != '.age')
+
+
+def _mr_series_binding(config, series, image, sources, provenance):
+    from .extraction_progress import code_manifest, image_identity, runtime_environment
+    from .durable_progress import make_binding, file_sha256
+    from .extraction_progress import scientific
+    return make_binding(code_manifest(),
+        {'configuration': radiomics_settings(config), 'execution': scientific(dict(provenance)),
+         'environment': runtime_environment()},
+        {'image': image_identity(image),
+         'dicom': [{'path': str(path), 'sha256': file_sha256(path)}
+                   for path in _mr_image_source_files(series.dir)],
+         'sources': [source.identity for source in sources]})
 
 
 def _mr_parameter_provenance(
@@ -3812,10 +3876,8 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     observation and the current required-ROI contract is genuinely covered.
     Publication is refused when a source changes while the series is processed.
 
-    Provenance limit: ``current_code_revision`` resolves the committed Git
-    revision (or ``RTPIPELINE_CODE_REVISION``). It does not fingerprint
-    uncommitted working-tree edits, so an unchanged revision does not by itself
-    prove the executed code content was unchanged.
+    Reuse also checks the on-disk deciding code and runtime record, independently
+    of the reported Git revision.
     """
     # Determine weighting to toggle normalization: T2 -> False, T1 -> True, else default False
     wt = _infer_mr_weighting(series.dir, series.series_uid)
@@ -3832,7 +3894,7 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             )
         logger.warning("MR radiomics extraction unavailable for %s; stale outputs invalidated", series.dir)
         return None
-    img = _load_series_image(series.dir, series.series_uid)
+    img = _load_series_image(series.dir, series.series_uid, use_cache=False)
     if img is None:
         _invalidate_radiomics_outputs(out_feat)
         if _mr_radiomics_required(config):
@@ -3855,6 +3917,9 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
     try:
         current_effective_hash = effective_parameter_hash(extractor, arm=arm, window=None)
         sources = _mr_mask_sources(config, series, out_root, for_uid=for_uid)
+        binding_provenance = _mr_parameter_provenance(config, extractor,
+            normalize_override=normalize_override, run_identifier='', code_revision=code_revision)
+        binding = _mr_series_binding(config, series, img, sources, binding_provenance)
     except Exception as exc:
         _invalidate_radiomics_outputs(out_feat)
         if isinstance(exc, RadiomicsCourseExtractionError):
@@ -3869,6 +3934,11 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
             import pandas as pd
 
             parquet_path = out_feat.with_suffix('.parquet')
+            publication = json.loads((out_root / '.radiomics-progress/publication.json').read_text())
+            from .durable_progress import file_sha256
+            if publication['binding'] != binding.as_dict() or publication['artifacts'] != {
+                path.name: file_sha256(path) for path in (out_feat, parquet_path)}:
+                raise ValueError('MR publication content binding changed')
             assert_radiomics_arrow_schema(parquet_path)
             existing = pd.read_parquet(parquet_path, engine="pyarrow")
             if not _mr_resume_parameter_provenance_is_current(
@@ -3980,10 +4050,18 @@ def radiomics_for_mr_series(config: PipelineConfig, series: MRSeries) -> Optiona
                 f"{series.patient_id}/{series.series_uid}: " + "; ".join(unmet)
             )
         _mr_verify_mask_sources(sources)
+        if _mr_series_binding(config, series, img, sources, binding_provenance) != binding:
+            raise RadiomicsCourseExtractionError('MR execution or image source changed during extraction')
 
         import pandas as pd
         df = pd.DataFrame(rows)
         write_radiomics_feature_table_atomic(df, out_feat)
+        from .durable_progress import final_result_writer, file_sha256
+        progress = out_root / '.radiomics-progress'
+        progress.mkdir(exist_ok=True)
+        final_result_writer(progress / 'publication.json', {
+            'binding': binding.as_dict(), 'artifacts': {
+                path.name: file_sha256(path) for path in (out_feat, out_feat.with_suffix('.parquet'))}})
         return out_feat
     except RadiomicsFeatureTypeError:
         _invalidate_radiomics_outputs(out_feat)
@@ -4113,11 +4191,15 @@ def _mr_manual_rows(
     for roi, mask in masks.items():
         try:
             m_img = _mask_from_array_like(img, mask)
-            res = extractor.execute(img, m_img)
+            res = _mr_roi_features(config, img, m_img, extractor,
+                root=config.output_root / series.patient_id / f'MR_{series.series_uid}' / '.radiomics-progress',
+                identity={'series_uid': series.series_uid, 'source': str(rs), 'roi_number': roi_numbers.get(roi), 'roi': roi},
+                source_files=source.files + _mr_image_source_files(series.dir),
+                provenance=parameter_provenance)
             rows.append(_manual_row(
-                roi, status='success', measurements=normalize_radiomics_result(res),
+                roi, status='success', measurements=res,
             ))
-        except RadiomicsFeatureTypeError:
+        except (RadiomicsFeatureTypeError, DurableProgressError):
             raise
         except Exception as e:
             logger.warning("Radiomics MR manual failed for %s: %s", roi, e)
@@ -4229,10 +4311,14 @@ def _mr_auto_rows(
                     stable_identifier=identifier,
                 )
             m_img = _mask_from_array_like(img, mask, array_order="zyx")
-            res = ext.execute(img, m_img)
+            res = _mr_roi_features(config, img, m_img, ext,
+                root=config.output_root / series.patient_id / f'MR_{series.series_uid}' / '.radiomics-progress',
+                identity={'series_uid': series.series_uid, 'source': str(source.path), 'label': lab},
+                source_files=source.files + _mr_image_source_files(series.dir),
+                provenance={**parameter_provenance, 'effective_parameter_hash': observed})
             return _source_row(roi, status='success', stable_identifier=identifier,
-                               measurements=normalize_radiomics_result(res))
-        except RadiomicsFeatureTypeError as exc:
+                               measurements=res)
+        except (RadiomicsFeatureTypeError, DurableProgressError) as exc:
             # The pool converts a raised exception into a dropped result. Carry
             # the schema violation out explicitly so it fails the series.
             schema_failures.append(exc)

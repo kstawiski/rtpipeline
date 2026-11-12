@@ -1820,7 +1820,9 @@ def process_radiomics_batch(
         for task in tasks:
             if not task.get("precomputed_failure"):
                 task["__progress_root__"] = str(root)
-                task["__progress_context__"] = progress_context
+                task["__progress_context__"] = {
+                    'configuration': progress_context,
+                    'sources': task.get('__progress_sources__', {})}
         checkpoint_path = None
 
     # A checkpoint is reusable only when it already represents this exact task
@@ -3306,6 +3308,9 @@ def radiomics_for_course(
             for arm in CT_EXTRACTION_ARMS
         }
         return {
+            '__progress_sources__': {
+                str(path): file_sha256(path)
+                for path in [rs_file, *sorted(ct_dir.rglob('*.dcm'))]},
             "dual_arm_ct": True,
             "roi_class_decision": {
                 "roi_class": decision.roi_class,
@@ -4812,6 +4817,9 @@ def radiomics_for_course_mr(
             tasks.append({
                 'image_path': mr_image_path,
                 'mask_path': mask_nrrd.name,
+                '__progress_sources__': {str(path): file_sha256(path) for path in (
+                    Path(nifti_path), mask_path, *sorted(Path(dicom_dir).rglob('*.dcm')),
+                    *sorted((series_root / 'NIFTI').glob('*.json')))},
                 'roi_name': roi_name,
                 'params_file': str(params_file) if params_file else None,
                 'parameter_provenance_arm': mr_parameter_arm,

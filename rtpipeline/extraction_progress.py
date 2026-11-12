@@ -66,6 +66,7 @@ def code_manifest(extra=()):
         "radiomics_parallel.py", "radiomics_conda.py", "radiomics_ct_contract.py",
         "radiomics_schema.py", "radiomics_rasterizer.py", "rtstruct_geometry.py",
         "radiomics_resource_guard.py", "radiomics_memory.py", "roi_requiredness.py", "config_dependencies.py",
+        "auto_rtstruct.py", "rtstruct_identity.py", "original_segmentation.py",
         "robustness_mcc.py", "radiomics_robustness.py", "radiomics_robustness_outcomes.py", *extra}
     return {name: package / name for name in names}
 
@@ -211,8 +212,30 @@ class BoundItem:
             scientific(inputs))
 
     def load(self):
-        reused, _, _ = resume_plan([self.key], self.cache, self.binding)
+        reused, _, report = resume_plan([self.key], self.cache, self.binding)
         entry = reused.get(self.key)
+        if entry is None and report['cache_stale']:
+            # Keep the actual invalidation causes next to the affected item.
+            # Read markers only; sealed payloads are never opened here.
+            reasons = set()
+            for path in self.cache.root.glob('*/commit.json'):
+                try:
+                    marker = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(marker, dict) or not isinstance(marker.get('binding'), dict):
+                    continue
+                previous = marker.get('binding', {})
+                for field, reason in (
+                    ('inputs_sha256', 'EXTRACTION_INPUTS_CHANGED'),
+                    ('config_sha256', 'EXTRACTION_CONFIGURATION_CHANGED'),
+                    ('code_sha256', 'EXTRACTION_CODE_CHANGED')):
+                    if previous.get(field) != self.binding.as_dict()[field]:
+                        reasons.add(reason)
+            if reasons:
+                with ProgressJournal(self._lock_path.with_suffix('.jsonl')) as journal:
+                    journal.append({'event': 'item_invalidated', 'item_key': self.key,
+                        'reason_codes': sorted(reasons), 'binding': self.binding.as_dict()})
         return _decode_row(entry["result"]) if entry is not None else None
 
     def commit(self, value):
@@ -283,14 +306,15 @@ def task_item(task, root=None, *, environment=None, extra_settings=None):
         "segmentation_source", "mask_identity", "roi_original_name", "stable_roi_identifier")}
     identity.update(roi_name=task.get("roi_name"),
                     condition=task.get("robustness_perturbation_id") or task.get("extra_metadata"),
-                    arms=task.get("configured_parameter_hashes"), label=task.get("label"))
+                    arms=sorted(task.get("configured_parameter_hashes") or {}), label=task.get("label"))
     context = extra_settings or task.get("__progress_context__") or {}
     if isinstance(context, dict):
         perturbation = context.get("segmentation_perturbation", context)
         identity["seed"] = perturbation.get("random_seed", perturbation.get("seed"))
     return BoundItem(root, identity, settings,
         {"image": image_identity(task["image_path"]),
-         "mask": image_identity(task["mask_path"])}, environment=environment)
+         "mask": image_identity(task["mask_path"]),
+         'sources': task.get('__progress_sources__', {})}, environment=environment)
 
 
 def pack_frame(frame):
