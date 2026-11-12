@@ -329,8 +329,14 @@ def test_materialize_effective_config_write_failure_raises_without_source_fallba
     with pytest.raises(RuntimeError) as excinfo:
         helper()
 
-    assert isinstance(excinfo.value.__cause__, OSError)
-    assert excinfo.value.__cause__.errno == 28
+    from rtpipeline.durable_progress import DurableProgressError, WRITE_FAILED
+
+    persistence_error = excinfo.value.__cause__
+    assert isinstance(persistence_error, DurableProgressError)
+    assert persistence_error.code == WRITE_FAILED
+    assert isinstance(persistence_error.__cause__, OSError)
+    assert persistence_error.__cause__.errno == 28
+    assert "no source config fallback is used" in str(excinfo.value)
     assert list(tmp_path.rglob("effective_config.yaml")) == []
     assert not (tmp_path / "config.yaml").exists()
 
