@@ -45,9 +45,9 @@ def _workflow_context(workflow: Any) -> dict:
             "campaign_require_all_courses": bool(
                 getattr(workflow.params, "campaign_require_all_courses", False)
             ),
-            "worker_budget": int(workflow.params.worker_budget),
-            "auto_worker_budget": int(workflow.params.auto_worker_budget),
-            "aggregation_threads": int(workflow.params.aggregation_threads),
+            "worker_budget": int(getattr(workflow.params, "worker_budget", getattr(workflow, "threads", 1))),
+            "auto_worker_budget": int(getattr(workflow.params, "auto_worker_budget", getattr(workflow, "threads", 1))),
+            "aggregation_threads": int(getattr(workflow.params, "aggregation_threads", getattr(workflow, "threads", 1))),
         },
     }
 

@@ -100,7 +100,11 @@ def _course_stage_snakemake(tmp_path: Path) -> SimpleNamespace:
     course_dir = tmp_path / "output" / "P1" / "C1"
     segmentation = course_dir / ".segmentation_done"
     segmentation.parent.mkdir(parents=True)
-    segmentation.write_text("ok\n", encoding="utf-8")
+    plan, dose = write_synthetic_plan_and_dose(course_dir)
+    write_minimal_course_contract(course_dir, selected_plans=[plan], selected_doses=[dose])
+    pd.DataFrame([{"ROI_Name": "PTV", "DmeanGy": 1.0}]).to_excel(course_dir / "dvh_metrics.xlsx", index=False)
+    write_bound_aggregation_sentinels(course_dir, tmp_path / "upstream-dependencies")
+    (tmp_path / "config.yaml").write_text(f"custom_structures: {tmp_path / 'absent-custom.yaml'}\n")
     manifest = tmp_path / "manifest.json"
     manifest.write_text('{"courses": []}\n', encoding="utf-8")
     configuration = materialize_stage_dependency(
@@ -161,10 +165,10 @@ def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypat
     sentinel = Path(workflow.output.sentinel)
 
     def _producer_success(*_args, **_kwargs):
-        qc = sentinel.parent / "metadata" / "dvh_qc.json"
-        qc.parent.mkdir(parents=True, exist_ok=True)
-        qc.write_text('{"status":"ok"}\n', encoding="utf-8")
-        (sentinel.parent / "dvh_metrics.parquet").write_bytes(b"test-dvh")
+        from rtpipeline import dvh_generation as generation
+        def unexpected():
+            raise AssertionError("an unchanged committed fixture must be reused")
+        generation.run(sentinel.parent, generation.effective_settings(), None, unexpected)
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(
@@ -181,9 +185,9 @@ def test_required_course_stage_success_publishes_ok_sentinel(tmp_path, monkeypat
     runpy.run_path(str(RUN_COURSE_STAGE), init_globals={"snakemake": workflow})
 
     payload = json.loads(sentinel.read_text(encoding="utf-8"))
-    assert payload["schema"] == "rtpipeline-stage-completion-v1"
+    assert payload["schema"] == "rtpipeline-dvh-generation-v1"
     assert payload["status"] == "ok"
-    assert payload["content_closure_sha256"]
+    assert payload["binding"] and payload["generation_id"]
 
 
 def test_required_course_stage_rejects_failed_upstream_without_sentinel(tmp_path):
@@ -243,8 +247,6 @@ def _write_course_inputs(
             (course_dir / ".dvh_done").write_text(
                 dvh_sentinel, encoding="utf-8"
             )
-    elif unreadable_dvh:
-        (course_dir / "dvh_metrics.xlsx").write_bytes(b"not an Excel workbook")
     elif malformed_dvh:
         pd.DataFrame([{"unexpected": 1}]).to_excel(
             course_dir / "dvh_metrics.xlsx", index=False
@@ -256,6 +258,8 @@ def _write_course_inputs(
     write_bound_aggregation_sentinels(
         course_dir, course_dir.parents[1] / "stage-dependencies"
     )
+    if unreadable_dvh:
+        (course_dir / "dvh_metrics.xlsx").write_bytes(b"not an Excel workbook")
     if dvh_sentinel is None:
         (course_dir / ".dvh_done").unlink()
     elif dvh_sentinel.strip() != "ok":

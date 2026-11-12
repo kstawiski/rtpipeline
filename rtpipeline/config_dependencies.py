@@ -69,6 +69,22 @@ def semantic_yaml_or_absent(path: Optional[Path]) -> dict[str, Any]:
     return {"state": "present", "content": semantic_yaml(candidate)}
 
 
+def scientific_custom_config_sha256(path):
+    """Custom-structure definitions exclude only the top-level worker budget."""
+    if not path:
+        return None
+    raw = Path(path).read_bytes()
+    value = yaml.compose(raw.decode("utf-8"))
+    lines = raw.splitlines(keepends=True)
+    removed = set()
+    if isinstance(value, yaml.MappingNode):
+        for key, item in value.value:
+            if isinstance(key, yaml.ScalarNode) and key.value in {"max_workers", "workers"}:
+                stop = item.end_mark.line + bool(item.end_mark.column)
+                removed.update(range(key.start_mark.line, stop))
+    return hashlib.sha256(b"".join(line for i, line in enumerate(lines) if i not in removed)).hexdigest()
+
+
 def file_content_or_absent(path: Optional[Path]) -> dict[str, Any]:
     if path is None:
         return {"state": "not-configured"}
@@ -296,6 +312,24 @@ def advance_dependency_past_unbound_outputs(
     )
     os.utime(dependency_path, ns=(target_ns, target_ns))
     return len(legacy)
+
+
+def invalidate_unbound_outputs(dependency_path, output_paths, *, binding_field):
+    """Withdraw only stale course targets; never advance a shared input mtime."""
+    expected = read_stage_dependency(Path(dependency_path))["sha256"]
+    invalid = 0
+    for candidate in map(Path, output_paths):
+        try:
+            text = candidate.read_text(encoding="utf-8")
+            if text.strip().lower() in TERMINAL_CLOSURE_TOKENS:
+                continue
+            observed = json.loads(text)
+        except (OSError, ValueError):
+            observed = None
+        if not isinstance(observed, Mapping) or observed.get(binding_field) != expected:
+            candidate.unlink(missing_ok=True)
+            invalid += 1
+    return invalid
 
 
 def _parameter_key(

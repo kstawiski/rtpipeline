@@ -102,13 +102,29 @@ def _dictionary_table(frame, schema):
 class _StagedValues:
     """Disk-backed raw frames and compact per-feature Arrow accumulators."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, progress_root=None):
         self.directory = Path(directory)
+        self.progress_root = Path(progress_root) if progress_root else None
+        from .durable_progress import file_sha256
+        self.code_snapshot = {name: file_sha256(path) for name, path in _reduction_code().items()}
+        self.environment_snapshot = _reduction_environment()
         self.paths = []
         self.prototypes = []
         self.row_count = 0
 
     def add(self, frame):
+        if self.progress_root:
+            from .extraction_progress import BoundItem, pack_frame, unpack_frame, digest
+            packed = pack_frame(frame)
+            item = BoundItem(self.progress_root / "partitions",
+                [frame[c].astype(str).unique().tolist() for c in ("patient_id", "course_id") if c in frame],
+                {"stage": "validated_robustness_partition"}, {"table": digest(packed)},
+                code=_reduction_code(), environment=_reduction_environment())
+            cached = item.load()
+            if cached is None:
+                item.commit(packed)
+            else:
+                frame = unpack_frame(cached)
         path = self.directory / f"{len(self.paths):06d}.parquet"
         frame.to_parquet(path, index=False)
         self.paths.append(path)
@@ -176,7 +192,19 @@ class _StagedValues:
             group = pa.concat_tables(tables, promote_options="permissive").to_pandas()
             for column in group.select_dtypes("category"):
                 group[column] = group[column].astype(object)
-            summaries.append(rr.summarize_feature_stability(group, config))
+            if self.progress_root:
+                from .extraction_progress import BoundItem, pack_frame, unpack_frame, digest
+                item = BoundItem(self.progress_root / "reductions", list(key), config,
+                    {"group": digest(pack_frame(group))}, code=_reduction_code(), environment=_reduction_environment())
+                cached = item.load()
+                if cached is None:
+                    summary = rr.summarize_feature_stability(group, config)
+                    item.commit(pack_frame(summary))
+                else:
+                    summary = unpack_frame(cached)
+                summaries.append(summary)
+            else:
+                summaries.append(rr.summarize_feature_stability(group, config))
         if summaries:
             summary = pd.concat(summaries, ignore_index=True)
         else:
@@ -234,14 +262,37 @@ def _sheets(summary, per_source):
     return sheets
 
 
-def _publish(staged, output, config, *, extra_sheets=(), verify_evidence=None):
+def _reduction_code():
+    root = Path(__file__).parent
+    return {name: root / name for name in ("radiomics_robustness_aggregate.py",
+        "radiomics_robustness.py", "extraction_progress.py", "durable_progress.py")}
+
+
+def _reduction_environment():
+    from .stage_completion import environment_record
+    return environment_record(("numpy", "pandas", "scipy", "pingouin", "pyarrow", "openpyxl"))
+
+
+def _publish(staged, output, config, *, extra_sheets=(), verify_evidence=None, source_snapshots=()):
+    from .durable_progress import file_sha256, make_binding
+    from .extraction_progress import scientific
+    def verify():
+        if {name: file_sha256(path) for name, path in _reduction_code().items()} != staged.code_snapshot:
+            raise RuntimeError("aggregate reduction code changed before publication")
+        if _reduction_environment() != staged.environment_snapshot:
+            raise RuntimeError("aggregate reduction runtime changed before publication")
+        if verify_evidence:
+            verify_evidence()
     staged.prepare()
     summary, per_source = staged.summaries(config)
     output, raw = rr.robustness_cohort_output_paths(output)
     rr._publish_robustness_cohort_outputs(
         output_excel=output, raw_parquet_path=raw, raw_frame=staged,
         sheets=[*_sheets(summary, per_source), *extra_sheets],
-        verify_evidence=verify_evidence,
+        verify_evidence=verify,
+        commit_inputs={"binding": make_binding(_reduction_code(), scientific(config),
+            [{"partition": i, "sha256": file_sha256(path)} for i, path in enumerate(staged.paths)]).as_dict(),
+            "code": staged.code_snapshot, "environment": staged.environment_snapshot, "sources": list(source_snapshots)},
     )
     rr.logger.info("Saved raw robustness values (%d rows) and %d summary groups",
                    staged.row_count, len(summary))
@@ -264,9 +315,11 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, cu
         raise RuntimeError("no robustness results were supplied for aggregation")
     output_excel.parent.mkdir(parents=True, exist_ok=True)
     seen_paths, seen_courses, seen_tables = {}, {}, {}
+    frozen_paths = tuple(map(Path, input_parquets))
+    snapshots = []
     with TemporaryDirectory(prefix=".robustness-aggregate-", dir=output_excel.parent) as directory:
-        staged = _StagedValues(directory)
-        for path in input_parquets:
+        staged = _StagedValues(directory, output_excel.parent / ("." + output_excel.stem + "-progress"))
+        for path in frozen_paths:
             entry = rr._admit_robustness_aggregation_input(path, rob_config, custom_structures_config=custom_structures_config)
             for registry, key, repeated in (
                 (seen_paths, str(entry.path.resolve()), "input path"),
@@ -275,8 +328,20 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, cu
             ):
                 _duplicate(registry, key, entry.path, repeated)
             staged.add(entry.frame)
+            snapshots.append(replace(entry, frame=None))
             del entry
-        _publish(staged, output_excel, rob_config)
+        def verify():
+            if tuple(map(Path, input_parquets)) != frozen_paths:
+                raise ValueError("robustness aggregate input membership changed")
+            for expected in snapshots:
+                fresh = rr._admit_robustness_aggregation_input(expected.path, rob_config,
+                    custom_structures_config=custom_structures_config)
+                for field in ("path", "course_dir", "patient_id", "course_id", "run_identifier",
+                              "table_sha256", "source_dispositions"):
+                    if getattr(fresh, field) != getattr(expected, field):
+                        raise ValueError("robustness aggregate input snapshot changed: " + field)
+                del fresh
+        _publish(staged, output_excel, rob_config, verify_evidence=verify)
 
 
 def aggregate_robustness_cohort(
@@ -301,7 +366,7 @@ def aggregate_robustness_cohort(
     snapshots, outcomes = [], []
     seen_courses, seen_tables = {}, {}
     with TemporaryDirectory(prefix=".robustness-aggregate-", dir=output_excel.parent) as directory:
-        staged = _StagedValues(directory)
+        staged = _StagedValues(directory, output_excel.parent / ("." + output_excel.stem + "-progress"))
         for course in courses:
             fresh = rr.admit_robustness_cohort_course(
                 course.course_dir, patient_id=course.patient_id,
@@ -357,4 +422,8 @@ def aggregate_robustness_cohort(
         _publish(staged, output_excel, rob_config,
                  extra_sheets=[*rr._robustness_accounting_sheets(course_outcomes, snapshots),
                                ("source_dispositions", rr._robustness_source_disposition_rows(snapshots))],
-                 verify_evidence=verify)
+                 verify_evidence=verify,
+                 source_snapshots=[{"path": Path(cohort["manifest_path"]).relative_to(Path(cohort["output_root"])).as_posix(),
+                                    "sha256": rr.hashlib.sha256(cohort["manifest_snapshot"]).hexdigest()},
+                     *({"path": (snapshot.course_dir / ".radiomics_robustness_done").relative_to(Path(cohort["output_root"])).as_posix(),
+                        "sha256": rr.hashlib.sha256(snapshot.receipt_snapshot).hexdigest()} for snapshot in snapshots)])

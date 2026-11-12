@@ -69,6 +69,18 @@ def write_bound_aggregation_sentinels(
         "dvh": "ok",
         "qc": "ok",
     }
+    # Fixture tables are synthetic values supplied by these unit tests. Build
+    # the same committed-generation envelope production requires, after its
+    # upstream receipts exist; a bare .dvh_done no longer certifies a table.
+    from rtpipeline import dvh_generation as generation
+    from io import BytesIO
+    import pandas as pd
+    payloads = {name: (course / name).read_bytes() for name in generation.ARTIFACTS
+                if (course / name).is_file()}
+    if "dvh_metrics.xlsx" in payloads and "dvh_metrics.parquet" not in payloads:
+        stream = BytesIO()
+        pd.read_excel(BytesIO(payloads["dvh_metrics.xlsx"])).to_parquet(stream, index=False)
+        payloads["dvh_metrics.parquet"] = stream.getvalue()
     for stage, status in statuses.items():
         definition = stage_definition(stage)
         dependency = materialize_stage_dependency(
@@ -76,6 +88,14 @@ def write_bound_aggregation_sentinels(
             definition.configuration_stage,
             {"fixture": "bound-aggregation-sentinel", "stage": stage},
         )
+        if stage == "dvh":
+            def compute():
+                for name, raw in payloads.items():
+                    target = generation.output_path(course, name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(raw)
+            generation.run(course, generation.effective_settings(), None, compute, retry_failed=True)
+            continue
         write_stage_completion_sentinel(
             course,
             course / definition.sentinel,
@@ -83,6 +103,11 @@ def write_bound_aggregation_sentinels(
             status=status,
             configuration_dependency=dependency,
         )
+    if (course / "radiomics_ct.parquet").is_file():
+        from rtpipeline.radiomics_ct_contract import write_completion_sentinel
+        from rtpipeline.extraction_progress import commit_nominal_publication
+        write_completion_sentinel(course)
+        commit_nominal_publication(course / "radiomics_ct.xlsx")
 
 
 def _header(path: Path):

@@ -323,7 +323,9 @@ def _write_robustness_identity_ledger(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        from .durable_progress import final_result_writer
+        final_result_writer(path, Path(temp_name).read_bytes())
+        os.unlink(temp_name)
     except BaseException:
         try:
             os.unlink(temp_name)
@@ -693,6 +695,8 @@ ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
     "robustness_mcc.py",
     "radiomics_conda.py",
     "original_segmentation.py",
+    "extraction_progress.py",
+    "durable_progress.py",
 )
 
 
@@ -763,6 +767,10 @@ def _is_robustness_rs_custom_stale(rs_custom_path, config_path, rs_manual, rs_au
     try:
         recorded = json.loads(metadata.read_text())
         if "custom_config_sha256" not in recorded:
+            return False
+        if isinstance(recorded.get("binding"), dict):
+            # The shared current-generation check above already compared the
+            # exact scientific configuration, excluding only worker budgets.
             return False
         active_digest = _file_sha256(Path(config_path)) if config_path else ""
         return recorded["custom_config_sha256"] != active_digest
@@ -847,7 +855,9 @@ def _evaluated_robustness_sources(
                     if "custom_config_sha256" not in meta:
                         raise ValueError("active custom-structure configuration is unbound in RS_custom metadata")
                     binding.update(custom_provenance=load_custom_structure_provenance(active),
-                                   custom_structures_config={"path": str(active.resolve()), "sha256": _file_sha256(active)})
+                                   custom_structures_config={"path": str(active.resolve()),
+                                       "sha256": _custom_configuration_digest(active),
+                                       "digest_kind": "custom-scientific-bytes-v1"})
                 except Exception as exc:
                     failed(source, path, exc)
             binding = _scope_custom_robustness_binding(binding, inventory, independent_custom_names)
@@ -998,8 +1008,8 @@ def _compatible_main_measured_code(
                 custom_cfg = Path(custom_structures_config) if custom_structures_config else (
                     Path(configured["path"]) if isinstance(configured, dict) else None)
                 if isinstance(configured, dict) and (
-                    _file_sha256(Path(configured["path"])) != configured["sha256"]
-                    or (custom_cfg and _file_sha256(custom_cfg) != configured["sha256"])
+                    _custom_configuration_digest(Path(configured["path"]), configured) != configured["sha256"]
+                    or (custom_cfg and _custom_configuration_digest(custom_cfg, configured) != configured["sha256"])
                 ):
                     return False
                 provenance = load_custom_structure_provenance(custom_cfg)
@@ -1091,6 +1101,13 @@ def _file_sha256(path: Path) -> str:
     from .stage_completion import file_sha256
 
     return file_sha256(Path(path))
+
+
+def _custom_configuration_digest(path, record=None):
+    if record is None or record.get("digest_kind") == "custom-scientific-bytes-v1":
+        from .config_dependencies import scientific_custom_config_sha256
+        return scientific_custom_config_sha256(path)
+    return _file_sha256(Path(path))
 
 
 def _content_sha256(value: Any) -> str:
@@ -1592,7 +1609,9 @@ def _write_robustness_source_dispositions(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        from .durable_progress import final_result_writer
+        final_result_writer(path, Path(temp_name).read_bytes())
+        os.unlink(temp_name)
     except BaseException:
         try:
             os.unlink(temp_name)
@@ -1965,7 +1984,7 @@ def _read_robustness_source_dispositions(
             if configured is not None:
                 from .radiomics_ct_contract import load_custom_structure_provenance
                 custom_path = Path(configured["path"])
-                if (_file_sha256(custom_path) != configured["sha256"]
+                if (_custom_configuration_digest(custom_path, configured) != configured["sha256"]
                         or load_custom_structure_provenance(custom_path) != binding.get("custom_provenance")):
                     raise ValueError("robustness custom-structure provenance is stale")
         inventory = _robustness_bound_inventory(
@@ -3640,6 +3659,53 @@ def _validate_measured_feature_frame(
 
 
 def extract_features_for_masks(
+    image, masks, config, modality="CT", structure_name="", patient_id="",
+    course_id="", perturbed_images=None, segmentation_source="Manual",
+    run_identifier=None, source_identity=None, *, progress_root=None,
+    progress_context=None,
+) -> pd.DataFrame:
+    if progress_root is None:
+        return _extract_features_for_masks_uncached(image, masks, config, modality,
+            structure_name, patient_id, course_id, perturbed_images,
+            segmentation_source, run_identifier, source_identity)
+    from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
+        pack_frame, unpack_frame, restamp, code_manifest)
+    frames, failures = [], {}
+    for condition, mask in masks.items():
+        current_image = (perturbed_images or {}).get(condition, image)
+        item = BoundItem(progress_root,
+            [source_identity.as_dict() if source_identity else [patient_id, course_id,
+             segmentation_source, structure_name], condition, "paired_ct_arms"],
+            {"configuration": radiomics_settings(config), "source": progress_context},
+            {"image": image_identity(current_image), "mask": image_identity(mask)},
+            code=code_manifest(("radiomics_robustness.py",)))
+        cached = item.load()
+        if cached is None:
+            from copy import copy
+            extraction_config = copy(config)
+            extraction_config._robustness_progress_root = progress_root
+            extraction_config._robustness_progress_context = progress_context
+            frame = _extract_features_for_masks_uncached(image, {condition: mask},
+                extraction_config, modality, structure_name, patient_id, course_id,
+                {condition: current_image}, segmentation_source, run_identifier, source_identity)
+            if not frame.attrs.get("identity_failures"):
+                item.commit(pack_frame(frame))
+        else:
+            frame = unpack_frame(cached)
+            if "run_identifier" in frame and run_identifier:
+                frame["run_identifier"] = run_identifier
+        failures.update(frame.attrs.get("identity_failures", {}))
+        frames.append(frame)
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    valid = set(masks) - set(failures)
+    if valid:
+        _validate_extracted_feature_frame(combined, valid, structure_name,
+                                          expected_source_identity=source_identity)
+    combined.attrs["identity_failures"] = failures
+    return combined
+
+
+def _extract_features_for_masks_uncached(
     image: sitk.Image,
     masks: Dict[str, sitk.Image],
     config: PipelineConfig,
@@ -3885,6 +3951,8 @@ def extract_features_for_masks(
                         run_identifier=shared_run_id, code_revision=current_code_revision(),
                         native_voxel_count=int(np.count_nonzero(sitk.GetArrayViewFromImage(mask))),
                         required=False, configured_parameter_hashes=configured_hashes,
+                        progress_root=getattr(config, "_robustness_progress_root", None),
+                        progress_context=getattr(config, "_robustness_progress_context", None),
                     )
                 except (TimeoutError, MemoryError):
                     raise
@@ -6184,6 +6252,26 @@ def robustness_for_course(
     all_features = []
     generated_nonmeasurement_keys = set()
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS
+    def condition_context(roi_name, source):
+        return {"configuration": getattr(config, "radiomics_robustness_config", None),
+            "seed": 42, "sources": [binding for binding in
+                [*rtstruct_source_bindings, *voxel_source_bindings]
+                if binding.get("segmentation_source") == source
+                and binding.get("roi_name", roi_name) == roi_name]}
+    def generated_nonmeasurement(roi_name, source, pert_id, outcome):
+        from .extraction_progress import BoundItem, image_identity, restamp
+        identity = identity_catalog[(source, roi_name)].as_dict()
+        item = BoundItem(course_dir / ".robustness-progress/nonmeasurements",
+            [identity, pert_id, "paired_ct_arms", 42], rob_config,
+            {"image": image_identity(ct_image),
+             "source_mask": hashlib.sha256(all_masks[(roi_name, source)].tobytes()).hexdigest()})
+        rows = item.load()
+        if rows is None:
+            rows = nonmeasurement_rows(outcome, identity, pert_id, robustness_run_identifier)
+            item.commit(rows)
+        else:
+            rows = restamp(rows, {"run_identifier": robustness_run_identifier})
+        return pd.DataFrame(rows)
     # robustness_run_identifier was generated before mask collection so the
     # source-disposition sidecar and the published table share one identity.
     expected_perturbations: Dict[Tuple[str, str], set[str]] = {}
@@ -6274,16 +6362,14 @@ def robustness_for_course(
             for (roi_name, source), prepared in zip(selected_structures, prepared_rois):
                 expected_perturbations[(roi_name, source)] = set(prepared["perturbation_ids"])
                 for pert_id, outcome in prepared["nonmeasurements"]:
-                    all_features.append(pd.DataFrame(nonmeasurement_rows(
-                        outcome, identity_catalog[(source, roi_name)].as_dict(),
-                        pert_id, robustness_run_identifier,
-                    )))
+                    all_features.append(generated_nonmeasurement(roi_name, source, pert_id, outcome))
                     generated_nonmeasurement_keys.update(
                         (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
                     )
                 for pert_id, task_file, task_params in prepared["tasks"]:
                     # Add perturbation-specific metadata to extra_metadata
                     task_params['extra_metadata'] = {'perturbation_id': pert_id}
+                    task_params["__progress_context__"] = condition_context(roi_name, source)
                     tasks.append((task_file, task_params))
                 logger.info(
                     "Prepared %d robustness task(s) and %d geometric non-measurement(s) "
@@ -6338,10 +6424,7 @@ def robustness_for_course(
                 expected_perturbations[(roi_name, source)] = set(perturbed_masks)
                 for pert_id, outcome in list(perturbed_masks.items()):
                     if isinstance(outcome, GeometricNonmeasurement):
-                        all_features.append(pd.DataFrame(nonmeasurement_rows(
-                            outcome, identity_catalog[(source, roi_name)].as_dict(),
-                            pert_id, robustness_run_identifier,
-                        )))
+                        all_features.append(generated_nonmeasurement(roi_name, source, pert_id, outcome))
                         generated_nonmeasurement_keys.update(
                             (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
                         )
@@ -6362,6 +6445,8 @@ def robustness_for_course(
                     segmentation_source=source,
                     run_identifier=robustness_run_identifier,
                     source_identity=identity_catalog[(source, roi_name)],
+                    progress_root=course_dir / ".robustness-progress",
+                    progress_context=condition_context(roi_name, source),
                 )
                 for perturbation_id, reason_detail in features_df.attrs.get(
                     "identity_failures", {}
@@ -6390,8 +6475,9 @@ def robustness_for_course(
             course_timeout = _robustness_course_timeout(len(tasks), max_workers)
             progress_timeout = int(os.environ.get("RTPIPELINE_ROBUSTNESS_PROGRESS_TIMEOUT", "300"))  # 5 min default
 
-            from .robustness_watchdog import SupervisedResults, technical_rows
-            with SupervisedResults(
+            from .robustness_watchdog import technical_rows
+            from .extraction_progress import ResumableResults
+            with ResumableResults(
                 ctx, _isolated_radiomics_extraction_with_retry, tasks, max_workers,
                 course_timeout=course_timeout, progress_timeout=progress_timeout,
             ) as results_iter:
@@ -6499,6 +6585,7 @@ def robustness_for_course(
                                 ).items()
                             }
                             result_frames[index] = result_frame
+                            results_iter.commit(index, result)
                         else:
                             # The worker returned only disposition records
                             # (e.g. the resource guard refused the perturbed
@@ -6740,7 +6827,8 @@ def robustness_for_course(
         require_no_output_symlinks(temporary_output)
         try:
             combined_df.to_parquet(temporary_output, index=False)
-            os.replace(temporary_output, publication_path)
+            from .durable_progress import final_result_writer
+            final_result_writer(publication_path, temporary_output.read_bytes())
         finally:
             temporary_output.unlink(missing_ok=True)
     except Exception as e:
@@ -7224,6 +7312,7 @@ def _publish_robustness_cohort_outputs(
     raw_frame: pd.DataFrame,
     sheets: List[Tuple[str, pd.DataFrame]],
     verify_evidence=None,
+    commit_inputs=None,
 ) -> None:
     """Publish the workbook and the raw values as one cohort result.
 
@@ -7255,12 +7344,13 @@ def _publish_robustness_cohort_outputs(
             # Note: Raw values saved to parquet file (see caller's log)
             # Excel has 1,048,576 row limit; large datasets exceed this
 
-        if verify_evidence is not None:
-            verify_evidence()
         for path in (output_excel, raw_parquet_path, temporary_raw, temporary_excel):
             require_no_output_symlinks(path)
         os.replace(temporary_raw, raw_parquet_path)
         os.replace(temporary_excel, output_excel)
+        from .aggregate_generation import commit
+        commit({output_excel.name: output_excel, raw_parquet_path.name: raw_parquet_path},
+               output_excel.with_suffix(".commit.json"), inputs=commit_inputs, verify=verify_evidence)
     except BaseException as e:
         residual = []
         for withdrawn in (
@@ -7874,6 +7964,7 @@ def robustness_cohort_output_paths(output_excel: Path) -> Tuple[Path, Path]:
 
 
 def withdraw_robustness_cohort_outputs(output_excel: Path) -> None:
+    Path(output_excel).with_suffix(".commit.json").unlink(missing_ok=True)
     """Remove any nominal cohort outputs, whatever produced them.
 
     A cohort attempt that cannot be completed must not leave the previous

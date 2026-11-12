@@ -65,6 +65,7 @@ from .radiomics_outcomes import (
     roi_source_is_required,
     resume_identity_pairs as _resume_identity_pairs,
 )
+from .extraction_progress import radiomics_settings
 from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
@@ -1678,6 +1679,8 @@ def radiomics_for_course(
     parquet_path = out_path.with_suffix(".parquet")
     if getattr(config, "resume", False) and (parquet_path.exists() or out_path.exists()):
         try:
+            from .extraction_progress import validate_nominal_publication
+            validate_nominal_publication(course_dir)
             if not parquet_path.exists():
                 raise ValueError("authoritative CT Parquet is missing")
             existing_df = read_authoritative_ct_publication(parquet_path)
@@ -2670,7 +2673,7 @@ def radiomics_for_course(
         )
         _invalidate_radiomics_outputs(out_path)
         existing_df = None
-    def _do_ct_task(task: _DirectCtTask) -> List[Dict[str, Any]]:
+    def _do_ct_task_uncached(task: _DirectCtTask) -> List[Dict[str, Any]]:
         effective_hashes = task.effective_parameter_hashes
         try:
             min_voxels, _ = _derive_voxel_limits(config)
@@ -2778,8 +2781,13 @@ def radiomics_for_course(
                 native_voxel_count=voxel_count,
                 required=task.required,
                 configured_parameter_hashes=task.configured_parameter_hashes,
+                progress_root=(course_dir / ".radiomics-progress") if getattr(config, "resume", False) else None,
+                progress_context=radiomics_settings(config),
             )
         except Exception as exc:
+            from .durable_progress import DurableProgressError
+            if isinstance(exc, DurableProgressError):
+                raise
             detail = f"Radiomics failed for {task.source}/{task.roi_name}: {exc}"
             if not task.required:
                 return disposition_rows_for_arms(
@@ -2796,6 +2804,26 @@ def radiomics_for_course(
                     configured_parameter_hashes=task.configured_parameter_hashes,
                 )
             raise RuntimeError(detail) from exc
+    def _do_ct_task(task):
+        import pandas as pd
+        from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
+                                           restamp, reusable)
+        from dataclasses import asdict
+        settings = asdict(task)
+        settings.pop("mask")
+        item = BoundItem(course_dir / ".radiomics-progress", _common_metadata(task),
+            {"task": settings, "configuration": radiomics_settings(config)},
+            {"image": image_identity(img), "mask": hashlib.sha256(task.mask.tobytes()).hexdigest(),
+             "source": task.source_content_sha256})
+        cached = item.load() if getattr(config, "resume", False) else None
+        if cached is not None:
+            return restamp(cached, {"run_identifier": run_identifier, "code_revision": code_revision})
+        records = _do_ct_task_uncached(task)
+        if reusable(records):
+            validate_ct_publication(pd.DataFrame(records), fail_on_unclassified_required=False)
+            item.commit(records)
+        return records
+
     if tasks:
         sequential_env = os.environ.get('RTPIPELINE_RADIOMICS_SEQUENTIAL', '').lower() in ('1', 'true', 'yes')
         if sequential_env:

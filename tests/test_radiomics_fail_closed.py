@@ -10,6 +10,7 @@ import types
 import numpy as np
 import pandas as pd
 import pytest
+import SimpleITK as sitk
 
 import rtpipeline.custom_models as custom_models
 import rtpipeline.radiomics as radiomics
@@ -430,7 +431,7 @@ def test_same_named_roi_remains_distinct_across_all_ct_sources(
     )
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
-    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_is_rs_custom_stale", lambda *_a, **_k: False)
     monkeypatch.setattr(radiomics, "_list_roi_names_dicom", lambda _path: ["Bladder"])
     monkeypatch.setattr(
@@ -562,7 +563,7 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     stale.write_bytes(b"stale")
     (course / "radiomics_ct.parquet").write_bytes(b"stale")
 
-    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(
         radiomics,
@@ -579,7 +580,9 @@ def test_direct_rtstruct_construction_failure_invalidates_stale_course_output(
     assert not stale.with_suffix(".parquet").exists()
 
 
-class _Image:
+class _Image(sitk.Image):
+    def __init__(self):
+        super().__init__(sitk.GetImageFromArray(np.zeros((2, 2, 2), dtype=np.int16)))
     def GetSize(self):
         return (2, 2, 2)
 
@@ -1200,7 +1203,7 @@ def test_parallel_backend_publication_failure_invalidates_stale_outputs(
         def shutdown(self, *_args, **_kwargs):
             pass
 
-    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(parallel, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(parallel, "_list_roi_names", lambda _path: ["PTV"])
@@ -1351,7 +1354,7 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: extractor)
     monkeypatch.setattr(radiomics, "_extractor_large_roi", lambda *_a, **_k: extractor)
-    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(
         radiomics, "_rtstruct_masks", lambda _ct, path, **_kwargs: masks[Path(path)]
     )
@@ -1393,6 +1396,10 @@ def test_direct_measured_resume_binds_current_source_and_execution(
     source = _write_current_auto_rtstruct(course, roi_names=("urinary_bladder",))
     original_uid = str(pydicom.dcmread(source).SOPInstanceUID)
     state = {"revision": "code-A", "bin_width": 25, "calls": 0}
+    from rtpipeline import extraction_progress
+    deciding_code = tmp_path / "synthetic-deciding-code.py"
+    deciding_code.write_text("# deciding code A\n")
+    monkeypatch.setattr(extraction_progress, "code_manifest", lambda *args: {"synthetic.py": deciding_code})
 
     class Extractor(_FakeExtractor):
         def __init__(self, large=False):
@@ -1411,7 +1418,7 @@ def test_direct_measured_resume_binds_current_source_and_execution(
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: Extractor())
     monkeypatch.setattr(radiomics, "_extractor_large_roi", lambda *_a, **_k: Extractor(large=True))
-    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_rtstruct_masks", lambda *_a, **_k: {
         "urinary_bladder": np.ones((2, 2, 2), dtype=bool),
     })
@@ -1443,6 +1450,7 @@ def test_direct_measured_resume_binds_current_source_and_execution(
         assert str(pydicom.dcmread(source).SOPInstanceUID) == original_uid
     elif change == "code":
         state["revision"] = "code-B"
+        deciding_code.write_text("# deciding code B\n")
     elif change == "effective_settings":
         state["bin_width"] = 50
     elif change == "native_minimum":
@@ -1485,7 +1493,10 @@ def test_direct_measured_resume_binds_current_source_and_execution(
 
     radiomics.radiomics_for_course(config, course)
     after = radiomics.read_authoritative_ct_publication(output.with_suffix(".parquet"))
-    assert state["calls"] == (3 if change in {"unchanged", "native_minimum"} else 6)
+    # Damaging a nominal publication does not invalidate its independently
+    # bound ROI/arm results. Reassemble those rows without another extraction.
+    assert state["calls"] == (3 if change in {"unchanged", "native_minimum", "missing_fingerprint"}
+                              or change.startswith("rasterizer_") else 6)
     assert set(after.extraction_status) == ({"below_minimum_voxels"} if change == "native_minimum" else {"success"})
     assert set(after.source_content_sha256) == {hashlib.sha256(source.read_bytes()).hexdigest()}
     assert set(after.code_revision) == {state["revision"]}
@@ -1587,7 +1598,7 @@ def test_direct_stale_failed_resume_is_rebuilt(tmp_path, monkeypatch):
     monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(radiomics, "_extractor_large_roi", lambda *_a, **_k: _FakeExtractor())
-    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_mask_from_array_like", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(
         radiomics,
         "_rtstruct_masks",
@@ -1822,7 +1833,7 @@ def _parallel_course_with_fake_roi_results(tmp_path, monkeypatch, results_by_sou
     _write_contract(course, rtstruct=dirs.dicom_rtstruct / "RS.dcm", roi_names=("PTV",))
     _write_current_auto_rtstruct(course, roi_names=("vertebrae_T8", "lung_left"))
 
-    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(
         parallel,
@@ -1913,7 +1924,7 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
     # planning CT series, so the placeholder slice above is no longer written.
     _write_contract(course, rtstruct=rtstruct_for_contract, roi_names=("PTV",))
     _write_current_auto_rtstruct(course)
-    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: object())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: sitk.GetImageFromArray(np.ones((2, 2, 2), dtype=np.uint8)))
     monkeypatch.setattr(radiomics, "_extractor", lambda *_a, **_k: _FakeExtractor())
     monkeypatch.setattr(parallel, "_calculate_optimal_workers", lambda: 1)
     monkeypatch.setattr(parallel, "list_custom_model_outputs", lambda _course: [])

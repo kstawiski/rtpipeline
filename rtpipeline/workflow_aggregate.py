@@ -814,7 +814,20 @@ def _collect_all_frames(courses, required_frames):
         return results, errors
 
     def load(course):
-        return _load_course(course, required_frames)
+        from rtpipeline.extraction_progress import BoundItem, pack_frame, unpack_frame
+        patient, course_id, directory = course
+        frozen = [entry for entry in frozen_aggregate_inputs
+                  if entry["path"].startswith(directory.relative_to(OUTPUT_DIR).as_posix() + "/")]
+        item = BoundItem(RESULTS_DIR / ".aggregate-progress/partitions", [patient, course_id],
+            {"radiomics": RADIOMICS_ENABLED}, frozen,
+            code=_standard_code_manifest(), environment=_aggregate_environment())
+        cached = item.load()
+        if cached is not None:
+            return {k: unpack_frame(v) for k, v in cached.items()}, []
+        frames, errors = _load_course(course, required_frames)
+        if not errors:
+            item.commit({k: pack_frame(v) for k, v in frames.items() if v is not None})
+        return frames, errors
 
     with ThreadPoolExecutor(max_workers=_worker_count(courses)) as pool:
         for course_results, course_errors in pool.map(load, courses):
@@ -894,7 +907,8 @@ def _write_tabular_outputs(
     radiomics_cohort_provenance=None,
     not_applicable=None,
 ) -> None:
-    _write_dvh(
+    _cached_reduction("dvh", [Path(str(snakemake.output.dvh)),
+        Path(str(snakemake.output.dvh)).with_suffix(".parquet")], _write_dvh,
         all_frames.get("dvh", []),
         courses,
         incomplete=incomplete,
@@ -955,14 +969,16 @@ def _write_tabular_outputs(
                 expected_keys=expected_keys,
             )
         else:
-            pd.DataFrame(
+            empty_radiomics = pd.DataFrame(
                 columns=[
                     "patient_id",
                     "course_id",
                     "roi_name",
                     "structure_cropped",
                 ]
-            ).to_excel(snakemake.output.radiomics, index=False)  # type: ignore[name-defined]
+            )
+            empty_radiomics.to_excel(snakemake.output.radiomics, index=False)  # type: ignore[name-defined]
+            empty_radiomics.to_parquet(Path(str(snakemake.output.radiomics)).with_suffix(".parquet"), index=False)  # type: ignore[name-defined]
         radiomics_mr_frames = all_frames.get("radiomics_mr", [])
         if radiomics_mr_frames:
             pd.concat(radiomics_mr_frames, ignore_index=True).to_excel(
@@ -1099,7 +1115,43 @@ def _write_qc(courses) -> None:
         ).to_excel(snakemake.output.qc, index=False)  # type: ignore[name-defined]
 
 
+def _standard_code_manifest():
+    from rtpipeline.aggregate_generation import standard_code_manifest
+    return standard_code_manifest()
+
+
+def _aggregate_environment():
+    from rtpipeline.aggregate_generation import aggregate_environment
+    return aggregate_environment()
+
+
+def _cached_reduction(name, destinations, function, *args, **kwargs):
+    import base64
+    from rtpipeline.extraction_progress import BoundItem
+    from rtpipeline.durable_progress import final_result_writer
+    item = BoundItem(RESULTS_DIR / ".aggregate-progress/reductions", name,
+        {"radiomics": RADIOMICS_ENABLED, "campaign": CAMPAIGN_MODE,
+         "require_all": CAMPAIGN_REQUIRE_ALL_COURSES, "floor": CAMPAIGN_MIN_COMPLETION_FRACTION},
+        frozen_aggregate_inputs, code=_standard_code_manifest(), environment=_aggregate_environment())
+    cached = item.load()
+    if cached is not None:
+        for index, destination in enumerate(destinations):
+            value = cached.get(str(index))
+            if value is not None:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                final_result_writer(destination, base64.b64decode(value))
+        return
+    function(*args, **kwargs)
+    item.commit({str(index): base64.b64encode(path.read_bytes()).decode()
+                 for index, path in enumerate(destinations) if path.is_file()})
+
+
 log_path = Path(snakemake.log[0])  # type: ignore[name-defined]
+from rtpipeline.durable_progress import file_sha256 as _aggregate_sha
+frozen_aggregate_code = {name: _aggregate_sha(path) for name, path in _standard_code_manifest().items()}
+frozen_aggregate_environment = _aggregate_environment()
+aggregate_receipt = RESULTS_DIR / "aggregate_results.commit.json"
+aggregate_receipt.unlink(missing_ok=True)
 _invalidate_declared_outputs()
 log_path.parent.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1109,6 +1161,8 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
     courses, organize_cohort = _manifest_courses()
+    from rtpipeline.aggregate_generation import snapshot as _aggregate_snapshot
+    frozen_aggregate_inputs = _aggregate_snapshot(OUTPUT_DIR)
 except RuntimeError as exc:
     log_path.write_text(f"Aggregation blocked: {exc}\n", encoding="utf-8")
     raise
@@ -1150,6 +1204,7 @@ _write_organization_gate(
     expected_noncomputed_courses,
     not_applicable_courses,
 ) = _validate_required_inputs_with_not_applicable(courses)
+frozen_admission_errors = list(required_errors)
 downstream_exclusions: list[dict[str, Any]] = []
 
 if not CAMPAIGN_MODE:
@@ -1297,7 +1352,11 @@ if RADIOMICS_ENABLED:
     _write_radiomics_denominator_aggregate(
         aggregated_courses, not_applicable_courses
     )
-_write_tabular_outputs(
+_cached_reduction("tabular", [p for p in _declared_output_paths()
+    if p.name not in {"qc_summary.xlsx", "organization_gate.json", "aggregate_results.commit.json"}]
+    + ([Path(str(snakemake.output.radiomics)).with_suffix(".parquet"),
+        OUTPUT_DIR / "Data/radiomics_all.xlsx", OUTPUT_DIR / "Data/radiomics_all.parquet"]
+       if RADIOMICS_ENABLED else []), _write_tabular_outputs,
     all_frames,
     courses,
     incomplete=incomplete_courses,
@@ -1306,5 +1365,28 @@ _write_tabular_outputs(
     not_applicable=not_applicable_courses,
 )
 _copy_supplemental_sources()
-_write_qc(aggregated_courses)
+_cached_reduction("qc", [Path(str(snakemake.output.qc))], _write_qc, aggregated_courses)
+from rtpipeline.aggregate_generation import commit as _aggregate_commit
+def _verify_aggregate_inputs():
+    if _aggregate_snapshot(OUTPUT_DIR) != frozen_aggregate_inputs:
+        raise RuntimeError("aggregate input membership or snapshot changed before commit")
+    if {name: _aggregate_sha(path) for name, path in _standard_code_manifest().items()} != frozen_aggregate_code:
+        raise RuntimeError("aggregate deciding code changed before commit")
+    if _aggregate_environment() != frozen_aggregate_environment:
+        raise RuntimeError("aggregate runtime environment changed before commit")
+    # Validate the receipts' source/code closures again as well as the table
+    # snapshots; upstream outputs are governed by those receipts, not mtimes.
+    fresh_courses, _ = _manifest_courses()
+    if fresh_courses != courses:
+        raise RuntimeError("aggregate frozen course membership changed before commit")
+    _, fresh_errors, _, _, _ = _validate_required_inputs_with_not_applicable(fresh_courses)
+    if fresh_errors != frozen_admission_errors:
+        raise RuntimeError("aggregate course admission changed before commit")
+_aggregate_commit({p.name: p for p in RESULTS_DIR.iterdir()
+                   if p.is_file() and p.suffix in {".xlsx", ".parquet", ".json", ".csv"}
+                   and p.name != aggregate_receipt.name
+                   and not p.name.startswith("radiomics_robustness")},
+                  aggregate_receipt, inputs={"snapshots": frozen_aggregate_inputs,
+                      "code": frozen_aggregate_code, "environment": frozen_aggregate_environment},
+                  verify=_verify_aggregate_inputs)
 log_path.write_text(summary, encoding="utf-8")

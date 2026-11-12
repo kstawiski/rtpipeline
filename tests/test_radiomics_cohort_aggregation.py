@@ -121,7 +121,7 @@ def _workflow(tmp_path: Path, *, record_failure: bool) -> SimpleNamespace:
 
     if record_failure:
         record_dir = output_dir / "_campaign_ledger" / "records"
-        record_dir.mkdir(parents=True)
+        record_dir.mkdir(parents=True, exist_ok=True)
         (record_dir / "P2__C1__radiomics.json").write_text(
             json.dumps(
                 {

@@ -29,6 +29,7 @@ import SimpleITK as sitk
 import pydicom
 
 from .multiprocessing_utils import multiprocessing_subprocess_env
+from .extraction_progress import radiomics_settings
 
 from .acquisition_scale import (
     attach_acquisition_descriptor,
@@ -719,14 +720,10 @@ class RadiomicsCheckpoint:
         return key in self._completed_keys
 
     def add_result(self, result: Dict[str, Any]) -> None:
-        """Add a completed result and flush if buffer is full."""
+        """Acknowledge an outcome only after its durable write and read-back."""
         with self._lock:
             self._buffer.append(result)
-            if result.get('roi_name'):
-                self._completed_keys.add(_roi_instance_key(result))
-
-            if len(self._buffer) >= self.buffer_size:
-                self._flush_buffer()
+            self._flush_buffer()
 
     def _flush_buffer(self) -> None:
         """Write buffered results to checkpoint file."""
@@ -758,16 +755,22 @@ class RadiomicsCheckpoint:
                     tmp_path,
                     expected_string_columns=expected_radiomics_string_columns(combined_df),
                 )
-                os.replace(tmp_path, self.checkpoint_path)
+                from .durable_progress import final_result_writer
+                final_result_writer(self.checkpoint_path, tmp_path.read_bytes())
             finally:
                 try:
                     tmp_path.unlink()
                 except OSError:
                     pass
+            self._completed_keys.update(_roi_instance_key(row) for row in self._buffer
+                                        if row.get("roi_name"))
             self._buffer.clear()
             logger.debug("Checkpoint flushed: %d total ROIs", len(self._completed_keys))
         except Exception as exc:
-            logger.error("Failed to flush checkpoint: %s", exc)
+            from .durable_progress import DurableProgressError
+            if isinstance(exc, DurableProgressError):
+                raise
+            raise DurableProgressError("RADIOMICS_CHECKPOINT_WRITE_FAILED") from exc
 
     def flush(self) -> None:
         """Force flush any remaining buffered results."""
@@ -919,6 +922,10 @@ def _conda_subprocess_env() -> Dict[str, str]:
     can spawn 100+ threads fighting for CPU cores.
     """
     env = os.environ.copy()
+    prefix = _radiomics_env_prefix()
+    if prefix:
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None,
+            (str(Path(prefix) / "lib"), env.get("LD_LIBRARY_PATH", ""))))
     env.setdefault("CONDA_NO_PLUGINS", "1")
     env.setdefault("CONDA_OVERRIDE_CUDA", "0")
 
@@ -1265,9 +1272,127 @@ print(json.dumps(output))
 
 
 def extract_radiomics_batch_with_conda(
+    tasks: List[Dict[str, Any]], params_file: Optional[str] = None,
+    timeout_per_roi: int = 900, *, on_result=None,
+) -> List[Dict[str, Any]]:
+    """Stream each identified result through its durable transaction before ACK."""
+    from .extraction_progress import task_item, restamp, reusable
+    from .durable_progress import DurableProgressError
+    items, missing, results = {}, [], {}
+    for index, task in enumerate(tasks):
+        bound_task = dict(task, params_file=task.get("params_file") or params_file)
+        item = task_item(bound_task, environment=_extraction_environment()) if task.get("__progress_root__") else None
+        items[index] = item
+        cached = item.load() if item else None
+        if cached is not None:
+            result = restamp(cached, task)
+            result["__task_index__"] = index
+            results[index] = result
+            if on_result is not None:
+                on_result(index, result)
+        else:
+            missing.append(index)
+
+    def accept(local_index, result):
+        if type(local_index) is not int or not 0 <= local_index < len(missing):
+            raise DurableProgressError("RADIOMICS_STREAM_IDENTITY_INVALID")
+        index = missing[local_index]
+        if index in results:
+            raise DurableProgressError("RADIOMICS_STREAM_IDENTITY_DUPLICATE")
+        result = dict(result, __task_index__=index)
+        if reusable(result):
+            records = result.get("__records__")
+            if records is not None:
+                validate_ct_publication(pd.DataFrame(records), fail_on_unclassified_required=False)
+            if items[index] is not None:
+                items[index].commit({k: v for k, v in result.items() if k != "__task_index__"})
+        if on_result is not None:
+            on_result(index, result)
+        results[index] = result
+
+    if missing:
+        streamed = on_result is not None or any(items.values())
+        raw = _extract_radiomics_batch_uncached([tasks[i] for i in missing], params_file,
+            timeout_per_roi, on_result=accept if streamed else None)
+        if not streamed:
+            for result in raw:
+                if result is not None and type(result.get("__task_index__")) is int:
+                    accept(result["__task_index__"], result)
+        else:
+            # Missing frames remain missing; the existing exact-set gate rejects
+            # them. Already acknowledged peers remain committed.
+            pass
+    return [results[i] for i in sorted(results)]
+
+
+@lru_cache(maxsize=8)
+def _extraction_environment():
+    """Record the extracting interpreter, including when the caller uses NumPy 2."""
+    from .extraction_progress import runtime_environment
+    prefix = _radiomics_env_prefix()
+    if prefix and Path(sys.prefix).resolve() == Path(prefix).resolve():
+        return runtime_environment()
+    completed = subprocess.run(_radiomics_env_command("-c",
+        "import json; from rtpipeline.extraction_progress import runtime_environment; print(json.dumps(runtime_environment()))"),
+        capture_output=True, text=True, timeout=120, env=_conda_subprocess_env(), check=True)
+    return json.loads(completed.stdout)
+
+
+def _stream_batch(command, timeout, callback):
+    """Framed stdout and ACK stdin; callback must finish fsync before ACK."""
+    import selectors
+    from .durable_progress import DurableProgressError
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=errors, env=_conda_subprocess_env(), bufsize=0)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        started, pending, results = time.monotonic(), b"", []
+        try:
+            while selector.get_map():
+                if time.monotonic() - started > timeout:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                for key, _ in selector.select(timeout=min(1, max(.01, timeout - (time.monotonic() - started)))):
+                    block = os.read(key.fileobj.fileno(), 65536)
+                    if not block:
+                        selector.unregister(key.fileobj)
+                        continue
+                    pending += block
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        if not line.startswith(b"RTP_ROI\t"):
+                            continue
+                        try:
+                            result = json.loads(line[len(b"RTP_ROI\t"):])
+                            index = result["__task_index__"]
+                        except (ValueError, KeyError, TypeError) as exc:
+                            raise DurableProgressError("RADIOMICS_STREAM_FRAME_INVALID") from exc
+                        callback(index, result)
+                        process.stdin.write(("ACK " + str(index) + "\n").encode())
+                        process.stdin.flush()
+                        results.append(result)
+            process.wait(timeout=max(.01, timeout - (time.monotonic() - started)))
+            if pending.startswith(b"RTP_ROI\t"):
+                raise DurableProgressError("RADIOMICS_STREAM_FRAME_TRUNCATED")
+            if process.returncode:
+                errors.seek(0)
+                logger.error("Batch radiomics failed: %s", errors.read(500).decode(errors="replace"))
+                raise DurableProgressError("RADIOMICS_STREAM_CHILD_FAILED")
+            return results
+        finally:
+            selector.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdin.close()
+            process.stdout.close()
+
+
+def _extract_radiomics_batch_uncached(
     tasks: List[Dict[str, Any]],
     params_file: Optional[str] = None,
     timeout_per_roi: int = 900,
+    *, on_result=None,
 ) -> List[Dict[str, Any]]:
     """
     Extract radiomics features for multiple ROIs in a SINGLE subprocess.
@@ -1307,12 +1432,21 @@ from rtpipeline.radiomics_ct_contract import (
     extract_ct_roi_arms,
 )
 from rtpipeline.radiomics_schema import normalize_radiomics_result
+from rtpipeline.durable_progress import DurableProgressError
 
 with open(sys.argv[1], "r") as handle:
     batch_params = json.load(handle)
 
 tasks = batch_params["tasks"]
 default_params_file = batch_params.get("params_file")
+
+if batch_params.get("acknowledged"):
+    _print = print
+    def print(raw, **kwargs):
+        _print("RTP_ROI\t" + raw, flush=True)
+        index = json.loads(raw)["__task_index__"]
+        if sys.stdin.readline().strip() != "ACK " + str(index):
+            raise SystemExit("durable result acknowledgement missing")
 
 
 def make_extractor(params_file, large_roi):
@@ -1362,6 +1496,8 @@ for task in tasks:
                 native_voxel_count=int(task["native_voxel_count"]),
                 required=bool(task["required"]),
                 configured_parameter_hashes=task.get("configured_parameter_hashes"),
+                progress_root=task.get("__progress_root__"),
+                progress_context=task.get("__progress_context__"),
             )
             if task.get("robustness_perturbation_id"):
                 from rtpipeline.radiomics_robustness_outcomes import returned_geometry_nonmeasurement
@@ -1407,6 +1543,8 @@ for task in tasks:
             )
         output.update(normalize_radiomics_result(features))
         print(json.dumps(output, default=str), flush=True)
+    except DurableProgressError:
+        raise
     except Exception as exc:
         message = str(exc)
         status = "skipped" if "size of the roi is too small" in message.lower() else "error"
@@ -1428,10 +1566,17 @@ for task in tasks:
                     for i, t in enumerate(tasks)
                 ],
                 'params_file': params_file,
+                'acknowledged': on_result is not None,
             }, batch_file)
             batch_file_path = batch_file.name
 
         # Run batch extraction in conda environment
+        if on_result is not None:
+            try:
+                return _stream_batch(_radiomics_env_command("-c", batch_script, batch_file_path),
+                                     total_timeout, on_result)
+            finally:
+                os.unlink(batch_file_path)
         result = subprocess.run(
             _radiomics_env_command("-c", batch_script, batch_file_path),
             capture_output=True,
@@ -1473,6 +1618,9 @@ for task in tasks:
         return [None] * len(tasks)
 
     except Exception as e:
+        from .durable_progress import DurableProgressError
+        if isinstance(e, DurableProgressError) or on_result is not None:
+            raise
         logger.error("Batch radiomics failed: %s", e)
         try:
             os.unlink(batch_file_path)
@@ -1615,6 +1763,7 @@ def process_radiomics_batch(
     enable_heartbeat: bool = True,
     env_probe_timeout: Optional[int] = None,
     acquisition_descriptor: Optional[Mapping[str, Any]] = None,
+    progress_context: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Path]:
     """Process radiomics extraction tasks and persist them as an Excel sheet.
 
@@ -1656,6 +1805,23 @@ def process_radiomics_batch(
     except ValueError as exc:
         _invalidate_radiomics_outputs(Path(output_path))
         raise RadiomicsCourseExtractionError(str(exc)) from exc
+
+    # Bound immutable items are authoritative for real extraction tasks. Legacy
+    # Parquet checkpoints have no input/code/environment binding and cannot
+    # authorize reuse, even when their full publication key set matches.
+    bound_tasks = all(task.get("precomputed_failure") or (
+        task.get("image_path") and Path(task["image_path"]).is_file() and
+        task.get("mask_path") and Path(task["mask_path"]).is_file()) for task in tasks)
+    if not bound_tasks and any(task.get("dual_arm_ct") or task.get("parameter_provenance_arm") for task in tasks):
+        _invalidate_radiomics_outputs(Path(output_path))
+        raise RadiomicsCourseExtractionError("radiomics source image or mask is missing; an unbound checkpoint cannot authorize reuse")
+    if bound_tasks:
+        root = Path(checkpoint_path or output_path).parent / ("." + Path(output_path).stem + "-progress")
+        for task in tasks:
+            if not task.get("precomputed_failure"):
+                task["__progress_root__"] = str(root)
+                task["__progress_context__"] = progress_context
+        checkpoint_path = None
 
     # A checkpoint is reusable only when it already represents this exact task
     # inventory. Partial, stale, blank, duplicate, missing, or extra identities are
@@ -1724,7 +1890,7 @@ def process_radiomics_batch(
             decision_payload,
         )
 
-    def _execute(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _execute_uncached(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         roi_name = task.get('roi_name', 'ROI')
         image_path = task.get('image_path')
         mask_path = task.get('mask_path')
@@ -1765,6 +1931,9 @@ def process_radiomics_batch(
                 bool(task.get("large_roi", False)),
             )
         except Exception as exc:
+            from .durable_progress import DurableProgressError
+            if isinstance(exc, DurableProgressError):
+                raise
             msg = str(exc).lower()
             if 'size of the roi is too small' in msg:
                 logger.info(
@@ -1803,6 +1972,17 @@ def process_radiomics_batch(
             _bind_effective_parameter_hash(features, task), metadata
         )
 
+    def _execute(task):
+        from .extraction_progress import task_item, restamp, reusable
+        item = task_item(task, environment=_extraction_environment()) if task.get("__progress_root__") else None
+        cached = item.load() if item else None
+        if cached is not None:
+            return restamp(cached, task)
+        value = _execute_uncached(task)
+        if item and reusable(value):
+            item.commit(value)
+        return value
+
     results: List[Dict[str, Any]] = []
     failures: List[str] = []
     failure_rows: List[Dict[str, Any]] = []
@@ -1814,6 +1994,14 @@ def process_radiomics_batch(
         status: str = "failed",
         failure_kind: str = "extraction_error",
     ) -> None:
+        first_row = len(failure_rows)
+        def commit_disposition():
+            if bound_tasks and extraction_status_is_nonfatal_for_required(status):
+                from .extraction_progress import BoundItem, course_binding
+                item = BoundItem(root / "dispositions", sorted(_task_expected_keys(task)),
+                    {"task": task, "configuration": progress_context},
+                    {"course": course_binding(Path(output_path).parent).as_dict()})
+                item.commit(failure_rows[first_row:])
         roi_name = str(task.get("roi_name", "ROI"))
         metadata = dict(task.get("metadata") or task.get("extra_metadata") or {})
         metadata.update(
@@ -1846,6 +2034,7 @@ def process_radiomics_batch(
                     configured_parameter_hashes=task.get("configured_parameter_hashes"),
                 )
             )
+            commit_disposition()
             return
         metadata.update(
             {
@@ -1855,6 +2044,7 @@ def process_radiomics_batch(
             }
         )
         failure_rows.append(metadata)
+        commit_disposition()
 
     def _record_success(task: Dict[str, Any], features: Dict[str, Any]) -> None:
         if task.get("dual_arm_ct"):
@@ -2072,6 +2262,9 @@ def process_radiomics_batch(
 
                             logger.debug("Completed radiomics for %s", roi_name)
                     except Exception as exc:
+                        from .durable_progress import DurableProgressError
+                        if isinstance(exc, DurableProgressError):
+                            raise
                         logger.error("Batch processing failed: %s", exc)
                         for task in batch:
                             _record_failure(task, f"batch crashed: {exc}")
@@ -2121,6 +2314,9 @@ def process_radiomics_batch(
                             if heartbeat:
                                 heartbeat.update(failed=1)
                     except Exception as exc:  # pragma: no cover - defensive
+                        from .durable_progress import DurableProgressError
+                        if isinstance(exc, DurableProgressError):
+                            raise
                         logger.error("Radiomics task crashed for %s: %s", roi_name, exc)
                         _record_failure(task, f"task crashed: {exc}")
                         if heartbeat:
@@ -2720,6 +2916,7 @@ def radiomics_for_course_ct_nifti_fallback(
             enable_heartbeat=True,
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
             acquisition_descriptor=describe_contract_planning_ct(contract),
+            progress_context=radiomics_settings(config),
         )
     finally:
         _cleanup_temp_files()
@@ -3560,6 +3757,7 @@ def radiomics_for_course(
             enable_heartbeat=True,
             env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
             acquisition_descriptor=describe_contract_planning_ct(contract),
+            progress_context=radiomics_settings(config),
         )
         result_rows = []
         if result is not None:
@@ -4753,6 +4951,7 @@ def radiomics_for_course_mr(
                 checkpoint_path=checkpoint_path,
                 enable_heartbeat=True,
                 env_probe_timeout=getattr(config, "radiomics_env_probe_timeout", None),
+                progress_context=radiomics_settings(config),
             )
         except Exception as exc:
             # Typed and unexpected extraction failures both owe a course ledger.

@@ -1785,6 +1785,8 @@ def extract_ct_roi_arms(
     decision: RoiClassDecision, common_metadata: Mapping[str, Any],
     run_identifier: str, code_revision: str, native_voxel_count: int,
     required: bool, configured_parameter_hashes: Optional[Mapping[str, str]] = None,
+    progress_root: Optional[Path] = None,
+    progress_context: Any = None,
 ) -> list[dict[str, Any]]:
     from .radiomics_memory import RadiomicsMemoryLimit, memory_budget_bytes
     metadata = dict(common_metadata)
@@ -1792,7 +1794,8 @@ def extract_ct_roi_arms(
     arguments = dict(factory=factory, decision=decision, common_metadata=metadata,
                      run_identifier=run_identifier, code_revision=code_revision,
                      native_voxel_count=native_voxel_count, required=required,
-                     configured_parameter_hashes=configured_parameter_hashes)
+                     configured_parameter_hashes=configured_parameter_hashes,
+                     progress_root=progress_root, progress_context=progress_context)
     try:
         rows = _extract_ct_roi_arms_impl(image, mask, **arguments)
         # A legacy conda caller prepares masks before sending them to the feature
@@ -1850,11 +1853,37 @@ def _extract_ct_roi_arms_impl(
     native_voxel_count: int,
     required: bool,
     configured_parameter_hashes: Optional[Mapping[str, str]] = None,
+    progress_root: Optional[Path] = None,
+    progress_context: Any = None,
 ) -> list[dict[str, Any]]:
     shape_extractor, raw_extractor, primary_extractor = build_ct_extractors(
         factory, decision.primary_resegment_range_hu
     )
     effective_hashes = _effective_hashes_for_built_extractors(raw_extractor, primary_extractor, decision)
+    def execute(candidate, arm):
+        if progress_root is None:
+            return _scalarize(candidate.execute(image, mask))
+        from .extraction_progress import BoundItem, image_identity
+        identity = {key: value for key, value in common_metadata.items()
+                    if key in PUBLICATION_KEY_COLUMNS or key in {"perturbed_mask_identity", "measurement_type"}}
+        identity["extraction_arm"] = arm
+        item = BoundItem(Path(progress_root) / "arms", identity,
+            {"decision": decision, "configured": configured_parameter_hashes,
+             "settings": candidate.settings, "features": getattr(candidate, "enabledFeatures", {}),
+             "image_types": getattr(candidate, "enabledImagetypes", {}), "context": progress_context},
+            {"image": image_identity(image), "mask": image_identity(mask),
+             "source_identity": dict(common_metadata)})
+        with item.locked():
+            cached = item.load()
+            if cached is not None:
+                return cached
+            result = _scalarize(candidate.execute(image, mask))
+            expected = _configured_feature_names(candidate, observed_result=result)
+            missing = expected - set(result) - _approved_undefined_feature_names(result)
+            if not missing and (arm != "shape" or not shape_physicality_violations(
+                    _feature_subset(result, SHAPE_FEATURE_MARKERS))):
+                item.commit(result)
+            return result
     if decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
         return disposition_rows_for_arms(
             common_metadata,
@@ -1939,7 +1968,7 @@ def _extract_ct_roi_arms_impl(
                 configured_parameter_hashes=configured_parameter_hashes,
                 runtime_versions=_runtime_versions(),
             )
-    shape_result = _scalarize(shape_extractor.execute(image, mask))
+    shape_result = execute(shape_extractor, "shape")
     shape_features = _feature_subset(shape_result, SHAPE_FEATURE_MARKERS)
     shape_expected = _configured_feature_names(
         shape_extractor, observed_result=shape_result
@@ -1964,7 +1993,7 @@ def _extract_ct_roi_arms_impl(
             runtime_versions=_runtime_versions(),
         )
 
-    raw_result = _scalarize(raw_extractor.execute(image, mask))
+    raw_result = execute(raw_extractor, SENSITIVITY_ARM)
     raw_expected = shape_expected | _configured_feature_names(
         raw_extractor, observed_result=raw_result
     )
@@ -2034,7 +2063,7 @@ def _extract_ct_roi_arms_impl(
         elif after_dimensions < minimum_dimensions:
             disposition = "below_minimum_dimensions"
         else:
-            primary_result = _scalarize(primary_extractor.execute(image, mask))
+            primary_result = execute(primary_extractor, PRIMARY_ARM)
             primary_expected.update(
                 _configured_feature_names(
                     primary_extractor, observed_result=primary_result
@@ -2437,8 +2466,11 @@ def write_ct_publication_atomic(
             workbook_tmp, engine="openpyxl", keep_default_na=False, na_values=[""]
         )
         validate_ct_publication(workbook_check, expected_keys=expected_keys)
-        os.replace(parquet_tmp, parquet_path)
-        os.replace(workbook_tmp, workbook_path)
+        from .durable_progress import final_result_writer
+        final_result_writer(parquet_path, parquet_tmp.read_bytes())
+        final_result_writer(workbook_path, workbook_tmp.read_bytes())
+        from .extraction_progress import commit_nominal_publication
+        commit_nominal_publication(workbook_path)
     except Exception:
         # Destinations are untouched until both temporary files validate. Preserve a
         # prior published pair if creation or validation of the replacement fails.
@@ -2657,6 +2689,9 @@ def sentinel_payload(
             ),
         },
     }
+    from .extraction_progress import course_binding
+    payload["durable_binding"] = course_binding(Path(parquet_path).parent,
+                                                configuration_dependency).as_dict()
     if configuration_dependency is not None:
         payload["configuration_dependency_sha256"] = _validate_configuration_dependency(
             dataframe, Path(configuration_dependency)
@@ -2713,6 +2748,7 @@ def validate_completion_sentinel(
     ]
     if configuration_dependency is not None:
         fields.append("configuration_dependency_sha256")
+    fields.append("durable_binding")
     for field in fields:
         if observed.get(field) != expected.get(field):
             raise ValueError(
@@ -2747,8 +2783,8 @@ def write_completion_sentinel(
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(tmp_path, target)
+        from .durable_progress import final_result_writer
+        final_result_writer(target, payload)
     finally:
         tmp_path.unlink(missing_ok=True)
     return target

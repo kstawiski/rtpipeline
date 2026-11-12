@@ -200,7 +200,7 @@ class Production:
                     if locks.exists():
                         for path in locks.iterdir(): path.unlink()
                 else:
-                    assert process.wait(timeout=240) == 0, log.read_text()[-18000:]
+                    assert process.wait(timeout=getattr(self, "run_timeout", 240)) == 0, log.read_text()[-18000:]
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)

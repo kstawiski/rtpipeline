@@ -67,6 +67,7 @@ from .radiomics_outcomes import (
     resume_identity_pairs as _resume_identity_pairs,
     write_excel_atomic as _write_excel_atomic,
 )
+from .extraction_progress import radiomics_settings
 from .radiomics_memory import permits_second_stage, legacy_rejection
 from .radiomics_resource_guard import (
     RESAMPLED_BBOX_LIMIT_CODE,
@@ -640,6 +641,28 @@ def _resume_outcome(
 
 
 def _extract_one(task: _RoiTask) -> List[Dict[str, Any]]:
+    import pandas as pd
+    from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
+                                      restamp, reusable)
+    from .durable_progress import file_sha256
+    from dataclasses import asdict
+    settings = asdict(task)
+    settings.pop("course_dir")
+    settings.pop("rs_path")
+    item = BoundItem(Path(task.course_dir) / ".radiomics-progress", settings,
+        {"task": settings, "configuration": radiomics_settings(_WORKER_STATE["config"])},
+        {"image": image_identity(_WORKER_STATE["img"]), "source": file_sha256(task.rs_path)})
+    cached = item.load()
+    if cached is not None:
+        return restamp(cached, {"run_identifier": task.run_identifier, "code_revision": task.code_revision})
+    records = _extract_one_uncached(task)
+    if reusable(records):
+        validate_ct_publication(pd.DataFrame(records), fail_on_unclassified_required=False)
+        item.commit(records)
+    return records
+
+
+def _extract_one_uncached(task: _RoiTask) -> List[Dict[str, Any]]:
     records = _extract_one_with_geometry(task)
     # Carry only projection actually prepared by the scoped rasterizer. A
     # strict-only run gains no fields or new publication columns.
@@ -895,10 +918,15 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
             native_voxel_count=voxel_count,
             required=_task_is_required(task),
             configured_parameter_hashes=task.configured_parameter_hashes,
+            progress_root=Path(task.course_dir) / ".radiomics-progress",
+            progress_context=radiomics_settings(_WORKER_STATE["config"]),
         )
     except TimeoutError as exc:
         raise RadiomicsRegionExtractionError(str(exc), failure_kind="timeout") from exc
     except Exception as exc:
+        from .durable_progress import DurableProgressError
+        if isinstance(exc, DurableProgressError):
+            raise
         raise RadiomicsRegionExtractionError(
             f"ROI {task.roi_name} radiomics extraction failed: {exc}",
             failure_kind="extraction_error",
@@ -1084,6 +1112,8 @@ def parallel_radiomics_for_course(
     parquet_path = out_path.with_suffix(".parquet")
     if getattr(config, "resume", False) and (parquet_path.exists() or out_path.exists()):
         try:
+            from .extraction_progress import validate_nominal_publication
+            validate_nominal_publication(course_dir)
             if not parquet_path.exists():
                 raise ValueError("authoritative CT Parquet is missing")
             existing_df = read_authoritative_ct_publication(parquet_path)
@@ -1771,6 +1801,9 @@ def parallel_radiomics_for_course(
                         restart = True
                         break
                     except Exception as exc:
+                        from .durable_progress import DurableProgressError
+                        if isinstance(exc, DurableProgressError):
+                            raise
                         if _task_is_required(task):
                             fatal_error = RadiomicsCourseExtractionError(
                                 f"Radiomics course {course_dir} is incomplete: "
@@ -2145,6 +2178,8 @@ def _prepare_radiomics_task(
         _cache["invariants"] = (params_file, decision, configured_hashes)
     params_file, decision, configured_hashes = _cache["invariants"]
     task_params = {
+        "__progress_root__": str(course_dir / ".robustness-progress"),
+        "__progress_context__": getattr(config, "radiomics_robustness_config", None),
         "image_path": str(img_path),
         "mask_path": str(mask_path),
         "segmentation_source": source,
@@ -2190,6 +2225,9 @@ def _isolated_radiomics_extraction_with_retry(task) -> Optional[Dict[str, Any]]:
         except (TimeoutError, MemoryError):
             raise
         except Exception as exc:
+            from .durable_progress import DurableProgressError
+            if isinstance(exc, DurableProgressError):
+                raise
             errors.append(f"{type(exc).__name__}: {exc}")
             logger.warning("Robustness exact-condition attempt %d failed: %s", attempt + 1, exc)
     raise RuntimeError(f"robustness extraction exhausted identical-condition retries: {errors}")
@@ -2261,6 +2299,8 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
             native_voxel_count=int(task_params["native_voxel_count"]),
             required=False,
             configured_parameter_hashes=task_params["configured_parameter_hashes"],
+            progress_root=task_params.get("__progress_root__"),
+            progress_context=task_params.get("__progress_context__"),
         )
         from .radiomics_robustness_outcomes import returned_geometry_nonmeasurement, nonmeasurement_rows
         outcome = returned_geometry_nonmeasurement(
@@ -2289,6 +2329,9 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
     except (TimeoutError, MemoryError):
         raise
     except Exception as e:
+        from .durable_progress import DurableProgressError
+        if isinstance(e, DurableProgressError):
+            raise
         from .radiomics_robustness_outcomes import (
             extraction_nonmeasurement, nonmeasurement_rows, GeometricAdmissionContractError,
         )

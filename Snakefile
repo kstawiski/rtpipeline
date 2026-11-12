@@ -529,6 +529,9 @@ def _scientific_settings(mapping, ignored=()):
 
 _custom_structure_path = Path(CUSTOM_STRUCTURES_CONFIG) if CUSTOM_STRUCTURES_CONFIG else None
 _custom_structure_dependency = semantic_yaml_or_absent(_custom_structure_path)
+if _custom_structure_dependency.get("state") == "present" and isinstance(_custom_structure_dependency.get("content"), dict):
+    _custom_structure_dependency = {**_custom_structure_dependency,
+        "content": _scientific_settings(_custom_structure_dependency["content"], ignored={"max_workers", "workers"})}
 
 ORGANIZE_CONFIG_DEPENDENCY = _dependency_path(
     "organize",
@@ -585,7 +588,7 @@ if CUSTOM_MODELS_ROOT:
 _custom_models_dependency = {
     "settings": _scientific_settings(
         CUSTOM_MODELS_CONFIG,
-        ignored={"force", "workers", "retain_weights", "root"},
+        ignored={"force", "workers", "max_workers", "retain_weights", "root"},
     ),
     "model_sources": _custom_model_sources,
     "environment": _ENV_MAIN,
@@ -928,9 +931,10 @@ _GENERIC_STAGE_COMPLETION_DEPENDENCIES = (
     ("crop_ct", ".crop_ct_done", CROP_CT_CONFIG_DEPENDENCY),
     ("qc", ".qc_done", QC_CONFIG_DEPENDENCY),
 )
+from rtpipeline.config_dependencies import invalidate_unbound_outputs
 for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPENDENCIES:
     _existing_stage_sentinels = list(OUTPUT_DIR.glob(f"*/*/{_sentinel_name}"))
-    _unbound_stage_sentinels = advance_dependency_past_unbound_outputs(
+    _unbound_stage_sentinels = invalidate_unbound_outputs(
         Path(_dependency),
         _existing_stage_sentinels,
         binding_field="configuration_dependency_sha256",
@@ -956,7 +960,16 @@ if list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
                                python_bin=PYTHON_MAIN_BIN)))
 
 _existing_radiomics_sentinels = list(OUTPUT_DIR.glob("*/*/.radiomics_done"))
-_unbound_radiomics_sentinels = advance_dependency_past_unbound_outputs(
+if _existing_radiomics_sentinels or list(OUTPUT_DIR.glob("*/*/.radiomics_robustness_done")):
+    from rtpipeline.snakemake_delegate import invoke as _rad_invoke, runtime_environment as _rad_environment
+    from types import SimpleNamespace as _RadParams
+    _rad_invoke(python=PYTHON_RADIOMICS, operation="validate-radiomics-resume",
+        arguments=["--output-dir", str(OUTPUT_DIR), "--configuration-dependency", RADIOMICS_CONFIG_DEPENDENCY,
+                   "--configfile", str(EFFECTIVE_CONFIGFILE)],
+        result_dir=LOGS_DIR / "radiomics-resume",
+        env=_rad_environment(_RadParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE),
+                                       python_bin=PYTHON_RADIOMICS_BIN)))
+_unbound_radiomics_sentinels = invalidate_unbound_outputs(
     Path(RADIOMICS_CONFIG_DEPENDENCY),
     _existing_radiomics_sentinels,
     binding_field="configuration_dependency_sha256",
@@ -1022,7 +1035,17 @@ AGGREGATE_RESULTS_INPUTS = {
     "custom": _per_course_sentinels(".custom_models_done"),
 }
 
+if list(RESULTS_DIR.glob("*.commit.json")):
+    from rtpipeline.snakemake_delegate import invoke as _agg_invoke, runtime_environment as _agg_environment
+    from types import SimpleNamespace as _AggParams
+    _agg_invoke(python=PYTHON_MAIN, operation="validate-aggregate-resume",
+        arguments=["--output-dir", str(OUTPUT_DIR)], result_dir=LOGS_DIR / "aggregate-resume",
+        env=_agg_environment(_AggParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE),
+                                       python_bin=PYTHON_MAIN_BIN)))
+
 AGGREGATE_RESULTS_OUTPUTS = {
+    "commit": str(RESULTS_DIR / "aggregate_results.commit.json"),
+    "organization_gate": str(RESULTS_DIR / "organization_gate.json"),
     "dvh": str(AGG_OUTPUTS["dvh"]),
     "dvh_parquet": str(AGG_OUTPUTS["dvh_parquet"]),
     "fractions": str(AGG_OUTPUTS["fractions"]),
@@ -1034,11 +1057,19 @@ if RADIOMICS_ENABLED:
     AGGREGATE_RESULTS_INPUTS["radiomics"] = _per_course_sentinels(".radiomics_done")
     AGGREGATE_RESULTS_OUTPUTS["radiomics"] = str(AGG_OUTPUTS["radiomics"])
     AGGREGATE_RESULTS_OUTPUTS["radiomics_mr"] = str(AGG_OUTPUTS["radiomics_mr"])
+    AGGREGATE_RESULTS_OUTPUTS["radiomics_parquet"] = str(Path(AGG_OUTPUTS["radiomics"]).with_suffix(".parquet"))
+    AGGREGATE_RESULTS_OUTPUTS["radiomics_denominator"] = str(RESULTS_DIR / "radiomics_denominator_ledger.json")
+
+if CAMPAIGN_MODE:
+    AGGREGATE_RESULTS_OUTPUTS["attrition"] = str(RESULTS_DIR / "campaign_attrition.csv")
 
 
 rule all:
     input:
-        *(str(path) for path in AGG_OUTPUTS.values())
+        *(str(path) for path in AGG_OUTPUTS.values()),
+        *AGGREGATE_RESULTS_OUTPUTS.values(),
+        *([str(RESULTS_DIR / "radiomics_robustness_summary.commit.json"),
+           str(RESULTS_DIR / "radiomics_robustness_summary_raw_values.parquet")] if ROBUSTNESS_ENABLED else [])
 
 
 checkpoint organize_courses:
@@ -1707,7 +1738,9 @@ rule aggregate_radiomics_robustness:
         robustness=_per_course_sentinels(".radiomics_robustness_done"),
         configuration=ROBUSTNESS_CONFIG_DEPENDENCY
     output:
-        summary=str(AGG_OUTPUTS.get("radiomics_robustness", RESULTS_DIR / "radiomics_robustness_summary.xlsx"))
+        summary=str(AGG_OUTPUTS.get("radiomics_robustness", RESULTS_DIR / "radiomics_robustness_summary.xlsx")),
+        raw=str(RESULTS_DIR / "radiomics_robustness_summary_raw_values.parquet"),
+        commit=str(RESULTS_DIR / "radiomics_robustness_summary.commit.json")
     log:
         str(LOGS_DIR / "aggregate_radiomics_robustness.log")
     threads:
@@ -1794,9 +1827,6 @@ rule aggregate_results:
         campaign_mode=CAMPAIGN_MODE,
         campaign_min_completion_fraction=CAMPAIGN_MIN_COMPLETION_FRACTION,
         campaign_require_all_courses=CAMPAIGN_REQUIRE_ALL_COURSES,
-        worker_budget=WORKER_BUDGET,
-        auto_worker_budget=AUTO_WORKER_BUDGET,
-        aggregation_threads=AGGREGATION_THREADS or 0
     script:
         "workflow/scripts/aggregate_results.py"
 

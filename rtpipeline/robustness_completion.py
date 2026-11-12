@@ -280,7 +280,9 @@ def write_robustness_completion_sentinel(
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, sentinel_path)
+        from .durable_progress import final_result_writer
+        final_result_writer(sentinel_path, temporary.read_bytes())
+        temporary.unlink()
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

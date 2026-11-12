@@ -91,19 +91,21 @@ def input_manifest(course):
 
 
 def binding(course, settings, custom_config=None, *, custom_only=False, extra_inputs=()):
-    from .dvh import DVH_MEASUREMENT_CODE_SOURCES
     from .custom_structures_rtstruct import RS_CUSTOM_GENERATOR_CODE_SOURCES
+    if not custom_only:
+        from .dvh import DVH_MEASUREMENT_CODE_SOURCES
     from .stage_completion import environment_record
     package = Path(__file__).resolve().parent
     sources = RS_CUSTOM_GENERATOR_CODE_SOURCES if custom_only else DVH_MEASUREMENT_CODE_SOURCES
     sources = set(sources) | {"dvh_generation.py", "durable_progress.py", "radiomics_rasterizer.py",
-                              "layout.py", "utils.py", "stage_completion.py", "plan_profiles.py", "clinical_prescription.py",
+                              "layout.py", "utils.py", "stage_completion.py", "config_dependencies.py", "plan_profiles.py", "clinical_prescription.py",
                               "planning_ct_localizers.py", "ct_series_hygiene.py", "nifti_provenance.py"}
     if not custom_only:
         sources.update(("custom_models.py", "config.py", "cli.py"))
     config = dict(settings)
     try:
-        config["custom_config_sha256"] = file_sha256(custom_config) if custom_config else None
+        from .config_dependencies import scientific_custom_config_sha256
+        config["custom_config_sha256"] = scientific_custom_config_sha256(custom_config)
     except OSError as exc:
         raise DurableProgressError("DVH_BINDING_UNREADABLE") from exc
     if custom_only:
@@ -602,7 +604,8 @@ def disabled_binding(course, settings, custom_config=None):
     package = Path(__file__).resolve().parent
     sources = {name: package / name for name in ("dvh_generation.py", "stage_completion.py", "durable_progress.py")}
     sources["workflow/scripts/run_course_stage.py"] = package.parent / "workflow/scripts/run_course_stage.py"
-    config = {**settings, "custom_config_sha256": file_sha256(custom_config) if custom_config else None}
+    from .config_dependencies import scientific_custom_config_sha256
+    config = {**settings, "custom_config_sha256": scientific_custom_config_sha256(custom_config)}
     return make_binding(sources, config, input_manifest(Path(course)))
 
 

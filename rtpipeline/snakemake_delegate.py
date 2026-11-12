@@ -44,6 +44,8 @@ def runtime_environment(params: object) -> dict[str, str]:
         current_path = env.get("PATH", "")
         if python_bin not in current_path.split(os.pathsep):
             env["PATH"] = os.pathsep.join([python_bin, current_path])
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None,
+            (str(Path(python_bin).parent / "lib"), env.get("LD_LIBRARY_PATH", ""))))
     return multiprocessing_subprocess_env(env)
 
 

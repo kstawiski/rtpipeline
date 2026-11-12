@@ -314,6 +314,13 @@ def _parser() -> argparse.ArgumentParser:
     dvh_resume.add_argument("--configfile", required=True)
     dvh_resume.add_argument("--custom-config")
 
+    radiomics_resume = subparsers.add_parser("validate-radiomics-resume")
+    radiomics_resume.add_argument("--output-dir", required=True)
+    radiomics_resume.add_argument("--configuration-dependency", required=True)
+    radiomics_resume.add_argument("--configfile")
+    aggregate_resume = subparsers.add_parser("validate-aggregate-resume")
+    aggregate_resume.add_argument("--output-dir", required=True)
+
     dvh_binding = subparsers.add_parser("dvh-launch-binding")
     dvh_binding.add_argument("--course-dir", required=True)
     dvh_binding.add_argument("--configfile", required=True)
@@ -359,6 +366,12 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "validate-dvh-resume":
             from .dvh_generation import preflight
             payload = preflight(Path(args.output_dir), Path(args.configfile), args.custom_config)
+        elif operation == "validate-radiomics-resume":
+            from .extraction_progress import preflight
+            payload = preflight(Path(args.output_dir), Path(args.configuration_dependency), args.configfile)
+        elif operation == "validate-aggregate-resume":
+            from .aggregate_generation import preflight
+            payload = preflight(Path(args.output_dir))
         elif operation == "dvh-launch-binding":
             from .dvh_generation import launch_binding
             payload = launch_binding(Path(args.course_dir), Path(args.configfile), args.custom_config)

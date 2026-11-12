@@ -404,7 +404,8 @@ def _atomic_json(path: Path, value: Any) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        from .durable_progress import final_result_writer
+        final_result_writer(path, Path(temporary).read_bytes())
     finally:
         try:
             os.unlink(temporary)
