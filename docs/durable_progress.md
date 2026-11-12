@@ -181,3 +181,51 @@ contains patient data, supply already encrypted bytes and an appropriately
 sealed destination. Callers remain responsible for the project's encryption
 policy and for authorized storage. Synthetic tests do not establish clinical or
 manuscript readiness.
+
+## Production DVH generations
+
+The course DVH writer uses an exact code/configuration/input binding before
+reuse. It hashes the deciding modules, CLI and workflow publishers, effective
+DVH settings (including crop selection), DICOM bytes, CT/NIfTI inputs, every
+source mask and upstream content/configuration/code identities. Upstream receipt
+creation times and host names do not define a scientific generation. A legacy
+completion without binding is unverified and is rebuilt with
+`DVH_LEGACY_UNBOUND` recorded in the course journal.
+
+Completed ROI results are immutable `ResultCache` transactions under
+`.dvh/roi-cache`. They retain dictionary order, numerical values and explicit
+nonfinite values. Recovery reads and verifies each transaction before reuse;
+course-level QC and quarantine decisions still run when the final tables are
+assembled. The journal records cache reuse, ROI commits and attempt lineage.
+
+The writer stages the workbook, Parquet table, curves, QC, optional RS_custom
+and its metadata, completion receipt and ledger evidence in one directory.
+After read-back validation and fsync, a hashed commit marker certifies the full
+inventory. An atomic `.dvh/current` symlink selects the complete immutable
+generation. Fixed public artifact names resolve through that pointer. Readers
+must validate the completion/generation before consuming artifacts; file
+presence is insufficient. A reader needing a stable view across concurrent
+publication can resolve the current pointer once and verify that directory.
+
+An incomplete staging or generation directory is discarded only after its fixed
+reason is durably journaled. Previously committed generations remain intact,
+including evidence of a corrupted generation. Missing public aliases can be
+restored from a verified commit without repeating a sampler call. A crash after
+commit is repaired by projecting that generation's ledger evidence and
+reconciling attempt state, rather than rerunning its measurements.
+
+Attempt state is distinct from DAG closure. `started` without a matching commit
+is interrupted and can resume its verified ROI checkpoints. An unchanged failed
+binding requires an explicit retry: `dvh_for_course(..., retry_failed=True)` or
+`dvh: {retry_failed: true}` in the effective workflow configuration. This retry
+switch is operational and is excluded from the scientific binding. Changed
+inputs/configuration/code establish a new binding. Ledger persistence failure
+propagates instead of certifying success. Configured or contract-declared
+nonapplicability retains its existing disposition and receives a current
+code/configuration/input binding.
+
+The DVH calculation and published table schema are unchanged. Workbook creation
+metadata uses a fixed packaging epoch so identical tables have reproducible
+bytes. SIGKILL tests cover process interruption; they do not establish behavior
+under host power loss, filesystem failure recovery or every storage backend.
+These DVH guarantees do not establish durable per-item resume for other stages.
