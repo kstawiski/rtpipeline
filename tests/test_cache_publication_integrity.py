@@ -462,3 +462,25 @@ def test_related_series_reuse_requires_publication_digest(tmp_path, monkeypatch,
     assert result and result.read_bytes() == expected
     assert bool(calls) == (state != 'valid')
     assert sidecar(result)['nifti_sha256'] == hashlib.sha256(expected).hexdigest()
+
+
+def test_legacy_hygiene_import_checks_same_uid_source_pixels(tmp_path, monkeypatch):
+    paths, rs, ov = make(tmp_path, 'A')
+    out = convert(tmp_path, rs, ov)
+    before = nib.load(out).get_fdata()
+    shutil.rmtree(out.parent / ".conversion-progress")
+    source = pydicom.dcmread(paths[0])
+    pixels = source.pixel_array.copy()
+    pixels[2, 3] += 7
+    source.PixelData = pixels.tobytes()
+    source.save_as(paths[0], enforce_file_format=True)
+    calls = []
+    original = seg.convert_ct_series_hygiene
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(seg, "convert_ct_series_hygiene", counted)
+    result = convert(tmp_path, rs, ov)
+    assert calls and result is not None
+    assert not np.array_equal(nib.load(result).get_fdata(), before)
+    contract_validate(tmp_path, tmp_path / "ct", rs, result)

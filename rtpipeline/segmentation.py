@@ -963,6 +963,19 @@ def _resolve_planning_ct_stack_override(
     return None
 
 
+def _ct_conversion_progress(config, ct_dir, nifti_dir, *, dcm2niix_depth=None,
+                            authoritative_rtstruct=None, stack_override=None,
+                            require_hygiene=False):
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    return ArtifactItem(nifti_dir / ".conversion-progress", str(ct_dir),
+        {"command": config.dcm2niix_cmd, "activation": config.conda_activate,
+         "depth": dcm2niix_depth, "stack_override": stack_override, "require_hygiene": require_hygiene},
+        {"dicom": inventory(p for p in ct_dir.iterdir() if p.is_file()),
+         "rtstruct": inventory([authoritative_rtstruct]) if authoritative_rtstruct else {}},
+        base=nifti_dir, code=code_files("segmentation.py", "ct_series_hygiene.py",
+            "nonuniform_ct_conversion.py", "nifti_provenance.py"))
+
+
 def _ensure_ct_nifti(
     config: PipelineConfig,
     ct_dir: Path,
@@ -1016,27 +1029,27 @@ def _ensure_ct_nifti(
         course_key=course_key,
         stack_override=stack_override,
     )
-    from .artifact_progress import ArtifactItem, code_files, inventory, staged_file, write_json
-    progress = ArtifactItem(nifti_dir / ".conversion-progress", str(ct_dir),
-        {"command": config.dcm2niix_cmd, "activation": config.conda_activate,
-         "depth": dcm2niix_depth, "stack_override": effective_stack_override, "require_hygiene": require_hygiene},
-        {"dicom": inventory(p for p in ct_dir.iterdir() if p.is_file()),
-         "rtstruct": inventory([authoritative_rtstruct]) if authoritative_rtstruct else {}},
-        base=nifti_dir, code=code_files("segmentation.py", "ct_series_hygiene.py",
-            "nonuniform_ct_conversion.py", "nifti_provenance.py"))
+    from .artifact_progress import staged_file, write_json
+    progress = _ct_conversion_progress(config, ct_dir, nifti_dir,
+        dcm2niix_depth=dcm2niix_depth, authoritative_rtstruct=authoritative_rtstruct,
+        stack_override=effective_stack_override, require_hygiene=require_hygiene)
     committed = progress.load_with_sidecar(meta_path)
-    if committed is not None and not force and existing_sidecar == committed["sidecar"]:
+    if committed is not None and not force:
+        existing_sidecar = committed["sidecar"]
         if conversion_evidence is not None and isinstance(existing_sidecar.get("nifti_conversion"), dict):
             conversion_evidence.update(existing_sidecar["nifti_conversion"])
         return target
     regenerated = not target.exists() or force
-    if committed is None and any(progress.cache.root.glob("*/commit.json")):
+    invalidated = progress.cache.root.parent / (progress.key + "-invalid")
+    if committed is None and (any(progress.cache.root.glob("*/commit.json"))
+                              or any(invalidated.glob("*/commit.json"))):
         regenerated = True
     existing_conversion = (
         existing_sidecar.get("nifti_conversion")
         if isinstance(existing_sidecar.get("nifti_conversion"), dict)
         else None
     )
+    legacy_selection_files = None
     if not regenerated:
         if (
             existing_sidecar.get("sop_hash") != metadata["sop_hash"]
@@ -1075,6 +1088,7 @@ def _ensure_ct_nifti(
                     logger.error("CT conversion refused: %s", exc.reason_code)
                     return None
             else:
+                legacy_selection_files = selected_files
                 if (
                     existing_conversion is None
                     or not conversion_evidence_matches_expected(existing_conversion, expected_selection)
@@ -1096,6 +1110,15 @@ def _ensure_ct_nifti(
                             _verify_slice_by_slice_volume(selected_files, target)
                     except CTSeriesHygieneError:
                         regenerated = True
+    if not regenerated:
+        # Legacy identifiers cannot prove that same-UID source pixels stayed
+        # unchanged. Authenticate the physical volume before creating its first
+        # exact-bound transaction; unsupported legacy grids are regenerated.
+        try:
+            _verify_slice_by_slice_volume(legacy_selection_files or [
+                path for path in ct_dir.iterdir() if path.is_file() and path.suffix != ".age"], target)
+        except CTSeriesHygieneError:
+            regenerated = True
     if not regenerated:
         if conversion_evidence is not None and existing_conversion is not None:
             conversion_evidence.update(existing_conversion)

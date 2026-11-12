@@ -417,6 +417,8 @@ def test_ensure_ct_nifti_preserves_sidecar_timestamp_without_regeneration(monkey
         logs_root=tmp_path / "logs",
         segmentation_temp_root=tmp_path / "seg-tmp",
     )
+    segmentation._ct_conversion_progress(config, ct_dir, nifti.parent).commit_artifacts(
+        [nifti, sidecar_path], sidecar=original)
     assert segmentation._ensure_ct_nifti(config, ct_dir, nifti.parent) == nifti
     refreshed = json.loads(sidecar_path.read_text(encoding="utf-8"))
     assert refreshed["generated_at"] == original["generated_at"]
