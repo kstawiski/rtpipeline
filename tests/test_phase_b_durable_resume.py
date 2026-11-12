@@ -567,7 +567,13 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
     pipeline.run('all')
     valid = pipeline.output / 'SYNTHETIC/2024-01'
     stale = pipeline.output / 'SYNTHETIC2/2024-01'
-    names = ('.radiomics_done', 'radiomics_ct.parquet', 'radiomics_ct.xlsx')
+    names = tuple(sorted({p.relative_to(valid).as_posix()
+        for p in valid.rglob('*') if p.is_file()
+        and not any(part.startswith('.') for part in p.relative_to(valid).parts)
+        and p.suffix in {'.parquet', '.xlsx'}} | {
+            name for name in ('.organized', '.segmentation_done', '.custom_models_done',
+                '.crop_ct_done', '.dvh_done', '.radiomics_done', '.qc_done',
+                'RS_custom.dcm', 'metadata/rs_custom_meta.json') if (valid / name).is_file()}))
     def snapshot(root):
         return {name: ((root / name).read_bytes(), (root / name).stat().st_mtime_ns) for name in names}
     protected = snapshot(valid)
@@ -668,6 +674,7 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
     if destination:
         Path(destination, f'two-course-invalidation-{mutation}.json').write_text(json.dumps({
             'mutation': mutation, 'peer_bytes_and_mtimes_unchanged': mutation != 'code',
+            'protected_peer_artifacts': sorted(protected),
             'shared_dependencies_unchanged_bytes_and_mtimes': True,
             'recomputed_keys': sorted(changed_keys), 'reason_code': reason,
             'recomputed_scalar_arms': [{'roi_key':key[0], 'arm':key[1], 'calls':count}
