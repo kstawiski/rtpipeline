@@ -53,6 +53,27 @@ def run_child(code):
     return result.stdout
 
 
+@pytest.fixture
+def scripted_writer(monkeypatch):
+    """Replace only the private writer command with a controllable subprocess."""
+    real_popen = subprocess.Popen
+    processes = []
+    def install(code):
+        def popen(command, **kwargs):
+            process = real_popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)], **kwargs)
+            processes.append(process)
+            return process
+        monkeypatch.setattr(dp.subprocess, "Popen", popen)
+        return processes
+    yield install
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=10)
+        process.stdin.close()
+        process.stdout.close()
+
+
 def transaction(cache):
     directories = list(cache.root.iterdir())
     assert len(directories) == 1
@@ -83,6 +104,88 @@ def test_journal_round_trip_readback_reopen_and_fsync(tmp_path, monkeypatch):
         assert row["schema_version"] == 1 and row["utc"].endswith("Z")
         body = {key: value for key, value in row.items() if key != "sha256"}
         assert row["sha256"] == hashlib.sha256(dp._json(body)).hexdigest()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="advisory journal locks require POSIX")
+def test_journal_two_writers_refused_until_close_then_sequence_recovers(tmp_path):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as first:
+        first.append({"writer": 1})
+        code = f'''
+from rtpipeline.durable_progress import DurableProgressError, ProgressJournal
+try:
+    ProgressJournal({str(path)!r})
+except DurableProgressError as error:
+    assert error.code == 'DURABLE_JOURNAL_LOCKED', error.code
+else:
+    raise AssertionError('second writer acquired an active journal')
+print('LOCKED')
+'''
+        assert run_child(code).strip() == "LOCKED"
+        # The same process also cannot open a second writing descriptor.
+        with pytest.raises(dp.DurableProgressError, match="DURABLE_JOURNAL_LOCKED"):
+            dp.ProgressJournal(path)
+        assert first.append({"writer": 1})["sequence"] == 2
+    first.close()  # Idempotent close must leave the lock released.
+    code = f'''
+from rtpipeline.durable_progress import ProgressJournal
+with ProgressJournal({str(path)!r}) as journal:
+    assert journal.append({{'writer': 2}})['sequence'] == 3
+print('REOPENED')
+'''
+    assert run_child(code).strip() == "REOPENED"
+    read = dp.ProgressJournal.read(path)
+    assert [row["body"]["writer"] for row in read.records] == [1, 1, 2]
+    assert [row["sequence"] for row in read.records] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("failure", ["recovery", "fsync"])
+def test_journal_failed_initialization_releases_lock(tmp_path, monkeypatch, failure):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        journal.append({"previous": True})
+    with monkeypatch.context() as patch:
+        if failure == "recovery":
+            def fail(*args):
+                raise dp.DurableProgressError("DURABLE_JOURNAL_CORRUPT")
+            patch.setattr(dp.ProgressJournal, "read", fail)
+            expected = "DURABLE_JOURNAL_CORRUPT"
+        else:
+            def fail(*args):
+                raise OSError(errno.EIO, "synthetic fsync failure")
+            patch.setattr(os, "fsync", fail)
+            expected = dp.WRITE_FAILED
+        with pytest.raises(dp.DurableProgressError, match=expected):
+            dp.ProgressJournal(path)
+    with dp.ProgressJournal(path) as journal:
+        assert journal.append({"recovered": True})["sequence"] == 2
+
+
+@pytest.mark.parametrize("error_number,code", [
+    (errno.EACCES, "DURABLE_JOURNAL_LOCKED"),
+    (errno.EAGAIN, "DURABLE_JOURNAL_LOCKED"),
+    (errno.EIO, dp.WRITE_FAILED),
+])
+def test_journal_lock_failure_precedes_recovery_and_closes_descriptor(tmp_path, monkeypatch, error_number, code):
+    path = tmp_path / "journal"
+    descriptors = []
+    with monkeypatch.context() as patch:
+        def fail(fd, operation):
+            descriptors.append(fd)
+            raise OSError(error_number, "synthetic lock failure")
+        def forbidden_read(*args):
+            raise AssertionError("sequence recovery ran without the journal lock")
+        patch.setattr(dp.fcntl, "flock", fail)
+        patch.setattr(dp.ProgressJournal, "read", forbidden_read)
+        with pytest.raises(dp.DurableProgressError) as caught:
+            dp.ProgressJournal(path)
+        assert caught.value.code == code
+    assert len(descriptors) == 1
+    with pytest.raises(OSError) as caught:
+        os.fstat(descriptors[0])
+    assert caught.value.errno == errno.EBADF
+    with dp.ProgressJournal(path) as journal:
+        assert journal.append({"recovered": True})["sequence"] == 1
 
 
 @pytest.mark.parametrize("tail", [b'{"body":', b'{"complete_but_no_newline":true}'])
@@ -272,30 +375,54 @@ def test_sigkill_and_resume_reuses_exact_committed_items(tmp_path, committed):
     root = tmp_path / "cache"
     journal = tmp_path / "journal"
     code = f"""
-import json, time
-from rtpipeline.durable_progress import Binding, GuardSafeSink, ResultCache
-binding = Binding(**{BINDING.as_dict()!r})
-with GuardSafeSink({str(journal)!r}, cache=ResultCache({str(root)!r})) as sink:
+from pathlib import Path
+from rtpipeline import durable_progress as dp
+binding = dp.Binding(**{BINDING.as_dict()!r})
+cache = dp.ResultCache({str(root)!r})
+with dp.ProgressJournal({str(journal)!r}) as journal:
     for index in range({committed}):
-        sink.store(f'SYNTH_{{index:02}}', {{'square': index * index}}, binding)
+        cache.put(f'SYNTH_{{index:02}}', {{'square': index * index}}, binding)
+        journal.append({{'event': 'cache_commit', 'item_key': f'SYNTH_{{index:02}}'}})
         print('COMMITTED', flush=True)
-    print('READY', flush=True)
-    time.sleep(30)
+    real_write = dp._atomic_write
+    def pause_before_marker(path, raw):
+        if path.name == 'commit.json':
+            assert (path.parent / 'payload.json').is_file()
+            assert not path.exists()
+            print('PAYLOAD_PUBLISHED', flush=True)
+            # Test-only synchronization: block inside the active transaction.
+            # The parent kills us here; production has no hook or delay.
+            sys.stdin.buffer.read(1)
+            raise AssertionError('active transaction was released instead of killed')
+        return real_write(path, raw)
+    dp._atomic_write = pause_before_marker
+    index = {committed}
+    cache.put(f'SYNTH_{{index:02}}', {{'square': index * index}}, binding)
+raise AssertionError('active transaction unexpectedly completed')
 """
     process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, bufsize=0)
     try:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            for expected in [b"COMMITTED"] * committed + [b"READY"]:
+            for expected in [b"COMMITTED"] * committed + [b"PAYLOAD_PUBLISHED"]:
                 assert selector.select(10), "computing child stopped acknowledging commits"
                 assert process.stdout.readline().strip() == expected
+        # Observe the on-disk boundary before SIGKILL, rather than racing a delay.
+        cache = dp.ResultCache(root)
+        interrupted = [path for path in root.iterdir() if not (path / "commit.json").exists()]
+        assert len(interrupted) == 1
+        assert json.loads((interrupted[0] / "payload.json").read_bytes()) == {
+            "square": committed * committed}
+        assert cache.load_valid(BINDING).report["incomplete"] == 1
         process.kill()
         assert process.wait(timeout=10) == -signal.SIGKILL
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=10)
+        process.stdin.close()
         process.stdout.close()
         process.stderr.close()
     items = [f"SYNTH_{index:02}" for index in range(20)]
@@ -304,6 +431,7 @@ with GuardSafeSink({str(journal)!r}, cache=ResultCache({str(root)!r})) as sink:
     assert list(reuse) == items[:committed]
     assert compute == items[committed:]
     assert report["reuse"] == committed and report["compute"] == 20 - committed
+    assert report["cache_valid"] == committed and report["cache_incomplete"] == 1
     with dp.GuardSafeSink(journal, cache=cache) as sink:
         for item in compute:
             index = int(item.rsplit("_", 1)[1])
@@ -313,47 +441,119 @@ with GuardSafeSink({str(journal)!r}, cache=ResultCache({str(root)!r})) as sink:
     for item, result in expected.items():
         uninterrupted.put(item, result, BINDING)
     assert cache.load_valid(BINDING).entries == uninterrupted.load_valid(BINDING).entries == expected
+    assert cache.load_valid(BINDING).report["incomplete"] == 1
+    assert not (interrupted[0] / "commit.json").exists()
     assert dp.ProgressJournal.read(journal).report == {"records": 20, "truncated_last_line": 0}
     final = tmp_path / "final.json"
     assert dp.final_result_writer(final, expected)["verified"] is True
     assert json.loads(final.read_bytes()) == expected
 
 
+@pytest.mark.parametrize("operation", ["journal", "cache"])
 @pytest.mark.skipif(os.name != "posix", reason="SIGKILL test requires POSIX")
-def test_writer_drains_complete_queued_requests_after_computing_sigkill(tmp_path):
+def test_writer_drains_complete_queued_requests_after_computing_sigkill(tmp_path, operation):
     journal = tmp_path / "journal"
+    cache = dp.ResultCache(tmp_path / "cache")
+    sink = dp.GuardSafeSink(journal, cache=cache)
+    process = None
+    count = 4
+    requests = []
+    for index in range(count):
+        if operation == "journal":
+            request = {"op": "journal", "record": {"index": index}}
+        else:
+            request = {"op": "cache", "item_key": f"SYNTH_{index:02}",
+                       "binding": BINDING.as_dict(), "sealed": False,
+                       "payload": dp.base64.b64encode(dp._json({"square": index * index})).decode("ascii")}
+        requests.append(dp._json(request) + b"\n")
+    queued = b"".join(requests)
+    writer_fd = sink._process.stdin.fileno()
+    assert len(queued) <= os.fpathconf(writer_fd, "PC_PIPE_BUF")
     code = f"""
-import time
-from rtpipeline.durable_progress import GuardSafeSink, _json, _write_all
-sink = GuardSafeSink({str(journal)!r})
-requests = b''.join(_json({{'op': 'journal', 'record': {{'index': i}}}}) + b'\\n' for i in range(12))
-_write_all(sink._process.stdin, requests)
+import os, time
+assert os.write({writer_fd}, {queued!r}) == {len(queued)}
 print('QUEUED', flush=True)
 time.sleep(30)
 """
-    process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
+        # Stop the writer to prove all requests are still queued when the
+        # computing process dies. Keeping the writer as our child lets us reap
+        # it and check its exit status instead of leaving an orphan to poll.
+        os.kill(sink._process.pid, signal.SIGSTOP)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            pid, status = os.waitpid(sink._process.pid, os.WUNTRACED | os.WNOHANG)
+            if pid:
+                assert os.WIFSTOPPED(status)
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("writer did not reach the stopped synchronization point")
+        process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
+                                   pass_fds=(writer_fd,), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        sink._process.stdin.close()  # Child now owns the only request descriptor.
+        sink._process.stdout.close()  # Writer must handle a broken ACK pipe too.
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             assert selector.select(10)
         assert process.stdout.readline().strip() == "QUEUED"
         process.kill()
-        process.wait(timeout=10)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            read = dp.ProgressJournal.read(journal)
-            if read.report["records"] == 12:
-                break
-            time.sleep(0.02)
-        assert [row["body"]["index"] for row in read.records] == list(range(12))
-        assert read.report["truncated_last_line"] == 0
+        assert process.wait(timeout=10) == -signal.SIGKILL
+        assert dp.ProgressJournal.read(journal).report["records"] == 0
+        assert cache.load_valid(BINDING).report["total"] == 0
+        os.kill(sink._process.pid, signal.SIGCONT)
+        sink.close()
+        assert sink._process.returncode == 0
+        read = dp.ProgressJournal.read(journal)
+        assert read.report == {"records": count, "truncated_last_line": 0}
+        if operation == "journal":
+            assert [row["body"]["index"] for row in read.records] == list(range(count))
+        else:
+            loaded = cache.load_valid(BINDING)
+            assert loaded.entries == {f"SYNTH_{i:02}": {"square": i * i} for i in range(count)}
+            assert loaded.report == {"total": count, "valid": count, "stale": 0,
+                                     "incomplete": 0, "corrupt": 0, "conflict": 0}
+            assert [row["body"]["item_key"] for row in read.records] == [
+                f"SYNTH_{i:02}" for i in range(count)]
+            assert all(row["body"]["event"] == "cache_commit" for row in read.records)
     finally:
-        if process.poll() is None:
+        if process is not None and process.poll() is None:
             process.kill()
             process.wait(timeout=10)
-        process.stdout.close()
-        process.stderr.close()
+        if process is not None:
+            process.stdout.close()
+            process.stderr.close()
+        if sink._process.poll() is None:
+            sink._process.kill()
+        sink.close(check=False)
+
+
+@pytest.mark.parametrize("operation", ["journal", "cache"])
+@pytest.mark.parametrize("valid_json", [False, True])
+def test_writer_ignores_truncated_request_without_newline_on_eof(tmp_path, operation, valid_json):
+    journal = tmp_path / "journal"
+    cache = dp.ResultCache(tmp_path / "cache")
+    with dp.GuardSafeSink(journal, cache=cache) as sink:
+        sink.send({"event": "prior_committed"})
+        sink.store("SYNTH_PRIOR", {"value": 1}, BINDING)
+        if operation == "journal":
+            request = {"op": "journal", "record": {"event": "must_not_commit"}}
+        else:
+            request = {"op": "cache", "item_key": "SYNTH_PARTIAL",
+                       "binding": BINDING.as_dict(), "sealed": False, "payload": "Mg=="}
+        raw = dp._json(request)
+        if not valid_json:
+            raw = raw[:-3]
+        dp._write_all(sink._process.stdin, raw)  # No newline; close supplies EOF.
+    assert sink._process.returncode == 0
+    read = dp.ProgressJournal.read(journal)
+    assert read.report == {"records": 2, "truncated_last_line": 0}
+    assert [row["body"]["event"] for row in read.records] == ["prior_committed", "cache_commit"]
+    loaded = cache.load_valid(BINDING)
+    assert loaded.entries == {"SYNTH_PRIOR": {"value": 1}}
+    assert loaded.report == {"total": 1, "valid": 1, "stale": 0,
+                             "incomplete": 0, "corrupt": 0, "conflict": 0}
 
 
 GUARD = '''
@@ -391,12 +591,14 @@ refused = 0
 for action in (lambda: open(root / 'refused', 'w'),
                lambda: os.open(root / 'refused', os.O_CREAT | os.O_WRONLY),
                lambda: open(regular_fd, 'w', closefd=False),
-               lambda: (root / 'refused-dir').mkdir()):
+               lambda: (root / 'refused-dir').mkdir(),
+               lambda: cache.put('SYNTH_REFUSED', {{'value': 0}}, Binding(**{BINDING.as_dict()!r})),
+               lambda: final_result_writer(root / 'refused-final.json', {{'status': 'refused'}}, sink=None)):
     try:
         action()
     except Refusal:
         refused += 1
-assert refused == 4
+assert refused == 6
 with open('/dev/null', 'w') as null:
     null.write('allowed')
 read_fd, write_fd = os.pipe()
@@ -418,6 +620,8 @@ print('GUARD_OK')
     assert dp.ResultCache(tmp_path / "cache").load_valid(BINDING).entries == {"SYNTH_A": {"value": 7}}
     assert json.loads((tmp_path / "final.json").read_bytes()) == {"status": "ok"}
     assert not (tmp_path / "refused").exists()
+    assert not (tmp_path / "refused-dir").exists()
+    assert not (tmp_path / "refused-final.json").exists()
 
 
 def test_computation_exception_preserves_commits_and_failure_aggregate(tmp_path):
@@ -517,6 +721,93 @@ def test_sink_writer_error_propagates_fixed_code_and_bad_startup_is_reaped(tmp_p
     assert blocked.read_bytes() == b"synthetic"
 
 
+@pytest.mark.parametrize("partial_reply", [False, True])
+def test_sink_hung_startup_has_bounded_handshake_and_reaps_writer(tmp_path, scripted_writer, partial_reply):
+    code = "import sys, time\n"
+    if partial_reply:
+        code += "sys.stdout.write('{\"ok\":true'); sys.stdout.flush()\n"
+    code += "time.sleep(30)\n"
+    processes = scripted_writer(code)
+    started = time.monotonic()
+    with pytest.raises(dp.DurableProgressError) as caught:
+        dp.GuardSafeSink(tmp_path / "journal", timeout=0.25)
+    assert caught.value.code == "DURABLE_WRITER_HANDSHAKE_TIMEOUT"
+    assert time.monotonic() - started < 5
+    assert len(processes) == 1 and processes[0].poll() is not None
+    assert processes[0].stdin.closed and processes[0].stdout.closed
+
+
+@pytest.mark.parametrize("partial_reply", [False, True])
+def test_sink_hung_ack_times_out_and_refuses_late_reply_reuse(tmp_path, scripted_writer, partial_reply):
+    code = '''
+import sys, time
+print('{"ok":true,"result":{"ready":true}}', flush=True)
+sys.stdin.buffer.readline()
+'''
+    if partial_reply:
+        code += "sys.stdout.write('{\"ok\":true'); sys.stdout.flush()\n"
+    code += "time.sleep(30)\n"
+    scripted_writer(code)
+    sink = dp.GuardSafeSink(tmp_path / "journal", timeout=0.25)
+    try:
+        started = time.monotonic()
+        with pytest.raises(dp.DurableProgressError) as caught:
+            sink.send({"event": "hung"})
+        assert caught.value.code == "DURABLE_WRITER_ACK_TIMEOUT"
+        assert time.monotonic() - started < 5
+        with pytest.raises(dp.DurableProgressError, match="DURABLE_SINK_CLOSED"):
+            sink.send({"event": "cannot_consume_a_late_ack"})
+    finally:
+        sink.close(check=False)
+    assert sink._process.poll() is not None
+    assert sink._process.stdin.closed and sink._process.stdout.closed
+
+
+def test_sink_hung_close_is_bounded_kills_writer_and_is_idempotent(tmp_path, scripted_writer):
+    scripted_writer('''
+import sys, time
+print('{"ok":true,"result":{"ready":true}}', flush=True)
+sys.stdin.buffer.read()
+time.sleep(30)
+''')
+    sink = dp.GuardSafeSink(tmp_path / "journal", timeout=0.25)
+    started = time.monotonic()
+    with pytest.raises(dp.DurableProgressError) as caught:
+        sink.close()
+    assert caught.value.code == "DURABLE_WRITER_CLOSE_TIMEOUT"
+    assert time.monotonic() - started < 5
+    assert sink._process.poll() is not None
+    assert sink._process.stdin.closed and sink._process.stdout.closed
+    sink.close()
+
+
+def test_sink_hung_writer_cannot_block_large_request_write(tmp_path, scripted_writer):
+    scripted_writer('''
+import sys, time
+print('{"ok":true,"result":{"ready":true}}', flush=True)
+time.sleep(30)
+''')
+    sink = dp.GuardSafeSink(tmp_path / "journal", timeout=0.25)
+    try:
+        started = time.monotonic()
+        with pytest.raises(dp.DurableProgressError) as caught:
+            sink.send({"large": "x" * (1024 * 1024)})
+        assert caught.value.code == "DURABLE_WRITER_SEND_TIMEOUT"
+        assert time.monotonic() - started < 5
+        with pytest.raises(dp.DurableProgressError, match="DURABLE_SINK_CLOSED"):
+            sink.send({"cannot_follow_partial_request": True})
+    finally:
+        sink.close(check=False)
+    assert sink._process.poll() is not None
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_sink_refuses_timeout_that_cannot_bound_waits(tmp_path, timeout):
+    with pytest.raises(ValueError, match="positive finite"):
+        dp.GuardSafeSink(tmp_path / "journal", timeout=timeout)
+    assert not (tmp_path / "journal").exists()
+
+
 def test_sink_final_error_and_context_preserve_computation_exception(tmp_path):
     sink = dp.GuardSafeSink(tmp_path / "journal")
     with pytest.raises(RuntimeError, match="computation"):
@@ -574,6 +865,19 @@ def test_threaded_sink_serialization_and_explicit_idempotent_close(tmp_path):
     assert sorted(row["body"]["index"] for row in records) == list(range(12))
     with pytest.raises(dp.DurableProgressError, match="DURABLE_SINK_CLOSED"):
         sink.send({"closed": True})
+
+
+def test_sink_large_request_and_ack_round_trip(tmp_path):
+    journal = tmp_path / "journal"
+    cache = dp.ResultCache(tmp_path / "cache")
+    record = {"value": "Łódź" * 32768}
+    assert len(dp._json(record)) > 65536
+    with dp.GuardSafeSink(journal, cache=cache) as sink:
+        acknowledged = sink.send(record)
+        assert acknowledged["body"] == record
+        sink.store("SYNTH_LARGE", record, BINDING)
+    assert dp.ProgressJournal.read(journal).records[0] == acknowledged
+    assert cache.load_valid(BINDING).entries == {"SYNTH_LARGE": record}
 
 
 def test_module_import_and_writer_need_only_standard_library(tmp_path):

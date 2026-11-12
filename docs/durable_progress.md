@@ -70,6 +70,9 @@ stop and handle `DurableProgressError.code`; do not claim the aggregate was save
 ## API and recovery contract
 
 - `ProgressJournal(path)` is a context manager with `append(dict)` and `close()`.
+  It holds an exclusive, nonblocking POSIX advisory lock until close. A second
+  writer fails with `DURABLE_JOURNAL_LOCKED`. Sequence recovery happens under
+  that lock; readers do not need the writer lock.
   Each JSON line contains schema version 1, a sequence starting at 1, UTC time,
   the body and a SHA-256 covering the complete envelope except the hash itself.
   Each append flushes and fsyncs. `ProgressJournal.read(path)` returns
@@ -77,11 +80,15 @@ stop and handle `DurableProgressError.code`; do not claim the aggregate was save
   accepted records and a truncated last line. A line without its final newline
   is excluded, even if its JSON is parseable. A complete malformed line, hash
   mismatch or sequence gap raises `DURABLE_JOURNAL_CORRUPT`.
-- `GuardSafeSink(journal_path, cache=cache)` starts an independent Python writer.
+- `GuardSafeSink(journal_path, cache=cache, timeout=60.0)` starts an independent
+  Python writer. Existing calls without `timeout` use the 60-second default.
   `send(dict)` persists a journal record. `store(item_key, result, binding)`
   commits a cache entry, then journals its commit. Both wait for acknowledgement
   after fsync. The sink supports a context manager and idempotent `close()`;
   close drains the pipe, waits for the writer and checks its exit status.
+  The positive, finite `timeout` in seconds bounds the startup handshake, each
+  complete request and acknowledgement, and the wait on close. Increase it for
+  storage whose expected transaction latency exceeds the default.
 - `ResultCache(root, seal=None, unseal=None).put(key, result, binding)` stores a
   JSON result. Each transaction has an address derived from the item key and
   exact binding, plus a unique transaction suffix. Phase 1 writes and verifies
@@ -118,8 +125,11 @@ process. Paths sent to the writer must be trusted output paths.
 
 After SIGKILL, every successful sink call is already durable. The writer drains
 complete queued requests and finalizes on EOF, even when its acknowledgement pipe
-has closed. A kill during a call may commit that item or leave an incomplete
-transaction. Resume uses verified cache contents, never the last printed count.
+has closed. A final request without a newline is ignored, including when its
+JSON is otherwise complete; earlier committed requests remain durable and the
+writer exits cleanly. A kill during a call may commit that item or leave an
+incomplete transaction. Resume uses verified cache contents, never the last
+printed count.
 A cache commit can survive even if its subsequent journal append fails. A final
 aggregate is not automatically produced after SIGKILL; recompute it from the
 verified cache on the next run. An ordinary exception inside the sink context
@@ -135,10 +145,24 @@ binding and nondeterminism; use a new cache after resolving the cause. Use one
 writer per journal and per logical cache item/binding. Sink calls from threads
 are serialized; do not share a sink across a fork.
 
+Timeouts have fixed error codes: `DURABLE_WRITER_HANDSHAKE_TIMEOUT`,
+`DURABLE_WRITER_SEND_TIMEOUT`, `DURABLE_WRITER_ACK_TIMEOUT` and
+`DURABLE_WRITER_CLOSE_TIMEOUT`. A send or acknowledgement timeout disables
+further requests on that sink so a late reply cannot acknowledge another item.
+Close the sink and inspect the verified cache before resuming; an operation
+that timed out may already have committed. Close allows the writer to drain
+within the timeout, then sends SIGKILL if it remains alive and waits for at most
+one further timeout to reap it. Constructor failure performs the same bounded
+cleanup. `close(check=False)` suppresses shutdown errors while retaining those
+bounds; exception cleanup uses it to preserve the computation exception.
+
 ## Storage and confidentiality limits
 
 File and directory fsync durability requires a filesystem that implements those
-operations correctly. The audit-hook and SIGKILL contracts are tested on POSIX.
+operations correctly. Journal locking requires POSIX `fcntl.flock`; it is
+advisory, so every writer must use this module's locking contract. The audit-hook
+and SIGKILL contracts are tested on POSIX. An OS task stuck in uninterruptible
+I/O may outlive the bounded shutdown wait even after SIGKILL.
 If a failure occurs after replacement, the new file may already be published;
 an error never certifies rollback. `DURABLE_WRITE_FAILED` identifies I/O failures;
 `DURABLE_VERIFY_FAILED` identifies a byte read-back mismatch. Other fixed codes

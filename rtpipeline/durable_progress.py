@@ -10,21 +10,30 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import errno
+import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 SCHEMA_VERSION = 1
 WRITE_FAILED = "DURABLE_WRITE_FAILED"
 READ_FAILED = "DURABLE_READ_FAILED"
 VERIFY_FAILED = "DURABLE_VERIFY_FAILED"
+HANDSHAKE_TIMEOUT = "DURABLE_WRITER_HANDSHAKE_TIMEOUT"
+SEND_TIMEOUT = "DURABLE_WRITER_SEND_TIMEOUT"
+ACK_TIMEOUT = "DURABLE_WRITER_ACK_TIMEOUT"
+CLOSE_TIMEOUT = "DURABLE_WRITER_CLOSE_TIMEOUT"
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -168,6 +177,8 @@ class JournalRead:
 class ProgressJournal:
     """Append-only JSONL, with strict sequence and envelope SHA-256 validation.
 
+    An exclusive, nonblocking POSIX advisory lock is held until close(). A
+    competing writer fails with DURABLE_JOURNAL_LOCKED before reading sequence.
     read() excludes and reports a last line lacking its newline. Reopening that
     file for append refuses DURABLE_JOURNAL_TRUNCATED: archive the damaged
     journal explicitly and use a new one; no repair silently deletes evidence.
@@ -178,18 +189,35 @@ class ProgressJournal:
         self._stream = None
         self._failed = False
         self._lock = threading.Lock()
-        previous = self.read(self.path)
-        if previous.report["truncated_last_line"]:
-            raise DurableProgressError("DURABLE_JOURNAL_TRUNCATED")
-        self._sequence = len(previous.records)
         try:
-            self._stream = open(self.path, "ab", buffering=0)
+            try:
+                self._stream = open(self.path, "ab", buffering=0)
+            except OSError as error:
+                # Retain read-side error codes for unusable journal paths.
+                # This read cannot lead to an append; sequence recovery below
+                # still happens exclusively under the acquired writer lock.
+                self.read(self.path)
+                raise DurableProgressError(WRITE_FAILED) from error
+            try:
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in {errno.EACCES, errno.EAGAIN}:
+                    raise DurableProgressError("DURABLE_JOURNAL_LOCKED") from error
+                raise
+            # Recovery must run under the lock, otherwise a competing writer
+            # could append after our read and leave us with a stale sequence.
+            previous = self.read(self.path)
+            if previous.report["truncated_last_line"]:
+                raise DurableProgressError("DURABLE_JOURNAL_TRUNCATED")
+            self._sequence = len(previous.records)
             os.fsync(self._stream.fileno())
             _fsync_dir(self.path.parent)
         except OSError as error:
-            if self._stream is not None:
-                self._stream.close()
+            self.close()
             raise DurableProgressError(WRITE_FAILED) from error
+        except BaseException:
+            self.close()
+            raise
 
     @staticmethod
     def read(path) -> JournalRead:
@@ -253,9 +281,10 @@ class ProgressJournal:
             return record
 
     def close(self):
-        if self._stream is not None:
-            self._stream.close()
-            self._stream = None
+        with self._lock:
+            if self._stream is not None:
+                self._stream.close()  # Closing the descriptor releases flock.
+                self._stream = None
 
     def __enter__(self):
         return self
@@ -429,14 +458,26 @@ class GuardSafeSink:
     Calls are serialized across threads. Do not share this object after fork.
     A kill during a call can leave either a complete or an incomplete transaction;
     resume_plan decides from committed, verified cache contents, never a count.
+    timeout bounds startup, each complete request/reply, and close in seconds.
+    A request timeout poisons the sink: a late reply cannot acknowledge a later
+    request. Close still drains, or kills the writer after its deadline.
     """
 
-    def __init__(self, journal_path, *, cache: Optional[ResultCache] = None):
+    def __init__(self, journal_path, *, cache: Optional[ResultCache] = None,
+                 timeout: float = 60.0):
+        if (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
+                or not math.isfinite(timeout) or timeout <= 0):
+            raise ValueError("timeout must be a positive finite number of seconds")
         self.cache = cache
+        self._timeout = timeout
         self._lock = threading.Lock()
         self._closed = False
+        self._failed = False
+        self._received = bytearray()
         self._owner_pid = os.getpid()
-        command = [sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
+        # Unbuffered ACKs cannot be retried by interpreter shutdown after the
+        # computing process dies and closes its end of the reply pipe.
+        command = [sys.executable, "-I", "-S", "-B", "-u", str(Path(__file__).resolve()),
                    "--writer", str(Path(journal_path).absolute()),
                    str(cache.root.absolute()) if cache is not None else ""]
         try:
@@ -446,16 +487,34 @@ class GuardSafeSink:
         except OSError as error:
             raise DurableProgressError(WRITE_FAILED) from error
         try:
-            self._receive()
+            os.set_blocking(self._process.stdin.fileno(), False)
+            os.set_blocking(self._process.stdout.fileno(), False)
+            self._receive(time.monotonic() + self._timeout, HANDSHAKE_TIMEOUT)
         except BaseException:
             self.close(check=False)
             raise
 
-    def _receive(self):
+    @staticmethod
+    def _wait_ready(selector, deadline, code):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not selector.select(remaining):
+            raise DurableProgressError(code)
+
+    def _receive(self, deadline, timeout_code=ACK_TIMEOUT):
         try:
-            raw = self._process.stdout.readline()
-            if not raw:
-                raise DurableProgressError(WRITE_FAILED)
+            with selectors.DefaultSelector() as selector:
+                selector.register(self._process.stdout, selectors.EVENT_READ)
+                while b"\n" not in self._received:
+                    self._wait_ready(selector, deadline, timeout_code)
+                    try:
+                        chunk = os.read(self._process.stdout.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        raise DurableProgressError(WRITE_FAILED)
+                    self._received.extend(chunk)
+            raw, _, rest = self._received.partition(b"\n")
+            self._received = bytearray(rest)
             reply = _loads(raw)
             if not reply["ok"]:
                 raise DurableProgressError(reply["code"])
@@ -463,17 +522,37 @@ class GuardSafeSink:
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise DurableProgressError(WRITE_FAILED) from error
 
+    def _send_request(self, raw, deadline):
+        # Nonblocking writes also bound a request larger than the pipe buffer
+        # when a hung writer stops consuming stdin.
+        view = memoryview(raw)
+        with selectors.DefaultSelector() as selector:
+            selector.register(self._process.stdin, selectors.EVENT_WRITE)
+            while view:
+                self._wait_ready(selector, deadline, SEND_TIMEOUT)
+                try:
+                    written = os.write(self._process.stdin.fileno(), view)
+                except BlockingIOError:
+                    continue
+                if not written:
+                    raise OSError("short write")
+                view = view[written:]
+
     def _request(self, request):
         with self._lock:
-            if self._closed or os.getpid() != self._owner_pid:
+            if self._closed or self._failed or os.getpid() != self._owner_pid:
                 raise DurableProgressError("DURABLE_SINK_CLOSED")
             raw = _json(request) + b"\n"
+            deadline = time.monotonic() + self._timeout
             try:
-                _write_all(self._process.stdin, raw)
-                self._process.stdin.flush()
+                self._send_request(raw, deadline)
+                return self._receive(deadline)
+            except DurableProgressError as error:
+                if error.code in {SEND_TIMEOUT, ACK_TIMEOUT}:
+                    self._failed = True
+                raise
             except OSError as error:
                 raise DurableProgressError(WRITE_FAILED) from error
-            return self._receive()
 
     def send(self, record: dict) -> dict:
         if not isinstance(record, dict):
@@ -495,11 +574,32 @@ class GuardSafeSink:
             if self._closed:
                 return
             self._closed = True
+            close_error = None
             try:
-                self._process.stdin.close()  # EOF: worker drains and closes journal.
-                status = self._process.wait()
+                try:
+                    self._process.stdin.close()  # EOF: drain complete requests.
+                except OSError as error:
+                    close_error = error
+                try:
+                    status = self._process.wait(timeout=self._timeout)
+                except subprocess.TimeoutExpired as error:
+                    # SIGKILL also terminates a stopped/deadlocked writer. The
+                    # second wait is bounded even for an uninterruptible OS task.
+                    try:
+                        self._process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        self._process.wait(timeout=self._timeout)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if check:
+                        raise DurableProgressError(CLOSE_TIMEOUT) from error
+                    return
             finally:
                 self._process.stdout.close()
+            if check and close_error is not None:
+                raise DurableProgressError(WRITE_FAILED) from close_error
             if check and status:
                 raise DurableProgressError(WRITE_FAILED)
 
