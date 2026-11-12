@@ -94,8 +94,14 @@ def instrument(root, runtime):
 import os, sys, json, time, hashlib
 
 def guard(event, args):
-    if event in {"socket.connect", "socket.connect_ex", "socket.bind", "socket.getaddrinfo"}:
+    # Refuse network access; allow local AF_UNIX sockets, which multiprocessing's
+    # forkserver and resource tracker use to start process-pool workers.
+    if event == "socket.getaddrinfo":
         raise RuntimeError("synthetic tests forbid network")
+    if event in {"socket.connect", "socket.connect_ex", "socket.bind"}:
+        import socket as _socket
+        if getattr(args[0], "family", None) != _socket.AF_UNIX:
+            raise RuntimeError("synthetic tests forbid network")
 sys.addaudithook(guard)
 if sys.prefix == os.environ.get("WS515_RUNTIME_PREFIX"):
     for path in json.loads(os.environ["WS515_RUNTIME_SITES"]):
