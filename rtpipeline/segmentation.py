@@ -1024,17 +1024,13 @@ def _ensure_ct_nifti(
          "rtstruct": inventory([authoritative_rtstruct]) if authoritative_rtstruct else {}},
         base=nifti_dir, code=code_files("segmentation.py", "ct_series_hygiene.py",
             "nonuniform_ct_conversion.py", "nifti_provenance.py"))
-    committed = progress.load()
-    if committed is not None and not force:
-        expected_sidecar = committed["sidecar"]
-        if any(existing_sidecar.get(key) != value for key, value in expected_sidecar.items()):
-            write_json(meta_path, expected_sidecar, indent=2)
-            existing_sidecar = expected_sidecar
+    committed = progress.load_with_sidecar(meta_path)
+    if committed is not None and not force and existing_sidecar == committed["sidecar"]:
         if conversion_evidence is not None and isinstance(existing_sidecar.get("nifti_conversion"), dict):
             conversion_evidence.update(existing_sidecar["nifti_conversion"])
         return target
     regenerated = not target.exists() or force
-    if committed is None:
+    if committed is None and any(progress.cache.root.glob("*/commit.json")):
         regenerated = True
     existing_conversion = (
         existing_sidecar.get("nifti_conversion")
@@ -1100,6 +1096,11 @@ def _ensure_ct_nifti(
                             _verify_slice_by_slice_volume(selected_files, target)
                     except CTSeriesHygieneError:
                         regenerated = True
+    if not regenerated:
+        if conversion_evidence is not None and existing_conversion is not None:
+            conversion_evidence.update(existing_conversion)
+        progress.commit_artifacts([target, meta_path], sidecar=existing_sidecar)
+        return target
     conversion: Optional[dict[str, Any]] = None
     if regenerated:
         tmp_dir = nifti_dir / ".tmp_dcm2niix"
@@ -1179,7 +1180,7 @@ def _ensure_ct_nifti(
     )
     meta_path = nifti_dir / f"{base}.metadata.json"
     write_json(meta_path, metadata, indent=2)
-    progress.commit_artifacts([target], sidecar=metadata)
+    progress.commit_artifacts([target, meta_path], sidecar=metadata)
     return target
 
 
@@ -2602,7 +2603,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
                     planning_ct_series_uid=source_series_uid,
                     source_ct_sop_hash=source_ct_sop_hash,
                 )
-                if committed is None:
+                if committed is None and current:
                     current, reason = False, "no current bound model commit"
                 if current:
                     _save_model_configuration(config, base_dir, nifti_path, model)

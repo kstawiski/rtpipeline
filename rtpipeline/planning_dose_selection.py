@@ -167,6 +167,22 @@ def _select(course_dir):
     matched_plan = False
     dose_seen = False
     for path in sorted(paths):
+        if path.name == "RS_custom.dcm" and path.is_symlink():
+            from .dvh_generation import current
+            from .rtstruct_identity import require_rtstruct_identity
+            from .durable_progress import DurableProgressError
+            try:
+                marker = current(root)
+                if (marker["artifacts"].get("RS_custom.dcm") is None
+                        and path.readlink() == Path(".dvh/current/RS_custom.dcm")):
+                    continue  # The committed generation explicitly publishes no custom RTSTRUCT.
+                published = (root / ".dvh/current/RS_custom.dcm").resolve(strict=True)
+                if path.resolve(strict=True) != published or marker["artifacts"].get("RS_custom.dcm") != _sha256(path):
+                    _refuse("unsafe_course_path")
+                require_rtstruct_identity(published, require_derived=True)
+            except (OSError, ValueError, KeyError, DurableProgressError):
+                _refuse("unsafe_course_path")
+            continue
         path = _local(root, path)
         try:
             ds = pydicom.dcmread(path, stop_before_pixels=True)

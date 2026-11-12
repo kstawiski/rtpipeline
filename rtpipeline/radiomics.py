@@ -2806,6 +2806,8 @@ def radiomics_for_course(
                 )
             raise RuntimeError(detail) from exc
     def _do_ct_task(task):
+        if not getattr(config, "resume", False):
+            return _do_ct_task_uncached(task)
         import pandas as pd
         from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
                                            restamp, reusable)

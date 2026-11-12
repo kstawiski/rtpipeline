@@ -85,6 +85,61 @@ class ArtifactItem(BoundItem):
             return None
         return value
 
+    def invalidate(self, reason):
+        """Retain rejected transactions without treating them as reusable results."""
+        with self.locked():
+            invalid = self.cache.root.parent / (self.key + "-invalid")
+            invalid.mkdir(exist_ok=True)
+            if self.cache.root.exists():
+                for directory in self.cache.root.iterdir():
+                    if directory.is_dir():
+                        os.replace(directory, invalid / (directory.name + "-" + uuid.uuid4().hex))
+                _fsync_dir(invalid)
+                _fsync_dir(self.cache.root)
+            with ProgressJournal(self._lock_path.with_suffix(".jsonl")) as journal:
+                journal.append({"event": "artifact_invalidated", "item_key": self.key, "reason": reason})
+
+    def load_with_sidecar(self, sidecar=None):
+        """Accept JSON reserialization only against an exact-bound prior payload.
+
+        All other artifact bytes remain exact. A newly serialized sidecar gets
+        its own verified transaction; changed fields never inherit old evidence.
+        """
+        previous = BoundItem.load(self)
+        if previous is None:
+            return self.load()
+        if sidecar is None:
+            target = previous.get("target")
+            if not isinstance(target, str):
+                return None
+            sidecar = self.base / (target.removesuffix(".nii.gz") + ".metadata.json")
+        sidecar = Path(sidecar)
+        try:
+            name = sidecar.resolve().relative_to(self.base).as_posix()
+            observed = json.loads(sidecar.read_text())
+        except (OSError, ValueError, TypeError):
+            self.invalidate("sidecar_unreadable")
+            return None
+        value = self.load()
+        if observed != previous.get("sidecar"):
+            self.invalidate("sidecar_provenance_changed")
+            return None
+        if value is not None:
+            return value
+        try:
+            if previous.get("artifact_root") != str(self.base):
+                return None
+            for artifact, expected in previous["artifacts"].items():
+                path = (self.base / artifact).resolve()
+                path.relative_to(self.base)
+                if artifact != name and file_sha256(path) != expected:
+                    return None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        paths = [self.base / key for key in sorted(set(previous["artifacts"]) | {name})]
+        result = {key: value for key, value in previous.items() if key not in {"artifacts", "artifact_root"}}
+        return self.commit_artifacts(paths, **result)
+
     def commit_artifacts(self, paths, **result):
         paths = list(map(Path, paths))
         if len(set(paths)) != len(paths):

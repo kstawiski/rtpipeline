@@ -281,7 +281,7 @@ class DicomCopyManager:
         from .durable_progress import file_sha256
         source_digest = file_sha256(src)
         progress = ArtifactItem(self.output_root / "_CACHE/copy-progress", str(dst), {},
-            {"source": str(src), "sha256": source_digest}, base=self.output_root,
+            {"source": str(src), "sha256": source_digest}, base=Path(os.path.commonpath([self.output_root.resolve(), dst.parent.resolve()])),
             code=code_files("dicom_copy.py"), environment={})
         cached = progress.load() if skip_if_exists else None
         if cached is not None:

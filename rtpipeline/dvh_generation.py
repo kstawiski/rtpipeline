@@ -673,7 +673,8 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
             previous = read_attempt(attempt_path, "DVH_ATTEMPT_CORRUPT",
                                     failure_fields={"binding": expected.as_dict()})
             if previous.get("binding") == expected.as_dict():
-                if previous.get("state") == "failed" and not retry_failed:
+                if (previous.get("state") == "failed" and not retry_failed
+                        and previous.get("reason_code") != "DVH_GOVERNED_REFUSAL"):
                     raise DurableProgressError("DVH_FAILED_RETRY_REQUIRES_EXPLICIT_RULE")
                 if previous.get("state") == "started":
                     _event(journal, "interrupted", reason_code="DVH_INTERRUPTED", attempt_id=previous.get("attempt_id"))
@@ -696,6 +697,27 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                     compute()
                 if binding(course, settings, custom_config, _include_derived=False) != source_expected:
                     raise DurableProgressError("DVH_BINDING_CHANGED_DURING_ATTEMPT")
+                qc_path = destination / "metadata/dvh_qc.json"
+                qc = _read(qc_path)
+                if not (destination / "dvh_metrics.parquet").exists() and qc.get("status") == "skipped":
+                    from .course_contract import load_course_contract
+                    contract = load_course_contract(course)
+                    decision = contract.data.get("dvh") or {}
+                    resolution = qc.get("dose_resolution") or {}
+                    legitimate_no_dose = (decision.get("metrics_status") == "not_computed"
+                        and decision.get("output") is None and not contract.selected_doses
+                        and contract.data.get("dose_grid") is None
+                        and resolution.get("dose_qc_pass") is True)
+                    if (not legitimate_no_dose and resolution.get("dvh") == decision
+                            and qc.get("course_contract_sha256") == file_sha256(contract.metadata_path)):
+                        from .artifact_progress import staged_file
+                        for name in ("dvh_metrics.xlsx", "dvh_metrics.parquet", "dvh_curves.json", ".dvh_done"):
+                            (course / name).unlink(missing_ok=True)
+                        with staged_file(course / "metadata/dvh_qc.json") as temporary:
+                            shutil.copyfile(qc_path, temporary)
+                        final_result_writer(attempt_path, {**attempt, "state": "failed", "reason_code": "DVH_GOVERNED_REFUSAL"})
+                        _event(journal, "refused", reason_code="DVH_GOVERNED_REFUSAL", attempt_id=identity)
+                        return None
                 _validate_products(course, destination)
                 finalized = binding(course, settings, custom_config)
                 if finalized != expected:

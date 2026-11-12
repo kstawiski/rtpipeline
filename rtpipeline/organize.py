@@ -488,7 +488,7 @@ def _safe_copy(
     with staged_file(dst) as tmp_path:
         shutil.copy2(source, tmp_path)
         if file_sha256(tmp_path) != file_sha256(src):
-            raise OSError(f"required DICOM copy did not verify: {dst}")
+            raise OSError(f"required DICOM artifact was not materialised with verified bytes at {dst}")
     if not dst.is_file() or _sop_instance_uid(dst) != expected_uid:
         dst.unlink(missing_ok=True)
         raise OSError(f"required DICOM artifact was not materialised at {dst}")
@@ -3422,6 +3422,32 @@ def _classify_doses(
     return result
 
 
+def _concurrent_components_binding(paths):
+    """Bind a declaration only to courses whose plan membership it names."""
+    value = os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "").strip()
+    if not value:
+        return None
+    path = Path(value)
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get("declarations"), list):
+            raise ValueError("invalid declaration file")
+        course_uids = {_sop_instance_uid(Path(source)) for source in paths}
+        for entry in payload["declarations"]:
+            named = entry.get("plan_sop_instance_uids") if isinstance(entry, dict) else None
+            if isinstance(named, str):
+                named = [named]
+            if isinstance(named, list) and course_uids.intersection(
+                    uid.strip() for uid in named if isinstance(uid, str)):
+                return {"path": str(path.resolve()), "sha256": hashlib.sha256(raw).hexdigest()}
+        return None
+    except (OSError, ValueError, TypeError):
+        # An unreadable declaration still changes the recorded warning. It
+        # cannot certify either a declared course or an unchanged publication.
+        return {"path": str(path.resolve()), "unreadable": True}
+
+
 def _declared_concurrent_doses(
     plan_paths: List[Path],
     dose_paths: List[Path],
@@ -5667,8 +5693,8 @@ def _convert_one_related_series(
          "activation": getattr(config, "conda_activate", None), "modality": default_modality},
         inventory(p for p in series_subdir.rglob("*") if p.is_file()), base=nifti_dir,
         code=code_files("organize.py", "segmentation.py", "nifti_provenance.py"))
-    cached = progress.load()
-    if config.resume and cached is not None:
+    cached = progress.load_with_sidecar()
+    if cached is not None:
         target = nifti_dir / cached["target"]
         write_json(target.with_name(target.name.removesuffix(".nii.gz") + ".metadata.json"), cached["sidecar"], indent=2)
         return target
@@ -5712,8 +5738,8 @@ def _convert_one_related_series(
         default_modality=default_modality,
     )
     meta_path = nifti_dir / f"{candidate}.metadata.json"
-    progress.commit_artifacts([target_path], target=target_path.name, sidecar=metadata)
     write_json(meta_path, metadata, indent=2)
+    progress.commit_artifacts([target_path, meta_path], target=target_path.name, sidecar=metadata)
     shutil.rmtree(tmp_out, ignore_errors=True)
     return target_path
 
@@ -6051,7 +6077,7 @@ def organize_and_merge(
         settings = {key: getattr(config, key, None) for key in (
             "merge_criteria", "max_days_between_plans", "max_total_dose_gy",
             "allow_ct_only_courses", "dcm2niix_cmd", "conda_activate", "planning_ct_stack_overrides")}
-        settings["concurrent_components"] = os.environ.get("RTPIPELINE_CONCURRENT_COMPONENTS", "")
+        settings["concurrent_components"] = _concurrent_components_binding(paths)
         source_bytes = inventory(paths)
         item = ArtifactItem(config.output_root / "_COURSES/.organize-progress/items",
             str(course_dir.relative_to(config.output_root)), settings, source_bytes, base=course_dir,

@@ -2805,9 +2805,6 @@ def main(argv: list[str] | None = None) -> int:
     if "radiomics" in stages:
         import os
 
-        courses = ensure_courses()
-        selected_courses = _filter_courses(courses)
-
         if args.sequential_radiomics:
             os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
             logger.info("Using sequential radiomics processing (--sequential-radiomics specified)")
@@ -2845,6 +2842,8 @@ def main(argv: list[str] | None = None) -> int:
             had_failures = True
             logger.error("Radiomics dependencies unavailable; radiomics stage failed")
         else:
+            courses = ensure_courses()
+            selected_courses = _filter_courses(courses)
             radiomics_patient_ids = sorted(
                 {
                     str(patient_id)

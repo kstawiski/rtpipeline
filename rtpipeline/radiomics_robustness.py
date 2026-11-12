@@ -3679,7 +3679,7 @@ def extract_features_for_masks(
             segmentation_source, run_identifier, source_identity)
     from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
         pack_frame, unpack_frame, restamp, code_manifest)
-    frames, failures = [], {}
+    frames, failures, declarations = [], {}, {}
     for condition, mask in masks.items():
         current_image = (perturbed_images or {}).get(condition, image)
         item = BoundItem(progress_root,
@@ -3696,7 +3696,8 @@ def extract_features_for_masks(
             extraction_config._robustness_progress_context = progress_context
             frame = _extract_features_for_masks_uncached(image, {condition: mask},
                 extraction_config, modality, structure_name, patient_id, course_id,
-                {condition: current_image}, segmentation_source, run_identifier, source_identity)
+                {condition: current_image}, segmentation_source, run_identifier, source_identity,
+                _defer_feature_validation=True)
             if not frame.attrs.get("identity_failures"):
                 item.commit(pack_frame(frame))
         else:
@@ -3704,8 +3705,12 @@ def extract_features_for_masks(
             if "run_identifier" in frame and run_identifier:
                 frame["run_identifier"] = run_identifier
         failures.update(frame.attrs.get("identity_failures", {}))
+        for pid, arm, declaration in frame.attrs.get("feature_declarations", []):
+            declarations[(pid, arm)] = declaration
+        frame.attrs.clear()
         frames.append(frame)
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    combined = _declare_not_evaluable_features(combined, declarations)
     valid = set(masks) - set(failures)
     if valid:
         _validate_extracted_feature_frame(combined, valid, structure_name,
@@ -3726,6 +3731,7 @@ def _extract_features_for_masks_uncached(
     segmentation_source: str = "Manual",
     run_identifier: Optional[str] = None,
     source_identity: Optional[RobustnessRoiIdentity] = None,
+    *, _defer_feature_validation: bool = False,
 ) -> pd.DataFrame:
     """
     Extract radiomics features for multiple mask variants.
@@ -3998,9 +4004,14 @@ def _extract_features_for_masks_uncached(
                 for row in rows
                 if str(row.get("perturbation_id", "")) not in identity_failures
             ]
-        frame = _declare_not_evaluable_features(pd.DataFrame(rows), feature_declarations)
+        frame = pd.DataFrame(rows)
+        if not _defer_feature_validation:
+            frame = _declare_not_evaluable_features(frame, feature_declarations)
+        if _defer_feature_validation:
+            frame.attrs["feature_declarations"] = [[pid, arm, declaration]
+                for (pid, arm), declaration in feature_declarations.items()]
         valid_perturbations = set(masks) - set(identity_failures)
-        if valid_perturbations:
+        if valid_perturbations and not _defer_feature_validation:
             _validate_extracted_feature_frame(
                 frame,
                 valid_perturbations,
