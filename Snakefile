@@ -139,8 +139,10 @@ def _materialize_effective_config() -> Path:
         import yaml
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(config, handle, sort_keys=False)
+        from rtpipeline.durable_progress import final_result_writer
+        payload = yaml.safe_dump(config, sort_keys=False).encode("utf-8")
+        if not target.is_file() or target.read_bytes() != payload:
+            final_result_writer(target, payload)
     except Exception as exc:
         raise RuntimeError(
             f"Cannot start rtpipeline: unable to write merged workflow "
@@ -924,7 +926,6 @@ _GENERIC_STAGE_COMPLETION_DEPENDENCIES = (
     ("segmentation", ".segmentation_done", SEGMENTATION_CONFIG_DEPENDENCY),
     ("custom_models", ".custom_models_done", CUSTOM_MODELS_CONFIG_DEPENDENCY),
     ("crop_ct", ".crop_ct_done", CROP_CT_CONFIG_DEPENDENCY),
-    ("dvh", ".dvh_done", DVH_CONFIG_DEPENDENCY),
     ("qc", ".qc_done", QC_CONFIG_DEPENDENCY),
 )
 for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPENDENCIES:
@@ -939,6 +940,20 @@ for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPEND
             f"[rtpipeline] Invalidating {_unbound_stage_sentinels} {_stage_name} "
             "completion sentinel(s) that lack configuration-bound stage evidence.\n"
         )
+
+# DVH performs a fresh per-course code/config/input check before every DAG
+# decision. Invalidate only that completion alias; preserve committed artifacts.
+if list(OUTPUT_DIR.glob("*/*/.dvh_done")) or list(OUTPUT_DIR.glob("*/*/.dvh")):
+    from rtpipeline.snakemake_delegate import invoke as _dvh_invoke, runtime_environment as _dvh_environment
+    from types import SimpleNamespace as _DvhParams
+    _dvh_arguments = ["--output-dir", str(OUTPUT_DIR), "--configfile", str(EFFECTIVE_CONFIGFILE)]
+    if CUSTOM_STRUCTURES_CONFIG:
+        _dvh_arguments += ["--custom-config", str(CUSTOM_STRUCTURES_CONFIG)]
+    _dvh_invoke(python=PYTHON_MAIN, operation="validate-dvh-resume",
+                arguments=_dvh_arguments, result_dir=LOGS_DIR / "dvh-resume",
+                env=_dvh_environment(
+                    _DvhParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE),
+                               python_bin=PYTHON_MAIN_BIN)))
 
 _existing_radiomics_sentinels = list(OUTPUT_DIR.glob("*/*/.radiomics_done"))
 _unbound_radiomics_sentinels = advance_dependency_past_unbound_outputs(

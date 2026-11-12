@@ -33,54 +33,18 @@ def _course(tmp_path: Path) -> Path:
     return course
 
 
-def test_dvh_completion_binds_content_config_code_and_environment(tmp_path: Path) -> None:
+def test_dvh_completion_cannot_certify_legacy_outputs(tmp_path: Path) -> None:
+    from rtpipeline.durable_progress import DurableProgressError
     course = _course(tmp_path)
-    qc = course / "metadata" / "dvh_qc.json"
+    qc = course / "metadata/dvh_qc.json"
     qc.parent.mkdir()
     qc.write_text('{"status":"ok"}\n', encoding="utf-8")
-    parquet = course / "dvh_metrics.parquet"
-    parquet.write_bytes(b"authoritative-dvh")
+    (course / "dvh_metrics.parquet").write_bytes(b"legacy-output")
     dependency = _dependency(tmp_path, "dvh", {"bins": [1, 2, 3]})
-
-    payload = write_stage_completion_sentinel(
-        course,
-        course / ".dvh_done",
-        stage="dvh",
-        status="ok",
-        configuration_dependency=dependency,
-    )
-
-    assert payload["schema"] == "rtpipeline-stage-completion-v1"
-    assert payload["binding_policy"] == "dvh-content-v1"
-    assert payload["configuration_dependency_sha256"]
-    assert payload["code_identity_sha256"]
-    source_paths = {entry["path"] for entry in payload["code_identity"]["sources"]}
-    assert "Snakefile" in source_paths
-    assert "workflow/scripts/run_course_stage.py" in source_paths
-    assert "dvh.py" in source_paths
-    assert payload["execution_host"]
-    assert payload["environment_fingerprint"]
-    assert {entry["role"] for entry in payload["outputs"]} == {
-        "authoritative_dvh",
-        "dvh_qc",
-    }
-    assert validate_stage_completion_sentinel(
-        course / ".dvh_done", expected_stage="dvh"
-    ) == payload
-
-    extra = course / "dvh_metrics.xlsx"
-    extra.write_bytes(b"not declared at completion")
-    with pytest.raises(ValueError, match="complete output set"):
-        validate_stage_completion_sentinel(
-            course / ".dvh_done", expected_stage="dvh"
-        )
-    extra.unlink()
-
-    parquet.write_bytes(b"mutated-authoritative-dvh")
-    with pytest.raises(ValueError, match="changed"):
-        validate_stage_completion_sentinel(
-            course / ".dvh_done", expected_stage="dvh"
-        )
+    with pytest.raises(DurableProgressError, match="DVH_GENERATION_MISSING"):
+        write_stage_completion_sentinel(course, course / ".dvh_done", stage="dvh",
+            status="ok", configuration_dependency=dependency)
+    assert not (course / ".dvh_done").exists()
 
 
 def test_organized_completion_uses_hybrid_binding(tmp_path: Path) -> None:

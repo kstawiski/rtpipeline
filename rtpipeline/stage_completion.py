@@ -182,6 +182,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("authoritative_dvh", "dvh_metrics.parquet", "content_sha256"),
             ArtifactRule("dvh_workbook", "dvh_metrics.xlsx", "content_sha256"),
             ArtifactRule("dvh_qc", "metadata/dvh_qc.json", "content_sha256"),
+            ArtifactRule("dvh_curves", "dvh_curves.json", "content_sha256"),
             ArtifactRule("custom_rtstruct", "RS_custom.dcm", "content_sha256"),
             ArtifactRule("custom_rtstruct_metadata", "metadata/rs_custom_meta.json", "content_sha256"),
         ),
@@ -577,7 +578,7 @@ def stage_completion_payload(
         from .radiomics_rasterizer import opencv_runtime_provenance
 
         runtime_provenance["opencv_runtime"] = opencv_runtime_provenance()
-    return {
+    result = {
         **({"stale_original_exports": _stale_original_exports(root, definition)}
            if definition.name == "organize" and terminal_status == "ok" else {}),
         **({"measurement_outcome": measurement_outcome} if measurement_outcome else {}),
@@ -603,6 +604,12 @@ def stage_completion_payload(
         "environment": environment,
         **runtime_provenance,
     }
+
+    if definition.name == "dvh" and terminal_status == "disabled":
+        from .dvh_generation import completion_context, disabled_binding
+        settings, custom = completion_context(configuration)
+        result["dvh_binding"] = disabled_binding(root, settings, custom).as_dict()
+    return result
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -632,7 +639,17 @@ def write_stage_completion_sentinel(
     configuration_dependency: Path,
 ) -> dict[str, Any]:
     root = Path(course_dir).resolve(strict=False)
-    destination = Path(sentinel_path).resolve(strict=False)
+    if _normalize_stage(stage) == "dvh" and status == "ok":
+        _configuration_dependency(configuration_dependency, "dvh")
+        if Path(sentinel_path).absolute() != root / ".dvh_done":
+            raise ValueError("Completion sentinel path mismatch")
+        from .dvh_generation import validate_receipt, current, _read
+        current(root)  # Never certify legacy outputs retroactively.
+        payload = _read(root / ".dvh_done")
+        return validate_receipt(root, payload)
+    candidate = Path(sentinel_path)
+    destination = (candidate.parent.resolve(strict=False) / candidate.name
+                   if _normalize_stage(stage) == "dvh" else candidate.resolve(strict=False))
     expected = root / stage_definition(stage).sentinel
     if destination != expected:
         raise ValueError(
@@ -647,7 +664,11 @@ def write_stage_completion_sentinel(
         status=status,
         configuration_dependency=configuration_dependency,
     )
-    _atomic_json(destination, payload)
+    if stage_definition(stage).name == "dvh":
+        from .durable_progress import final_result_writer
+        final_result_writer(destination, payload)
+    else:
+        _atomic_json(destination, payload)
     return validate_stage_completion_sentinel(
         destination,
         expected_stage=stage,
@@ -681,6 +702,17 @@ def validate_stage_completion_payload(
 ) -> dict[str, Any]:
     root = Path(course_dir).resolve(strict=False)
     definition = stage_definition(expected_stage)
+    if definition.name == "dvh" and payload.get("status") == "ok":
+        if (payload.get("patient_id") != (expected_patient or root.parent.name)
+                or payload.get("course_id") != (expected_course or root.name)):
+            raise ValueError("Stage completion identifies the wrong patient/course")
+        from .dvh_generation import validate_receipt
+        return validate_receipt(root, payload)
+    if definition.name == "dvh" and payload.get("status") == "disabled":
+        from .dvh_generation import completion_context, disabled_binding
+        settings, custom = completion_context(payload.get("configuration_dependency"))
+        if payload.get("dvh_binding") != disabled_binding(root, settings, custom).as_dict():
+            raise ValueError("DVH_LEGACY_UNBOUND_OR_CHANGED")
     if payload.get("schema") != STAGE_COMPLETION_SCHEMA:
         raise ValueError("Unsupported stage completion schema")
     status = str(payload.get("status") or "").strip().lower()

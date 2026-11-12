@@ -268,7 +268,8 @@ def _producer_terminal_status(path: Path) -> str:
 def main(workflow: Any) -> None:
     sentinel_path = Path(workflow.output.sentinel)
     sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-    sentinel_path.unlink(missing_ok=True)
+    if str(workflow.params.stage) != "dvh":
+        sentinel_path.unlink(missing_ok=True)
     log_path = Path(workflow.log[0])
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -283,6 +284,10 @@ def main(workflow: Any) -> None:
         status: str, returncode: int | None = None, detail: str | None = None
     ) -> None:
         try:
+            if stage_name == "dvh" and status == campaign_ledger.STATUS_OK:
+                # The durable generation owns this record; never overwrite it
+                # with a success-like wrapper observation.
+                return
             campaign_ledger.record(
                 ledger_root,
                 patient_id,
@@ -296,10 +301,9 @@ def main(workflow: Any) -> None:
                 duration_seconds=round(time.monotonic() - started_monotonic, 3),
             )
         except Exception as exc:
-            print(
-                f"[campaign-ledger] could not record {stage_name}: {exc}",
-                file=sys.stderr,
-            )
+            if stage_name == "dvh":
+                raise RuntimeError("DVH_LEDGER_WRITE_FAILED") from exc
+            print(f"[campaign-ledger] could not record {stage_name}: {exc}", file=sys.stderr)
 
     def close_course(
         detail: str,
@@ -308,6 +312,9 @@ def main(workflow: Any) -> None:
     ) -> NoReturn:
         """Close this course while allowing an explicit campaign to continue."""
 
+        if stage_name == "dvh":
+            campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name, "failed",
+                                          reason_code="DVH_CHILD_FAILED")
         record(campaign_ledger.STATUS_FAILED, returncode=returncode, detail=detail)
         print(detail, file=sys.stderr)
         if bool(getattr(workflow.params, "campaign_mode", False)):
@@ -428,6 +435,18 @@ def main(workflow: Any) -> None:
             }
         )
 
+    if stage_name == "dvh":
+        arguments = ["--course-dir", str(ledger_root / patient_id / course_id),
+                     "--configfile", str(workflow.params.configfile)]
+        if custom_structures:
+            arguments += ["--custom-config", custom_structures]
+        try:
+            launch = invoke(python=str(workflow.params.python), operation="dvh-launch-binding",
+                            arguments=arguments, result_dir=log_path.parent, env=stage_environment)
+        except Exception as exc:
+            close_course(f"DVH_BINDING_UNAVAILABLE: {exc}", returncode=127)
+        campaign_ledger.begin_attempt(ledger_root, patient_id, course_id, stage_name,
+                                      binding=launch["binding"])
     try:
         with log_path.open("w", encoding="utf-8") as log_file:
             result = subprocess.run(
@@ -493,6 +512,8 @@ def main(workflow: Any) -> None:
                 f"Stage completion validation failed for {course_dir}: {exc}"
             )
             close_course(str(error), returncode=1, strict_error=error)
+    if stage_name == "dvh":
+        campaign_ledger.finish_attempt(ledger_root, patient_id, course_id, stage_name, "committed")
     record(campaign_ledger.STATUS_OK, returncode=0)
 
 

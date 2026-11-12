@@ -216,7 +216,7 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     class FixedWorkbookTime(datetime.datetime):
         @classmethod
         def now(cls, tz=None):
-            return cls(2024, 1, 1, tzinfo=tz)
+            return cls(1980, 1, 1, tzinfo=tz)
     monkeypatch.setattr(xlsxwriter.core, 'datetime', FixedWorkbookTime)
     baseline = historical_dvh(tmp_path)
     course = fx.build_course(tmp_path, rois=fx.NO_NEAR_ZERO_ROIS, low_dose_gy=0.)
@@ -235,8 +235,13 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
         assert module.dvh_for_course(course, parallel_workers=1)
         artifacts = {name: (course/name).read_bytes() for name in
                      ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'dvh_curves.json', 'metadata/dvh_qc.json')}
-        receipt = write_stage_completion_sentinel(course, course/'.dvh_done', stage='dvh',
-                                                  status='ok', configuration_dependency=dependency)
+        if module is dvh:
+            receipt = write_stage_completion_sentinel(course, course/'.dvh_done', stage='dvh',
+                                                      status='ok', configuration_dependency=dependency)
+        else:
+            from rtpipeline.stage_completion import stage_completion_payload
+            receipt = stage_completion_payload(course, stage='dvh', status='ok',
+                                                configuration_dependency=dependency)
         for row in receipt['outputs']:
             if row['binding'] == 'content_sha256':
                 content = (course / row['path']).read_bytes()
@@ -280,7 +285,9 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
         if name.endswith('.parquet'):
             projected_table.to_parquet(buffer, index=False)
         else:
-            projected_table.to_excel(buffer, index=False)
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                writer.book.set_properties({"created": datetime.datetime(1980, 1, 1)})
+                projected_table.to_excel(writer, index=False)
         projected_new[name] = buffer.getvalue()
         assert old[name] == projected_new[name], name
 

@@ -156,17 +156,28 @@ def test_dvh_cache_rejects_changed_component_bytes(tmp_path, monkeypatch):
           'code_sources_sha256': dvh._current_dvh_measurement_code_sha256()}
     (metadata / 'dvh_qc.json').write_text(json.dumps(qc))
     workbook = tmp_path / 'dvh_metrics.xlsx'
-    workbook.write_bytes(b'cache existence fixture')
+    pd.DataFrame([row]).to_excel(workbook, index=False)
     monkeypatch.setattr(dvh, 'load_course_contract', lambda path: SimpleNamespace(
         metadata_path=contract, plan_artifact_path=None, dose_grid_path=None, selected_doses=[{"path": "contract-selected-dose-fixture"}],
         authoritative_rtstruct_path=None))
     monkeypatch.setattr(dvh, 'list_custom_model_outputs', lambda path: [])
+    from rtpipeline import dvh_generation as generation
+    from rtpipeline.durable_progress import DurableProgressError
+    published = {name: (tmp_path / name).read_bytes() for name in
+                 ('dvh_metrics.parquet', 'dvh_metrics.xlsx', 'metadata/dvh_qc.json')}
+    def compute():
+        for name, raw in published.items():
+            generation.output_path(tmp_path, name).write_bytes(raw)
+    expected = generation.binding(tmp_path, generation.effective_settings())
+    generation.run(tmp_path, generation.effective_settings(), None, compute)
     assert dvh._is_dvh_up_to_date(tmp_path, workbook)
     stat = source.stat()
     image = sitk.ReadImage(str(source)); image[1,1,1] = 0
     sitk.WriteImage(image, str(source))
     os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert not dvh._is_dvh_up_to_date(tmp_path, workbook)
+    with pytest.raises(DurableProgressError, match='DVH_MASK_PROVENANCE_INVALID'):
+        generation.current(tmp_path, expected)
 
 
 def test_d003_known_analytic_dvh():

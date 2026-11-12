@@ -288,35 +288,44 @@ def test_no_grid_closure_rejects_unbound_or_technical_skip(tmp_path, defect):
         qc['course_contract_sha256'] = file_sha256(contract_path)
     qc_path.write_text(json.dumps(qc))
     dependency = materialize_stage_dependency(tmp_path / 'config', 'dvh', {'enabled': True})
+    from rtpipeline.stage_completion import _validate_stage_specific_outcome, stage_definition
+    from rtpipeline.durable_progress import DurableProgressError
     with pytest.raises(ValueError, match='authoritative not-computed'):
+        _validate_stage_specific_outcome(course, stage_definition('dvh'), 'ok', [{'role': 'dvh_qc'}])
+    with pytest.raises(DurableProgressError, match='DVH_GENERATION_HASH_MISMATCH'):
         write_stage_completion_sentinel(course, course / '.dvh_done', stage='dvh', status='ok',
                                         configuration_dependency=dependency)
-    assert not (course / '.dvh_done').exists()
 
 
 def test_missing_or_forged_receipt_outcome_is_rejected(tmp_path):
     from course_contract_test_utils import write_minimal_course_contract
     from rtpipeline.config_dependencies import materialize_stage_dependency
     from rtpipeline.stage_completion import write_stage_completion_sentinel, validate_stage_completion_sentinel
+    from rtpipeline.durable_progress import DurableProgressError
     course = tmp_path / 'SYNTH_P' / 'SYNTH_C'
     write_minimal_course_contract(course, selected_plans=[], selected_doses=[])
     assert dvh.dvh_for_course(course) is None
     dependency = materialize_stage_dependency(tmp_path / 'config', 'dvh', {'enabled': True})
     path = course / '.dvh_done'
-    receipt = write_stage_completion_sentinel(course, path, stage='dvh', status='ok',
-                                              configuration_dependency=dependency)
-    receipt.pop('measurement_outcome')
-    path.write_text(json.dumps(receipt))
-    with pytest.raises(ValueError, match='measurement outcome'):
-        validate_stage_completion_sentinel(path, expected_stage='dvh')
+    original = path.read_bytes()
+    receipt = json.loads(original)
+    assert receipt['measurement_outcome'] == 'not_measured'
+    for forged in (None, 'computed'):
+        changed = dict(receipt)
+        if forged is None:
+            changed.pop('measurement_outcome')
+        else:
+            changed['measurement_outcome'] = forged
+        path.write_text(json.dumps(changed))
+        with pytest.raises(DurableProgressError, match='DVH_GENERATION_HASH_MISMATCH'):
+            validate_stage_completion_sentinel(path, expected_stage='dvh')
+        path.write_bytes(original)
+    assert validate_stage_completion_sentinel(path, expected_stage='dvh')['measurement_outcome'] == 'not_measured'
+    # A new filename cannot elevate an old nonmeasurement commit to measured.
     (course / 'dvh_metrics.parquet').write_bytes(b'synthetic table presence')
-    measured = write_stage_completion_sentinel(course, path, stage='dvh', status='ok',
-                                               configuration_dependency=dependency)
-    assert 'measurement_outcome' not in measured
-    measured['measurement_outcome'] = 'not_measured'
-    path.write_text(json.dumps(measured))
-    with pytest.raises(ValueError, match='measurement outcome'):
-        validate_stage_completion_sentinel(path, expected_stage='dvh')
+    with pytest.raises(DurableProgressError, match='DVH_GENERATION_HASH_MISMATCH'):
+        write_stage_completion_sentinel(course, path, stage='dvh', status='ok',
+                                        configuration_dependency=dependency)
 
 
 def test_mixed_nonmeasurement_publication_keeps_measured_values(tmp_path):

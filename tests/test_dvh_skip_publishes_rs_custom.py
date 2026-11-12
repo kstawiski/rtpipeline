@@ -161,5 +161,5 @@ def test_dose_absent_course_publishes_rs_custom_before_returning(
         lambda *args: published.append(args),
     )
 
-    assert dvh.dvh_for_course(course_dir, custom_structures_config=config) is None
+    assert dvh._compute_dvh_for_course(course_dir, custom_structures_config=config) is None
     assert published == [(course_dir, config, rs_manual)]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .radiomics_rasterizer import opencv_runtime_provenance
+from .dvh_generation import output_path, logical_path, staging
 
 import copy
 from dataclasses import dataclass
@@ -77,13 +78,10 @@ _DVH_MEASUREMENT_CODE_RESOLVED = False
 def _current_dvh_measurement_code_sha256() -> Optional[str]:
     """Digest of the modules that decide DVH numbers, or ``None`` if unreadable.
 
-    ``None`` means the identity could not be established, which is a broken
-    installation rather than a stale cache; the caller then leaves the existing
-    reuse decision alone instead of regenerating the whole cohort forever.
+    Read current source bytes on every decision. An unreadable identity cannot
+    authorize reuse.
     """
     global _DVH_MEASUREMENT_CODE_SHA256, _DVH_MEASUREMENT_CODE_RESOLVED
-    if _DVH_MEASUREMENT_CODE_RESOLVED:
-        return _DVH_MEASUREMENT_CODE_SHA256
     from .stage_completion import content_sha256, file_sha256
 
     package_root = Path(__file__).resolve().parent
@@ -1167,14 +1165,14 @@ def annotate_dvh_metrics(
             "relative_metric_status": relative_status,
             "relative_metric_reason": relative_reason,
             "rtstruct_sop_instance_uid": rtstruct_sop_instance_uid,
-            "rtstruct_path": str(rtstruct_path) if rtstruct_path else None,
+            "rtstruct_path": str(logical_path(rtstruct_path)) if rtstruct_path else None,
             "structure_provenance_type": provenance_type,
             "structure_provenance_status": provenance_status,
             "structure_provenance_reason": provenance_reason,
             "structure_provenance_path": (
                 str(structure_provenance_path)
                 if structure_provenance_path
-                else str(rtstruct_path) if rtstruct_path else None
+                else str(logical_path(rtstruct_path)) if rtstruct_path else None
             ),
             "rtstruct_provenance_status": rtstruct_provenance_status,
             "rtstruct_provenance_reason": rtstruct_provenance_reason,
@@ -2780,10 +2778,10 @@ def _write_dvh_qc(
             "reason": structure_resolution.reason,
             "plan_referenced_rtstruct_sop_instance_uids": structure_resolution.plan_referenced_rtstruct_sop_instance_uids,
             "selected_rtstruct_sop_instance_uids": structure_resolution.selected_rtstruct_sop_instance_uids,
-            "selected_rtstruct_paths": [str(source.path) for source in structure_resolution.sources],
+            "selected_rtstruct_paths": [str(logical_path(source.path)) for source in structure_resolution.sources],
             "allow_nifti_direct": structure_resolution.allow_nifti_direct,
         }
-    meta_dir = course_dir / "metadata"
+    meta_dir = output_path(course_dir, "metadata")
     meta_dir.mkdir(parents=True, exist_ok=True)
     payload["opencv_runtime"] = opencv_runtime_provenance()
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -2839,10 +2837,10 @@ def _write_dvh_skip_qc(
             "reason": structure_resolution.reason,
             "plan_referenced_rtstruct_sop_instance_uids": structure_resolution.plan_referenced_rtstruct_sop_instance_uids,
             "selected_rtstruct_sop_instance_uids": structure_resolution.selected_rtstruct_sop_instance_uids,
-            "selected_rtstruct_paths": [str(source.path) for source in structure_resolution.sources],
+            "selected_rtstruct_paths": [str(logical_path(source.path)) for source in structure_resolution.sources],
             "allow_nifti_direct": structure_resolution.allow_nifti_direct,
         }
-    meta_dir = course_dir / "metadata"
+    meta_dir = output_path(course_dir, "metadata")
     meta_dir.mkdir(parents=True, exist_ok=True)
     payload["opencv_runtime"] = opencv_runtime_provenance()
     (meta_dir / "dvh_qc.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -2851,7 +2849,7 @@ def _write_dvh_skip_qc(
 def _invalidate_dvh_outputs(course_dir: Path) -> None:
     """Remove outputs and success markers that must not survive a DVH skip."""
     for name in ("dvh_metrics.xlsx", "dvh_metrics.parquet", ".dvh_done"):
-        path = course_dir / name
+        path = output_path(course_dir, name)
         try:
             path.unlink(missing_ok=True)
         except OSError:
@@ -2886,6 +2884,11 @@ def _is_dvh_up_to_date(
     Returns True if dvh_metrics.xlsx is newer than all relevant inputs
     (RP, RD, RS files, custom model outputs), False otherwise.
     """
+    from .dvh_generation import binding, current, effective_settings
+    try:
+        current(course_dir, binding(course_dir, effective_settings(), custom_structures_config))
+    except Exception:
+        return False
     if not dvh_path.exists():
         return False
 
@@ -2965,7 +2968,7 @@ def _is_dvh_up_to_date(
             logger.info("DVH metric version is stale or missing; regenerating")
             return False
         current_code = _current_dvh_measurement_code_sha256()
-        if current_code is not None and qc_data.get("code_sources_sha256") != current_code:
+        if current_code is None or qc_data.get("code_sources_sha256") != current_code:
             logger.info(
                 "DVH output was produced by different code (recorded %s, current %s); regenerating",
                 qc_data.get("code_sources_sha256") or "unrecorded",
@@ -3072,11 +3075,10 @@ def _is_dvh_up_to_date(
                 if nii_file.stat().st_mtime > dvh_mtime:
                     logger.debug("TotalSegmentator NIfTI %s is newer than dvh_metrics.xlsx", nii_file.name)
                     return False
-                break  # Only check the first one (all generated in same batch)
 
         return True
 
-    except OSError as e:
+    except (OSError, ValueError, TypeError) as e:
         logger.debug("Failed to check DVH staleness: %s", e)
         return False
 
@@ -3317,7 +3319,7 @@ def _legacy_create_custom_structures_rtstruct(
 
         if warning_entries:
             try:
-                meta_dir = course_dir / "metadata"
+                meta_dir = output_path(course_dir, "metadata")
                 meta_dir.mkdir(parents=True, exist_ok=True)
                 flag_path = meta_dir / "custom_structure_warnings.json"
                 payload = {
@@ -3503,7 +3505,15 @@ def _compute_nifti_based_dvh(
     )
 
     # --- Compute DVH for each mask ---
+    from .dvh_generation import roi_progress, roi_key, roi_resume, commit_roi
+    from .durable_progress import DurableProgressError
+    progress = roi_progress()
+    cached_rows = roi_resume([(name, "NIFTI_Direct") for name in masks_to_compute], progress)
     for name, mask_zyx in masks_to_compute.items():
+        task = (name, "NIFTI_Direct")
+        if roi_key(task) in cached_rows:
+            results.append(copy.deepcopy(cached_rows[roi_key(task)]))
+            continue
         try:
             coverage = mask_grid_coverage(mask_zyx, grid_support_ct, ct_voxel_vol_cm3)
             dose_values = dose_ct_arr[mask_zyx]
@@ -3619,12 +3629,15 @@ def _compute_nifti_based_dvh(
                 "structure_cropped": cropped,
                 "_curve_data": curve_points,
             })
+            commit_roi(task, metrics, progress)
             results.append(metrics)
             logger.debug(
                 "NIfTI DVH: %s -> Dmean=%s Gy, Vol=%.1f cm³",
                 name, metrics["DmeanGy"], metrics["Volume (cm³)"],
             )
 
+        except DurableProgressError:
+            raise
         except Exception as exc:
             logger.debug("NIfTI DVH: Failed for %s: %s", name, exc)
 
@@ -3645,14 +3658,14 @@ def _publish_skipped_course_rs_custom(
     """
     if not custom_structures_config:
         return
-    rs_custom = course_dir / "RS_custom.dcm"
+    rs_custom = output_path(course_dir, "RS_custom.dcm")
     rs_auto = course_dir / "RS_auto.dcm"
     from .custom_structures_rtstruct import (
         _create_custom_structures_rtstruct as _create_governed_rs_custom,
         _is_rs_custom_stale as _governed_rs_custom_is_stale,
     )
 
-    if not _governed_rs_custom_is_stale(
+    if not staging() and not _governed_rs_custom_is_stale(
         rs_custom, custom_structures_config, rs_manual, rs_auto
     ):
         return
@@ -3664,7 +3677,7 @@ def _publish_skipped_course_rs_custom(
         raise RuntimeError(f"RS_custom could not be built for {course_dir}")
 
 
-def dvh_for_course(
+def _compute_dvh_for_course(
     course_dir: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
     parallel_workers: Optional[int] = None,
@@ -3703,7 +3716,7 @@ def dvh_for_course(
         contract.delivery.get("dose_response_ineligibility_reason") or ""
     ).strip()
 
-    out_xlsx = course_dir / "dvh_metrics.xlsx"
+    out_xlsx = output_path(course_dir, "dvh_metrics.xlsx")
     # Resolve and enforce the contract before cache reuse. A newly failing
     # dose-QC verdict must invalidate an older workbook.
     course_dirs = build_course_dirs(course_dir)
@@ -3730,7 +3743,7 @@ def dvh_for_course(
         )
         _invalidate_dvh_outputs(course_dir)
         if not contract.selected_doses and contract.data.get("dose_grid") is None:
-            (course_dir / "dvh_curves.json").unlink(missing_ok=True)
+            output_path(course_dir, "dvh_curves.json").unlink(missing_ok=True)
         _write_dvh_skip_qc(course_dir, dose_resolution)
         _publish_skipped_course_rs_custom(
             course_dir, custom_structures_config, rs_manual
@@ -3752,7 +3765,7 @@ def dvh_for_course(
     )
 
     # Check if DVH is already up-to-date (skip recomputation on re-runs).
-    if _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
+    if not staging() and _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
         logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
         return out_xlsx
 
@@ -3827,7 +3840,7 @@ def dvh_for_course(
 
     if rotation_metadata is not None:
         # A refused/empty rotated rebuild must not leave curves from an older run.
-        (course_dir / "dvh_curves.json").unlink(missing_ok=True)
+        output_path(course_dir, "dvh_curves.json").unlink(missing_ok=True)
 
     results: List[Dict] = []
 
@@ -3857,7 +3870,19 @@ def dvh_for_course(
         builder_cache[rs_path] = builder
         return builder
 
+    from .dvh_generation import roi_progress, roi_key, roi_resume, commit_roi
+    progress = roi_progress()
+    reused_rois = {}
+
     def _calc_roi(task: tuple) -> Optional[Dict]:
+        key = roi_key(task)
+        if key in reused_rois:
+            return copy.deepcopy(reused_rois[key])
+        row = _calculate_roi(task)
+        commit_roi(task, row, progress)
+        return row
+
+    def _calculate_roi(task: tuple) -> Optional[Dict]:
         (
             roi_number,
             roi_name,
@@ -4036,7 +4061,7 @@ def dvh_for_course(
                 "Segmentation_Source": source_label,
                 "structure_cropped": cropped,
                 "rtstruct_sop_instance_uid": rtstruct_sop_uid,
-                "rtstruct_path": str(rtstruct_path),
+                "rtstruct_path": str(logical_path(rtstruct_path)),
                 "_curve_data": curve_points, # Internal key for JSON export
             }
         )
@@ -4084,13 +4109,15 @@ def dvh_for_course(
                 geometry_rtstruct,
                 builder,
                 rs_source.sop_instance_uid,
-                rs_path,
+                logical_path(rs_path),
                 automatic_source,
             ))
 
         if not tasks:
             return
 
+        reused_rois.clear()
+        reused_rois.update(roi_resume(tasks, progress))
         if parallel_workers:
             worker_cap = max(1, parallel_workers)
         else:
@@ -4131,7 +4158,7 @@ def dvh_for_course(
         )
 
     # Use RS_custom.dcm if it exists and is up-to-date
-    rs_custom = course_dir / "RS_custom.dcm"
+    rs_custom = output_path(course_dir, "RS_custom.dcm")
 
     # Derivation uses uncropped RS_auto; measurement below may use cropped ROIs.
     _publish_skipped_course_rs_custom(course_dir, custom_structures_config, rs_manual)
@@ -4306,7 +4333,7 @@ def dvh_for_course(
     # Save curve data to JSON
     if curve_data_export:
         try:
-            json_path = course_dir / "dvh_curves.json"
+            json_path = output_path(course_dir, "dvh_curves.json")
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump({"points": curve_data_export}, f, ensure_ascii=False)
         except Exception as e:
@@ -4432,7 +4459,12 @@ def dvh_for_course(
 
     df = pd.DataFrame(clean_results)
     _insert_course_publication_key(df, course_dir)
-    df.to_excel(out_xlsx, index=False)
+    # Fix packaging metadata only; table schema, cells and DVH arithmetic are
+    # unchanged. Recomputing identical inputs produces identical workbook bytes.
+    from datetime import datetime
+    with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:
+        writer.book.set_properties({"created": datetime(1980, 1, 1)})
+        df.to_excel(writer, index=False)
     try:
         df.to_parquet(out_xlsx.with_suffix(".parquet"), index=False)
     except Exception as exc:
@@ -4467,3 +4499,20 @@ def dvh_for_course(
         dose_grid_resampling=rotation_metadata,
     )
     return out_xlsx
+
+
+def dvh_for_course(course_dir, custom_structures_config=None, parallel_workers=None,
+                   use_cropped=True, estimate_rx_from_ctv1=False, rx_dose_gy=None,
+                   max_total_dose_gy=DEFAULT_MAX_TOTAL_DOSE_GY, *, retry_failed=False):
+    """Compute or reuse one exact-bound, verified durable course generation."""
+    from .dvh_generation import run, effective_settings
+    settings = effective_settings(use_cropped, estimate_rx_from_ctv1, rx_dose_gy, max_total_dose_gy)
+    configfile = os.environ.get("RTPIPELINE_CONFIGFILE")
+    if configfile:
+        import yaml
+        configured = (yaml.safe_load(Path(configfile).read_text()) or {}).get("dvh") or {}
+        retry_failed = retry_failed or configured.get("retry_failed") is True
+    return run(Path(course_dir), settings, custom_structures_config,
+               lambda: _compute_dvh_for_course(Path(course_dir), custom_structures_config,
+                   parallel_workers, use_cropped, estimate_rx_from_ctv1, rx_dose_gy,
+                   max_total_dose_gy), retry_failed=retry_failed)

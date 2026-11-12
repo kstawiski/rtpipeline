@@ -45,6 +45,8 @@ def _validated_segmentation_content(monkeypatch: pytest.MonkeyPatch) -> None:
     original = snakemake_delegate.invoke
 
     def invoke(**kwargs):
+        if kwargs.get("operation") == "dvh-launch-binding":
+            return {"binding": dict.fromkeys(("code_sha256", "config_sha256", "inputs_sha256"), "a" * 64)}
         if kwargs.get("operation") != "assess-segmentation":
             return original(**kwargs)
         arguments = list(kwargs["arguments"])
@@ -302,6 +304,13 @@ def test_no_planning_ct_propagates_as_not_applicable(tmp_path, monkeypatch):
         },
     )
 
+    from rtpipeline.stage_completion import write_stage_completion_sentinel
+    course = Path(workflow.output.sentinel).parent
+    for stage, name, configstage in (("segmentation", ".segmentation_done", "segmentation"),
+            ("custom_models", ".custom_models_done", "custom-models"), ("crop_ct", ".crop_ct_done", "crop-ct")):
+        dependency = materialize_stage_dependency(tmp_path / "dependencies", configstage, {"test": True})
+        write_stage_completion_sentinel(course, course / name, stage=stage, status="disabled",
+                                        configuration_dependency=dependency)
     _run(workflow)
 
     import json

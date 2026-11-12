@@ -89,8 +89,9 @@ def test_mixed_publication_keeps_successful_measurements(tmp_path, monkeypatch):
         return original(rs, dose, number, **kwargs)
 
     monkeypatch.setattr(dvh.dvhcalc, 'get_dvh', fail_one)
-    monkeypatch.setattr(dvh, '_is_dvh_up_to_date', lambda *a: False)
-    assert dvh.dvh_for_course(course, parallel_workers=1)
+    # Change a bound, numerically neutral setting to exercise a fresh generation
+    # under the injected sampler failure; presence-only overrides no longer apply.
+    assert dvh.dvh_for_course(course, parallel_workers=1, use_cropped=False)
     after = pd.read_parquet(course / 'dvh_metrics.parquet')
     columns = list(before.columns)
     pd.testing.assert_frame_equal(

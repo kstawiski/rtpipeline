@@ -132,13 +132,13 @@ def _measured_course(tmp_path, monkeypatch, *, code_sources_sha256):
     return workbook
 
 
-def test_a_cache_from_the_running_code_is_reused(tmp_path, monkeypatch):
+def test_legacy_cache_without_exact_binding_is_rejected(tmp_path, monkeypatch):
     workbook = _measured_course(
         tmp_path, monkeypatch,
         code_sources_sha256=_current_dvh_measurement_code_sha256(),
     )
 
-    assert dvh_module._is_dvh_up_to_date(tmp_path, workbook)
+    assert not dvh_module._is_dvh_up_to_date(tmp_path, workbook)
 
 
 @pytest.mark.parametrize("recorded", [None, "", "0" * 64, "stale"])
@@ -150,10 +150,10 @@ def test_a_cache_from_different_code_is_regenerated(tmp_path, monkeypatch, recor
     assert not dvh_module._is_dvh_up_to_date(tmp_path, workbook)
 
 
-def test_an_unidentifiable_installation_leaves_the_cache_alone(tmp_path, monkeypatch):
-    """No identity is a broken install, not grounds to rebuild the cohort forever."""
+def test_an_unidentifiable_installation_rejects_the_cache(tmp_path, monkeypatch):
+    """An unreadable identity must never authorize reuse."""
 
     workbook = _measured_course(tmp_path, monkeypatch, code_sources_sha256=None)
     monkeypatch.setattr(dvh_module, "_current_dvh_measurement_code_sha256", lambda: None)
 
-    assert dvh_module._is_dvh_up_to_date(tmp_path, workbook)
+    assert not dvh_module._is_dvh_up_to_date(tmp_path, workbook)

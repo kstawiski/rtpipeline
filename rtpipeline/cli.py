@@ -2773,6 +2773,7 @@ def main(argv: list[str] | None = None) -> int:
                 "DVH",
                 dvh_tasks,
                 _execute_dvh_task,
+                use_processes=effective_workers > 1,
                 max_workers=effective_workers,
                 logger=logging.getLogger(__name__),
                 show_progress=True,

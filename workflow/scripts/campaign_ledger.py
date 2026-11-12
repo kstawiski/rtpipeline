@@ -248,8 +248,25 @@ def record(
         "finished_at": _utcnow(),
         "duration_seconds": duration_seconds,
     }
+    if stage == "dvh" and status != STATUS_FAILED:
+        sentinel = Path(output_dir) / patient / course / ".dvh_done"
+        if sentinel.is_file():
+            evidence = json.loads(sentinel.read_text())
+            entry.update(binding=evidence.get("dvh_binding", evidence.get("binding")),
+                         attempt_state="committed")
+    if stage == "dvh" and status == STATUS_FAILED:
+        attempt = Path(output_dir) / patient / course / ".dvh/attempt.json"
+        if attempt.is_file():
+            evidence = json.loads(attempt.read_text())
+            entry.update(binding=evidence.get("binding"), attempt_state="failed",
+                         reason_code=evidence.get("reason_code", "DVH_CHILD_FAILED"))
     target = records_dir(output_dir) / f"{_unit_key(patient, course, stage)}.json"
-    _write_atomic(target, json.dumps(entry, indent=2, sort_keys=True) + "\n")
+    if stage == "dvh":
+        from rtpipeline.durable_progress import final_result_writer
+        target.parent.mkdir(parents=True, exist_ok=True)
+        final_result_writer(target, entry)
+    else:
+        _write_atomic(target, json.dumps(entry, indent=2, sort_keys=True) + "\n")
     return target
 
 
@@ -644,6 +661,37 @@ def main(argv: list[str] | None = None) -> int:
         f"courses_with_any_failure={summary['courses_with_any_failure']}"
     )
     return 0
+
+
+def _attempt_path(output_dir, patient, course, stage):
+    return ledger_dir(output_dir) / "attempts" / (_unit_key(patient, course, stage) + ".json")
+
+
+def begin_attempt(output_dir, patient, course, stage, *, binding=None):
+    """Durable launch state; a started predecessor is interrupted, never closed."""
+    from rtpipeline.durable_progress import final_result_writer
+    path = _attempt_path(output_dir, patient, course, stage)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = json.loads(path.read_text()) if path.exists() else {}
+    entry = dict(patient=patient, course=course, stage=stage, state="started", binding=binding,
+                 attempt_number=previous.get("attempt_number", 0) + 1,
+                 previous_state=("interrupted" if previous.get("state") == "started"
+                                 else previous.get("state")),
+                 previous_reason_code=("DVH_INTERRUPTED" if previous.get("state") == "started"
+                                       else previous.get("reason_code")))
+    final_result_writer(path, entry)
+    return entry
+
+
+def finish_attempt(output_dir, patient, course, stage, state, reason_code=None):
+    from rtpipeline.durable_progress import final_result_writer
+    if state not in {"committed", "failed"}:
+        raise ValueError("unsupported attempt state")
+    path = _attempt_path(output_dir, patient, course, stage)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = json.loads(path.read_text()) if path.exists() else {}
+    final_result_writer(path, {**previous, "patient": patient, "course": course, "stage": stage,
+                               "state": state, "reason_code": reason_code})
 
 
 if __name__ == "__main__":

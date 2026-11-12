@@ -309,6 +309,16 @@ def _parser() -> argparse.ArgumentParser:
         "--mode", choices=("check", "quarantine"), required=True
     )
 
+    dvh_resume = subparsers.add_parser("validate-dvh-resume")
+    dvh_resume.add_argument("--output-dir", required=True)
+    dvh_resume.add_argument("--configfile", required=True)
+    dvh_resume.add_argument("--custom-config")
+
+    dvh_binding = subparsers.add_parser("dvh-launch-binding")
+    dvh_binding.add_argument("--course-dir", required=True)
+    dvh_binding.add_argument("--configfile", required=True)
+    dvh_binding.add_argument("--custom-config")
+
     segmentation = subparsers.add_parser("assess-segmentation")
     segmentation.add_argument("--course-dir", required=True)
 
@@ -346,6 +356,12 @@ def main(argv: list[str] | None = None) -> int:
             payload = _validate_organize(
                 Path(args.output_dir), quarantine_invalid=args.mode == "quarantine"
             )
+        elif operation == "validate-dvh-resume":
+            from .dvh_generation import preflight
+            payload = preflight(Path(args.output_dir), Path(args.configfile), args.custom_config)
+        elif operation == "dvh-launch-binding":
+            from .dvh_generation import launch_binding
+            payload = launch_binding(Path(args.course_dir), Path(args.configfile), args.custom_config)
         elif operation == "assess-segmentation":
             payload = _assess_segmentation(Path(args.course_dir))
         elif operation == "publish-radiomics-completion":

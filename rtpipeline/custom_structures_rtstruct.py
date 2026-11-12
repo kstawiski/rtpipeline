@@ -13,6 +13,7 @@ from __future__ import annotations
 from .radiomics_rasterizer import opencv_runtime_provenance
 
 import fcntl
+from .dvh_generation import output_path, staging
 import hashlib
 import json
 import logging
@@ -58,13 +59,9 @@ _RS_CUSTOM_GENERATOR_RESOLVED = False
 def rs_custom_generator_sha256() -> Optional[str]:
     """Digest of the modules that decide RS_custom.dcm, or None if unreadable.
 
-    None means the identity could not be established -- a broken installation,
-    not a stale publication -- so the caller leaves the existing reuse decision
-    to the checks that surround it.
+    Identity is read afresh for every decision. None fails closed at reuse.
     """
     global _RS_CUSTOM_GENERATOR_SHA256, _RS_CUSTOM_GENERATOR_RESOLVED
-    if _RS_CUSTOM_GENERATOR_RESOLVED:
-        return _RS_CUSTOM_GENERATOR_SHA256
     from .stage_completion import content_sha256, file_sha256
 
     package_root = Path(__file__).resolve().parent
@@ -122,8 +119,8 @@ def load_rs_custom_outcomes(course_dir: Path) -> Dict[str, Dict[str, object]]:
     """Load per-ROI custom-stage outcomes bound to the published RTSTRUCT."""
 
     course_dir = Path(course_dir)
-    rs_custom = course_dir / "RS_custom.dcm"
-    metadata_path = course_dir / "metadata" / "rs_custom_meta.json"
+    rs_custom = output_path(course_dir, "RS_custom.dcm")
+    metadata_path = output_path(course_dir, "metadata/rs_custom_meta.json")
     if not rs_custom.is_file() or not metadata_path.is_file():
         return {}
     try:
@@ -579,6 +576,8 @@ def _is_rs_custom_stale(
                 )
                 return True
             if not allow_contractless:
+                if recorded.get("binding") != _custom_binding(course_dir, config_path, rs_manual, rs_auto).as_dict():
+                    return True
                 runtime = recorded.get("opencv_runtime")
                 if not isinstance(runtime, dict) or runtime.get("opencv_version") != "5.0.0":
                     logger.warning("RS_custom lacks the main-runtime OpenCV 5.0.0 builder identity: %s", course_dir)
@@ -592,7 +591,7 @@ def _is_rs_custom_stale(
                     logger.info("RS_custom generator epoch missing/unsupported in %s; regenerating", course_dir)
                     return True
                 current_generator = rs_custom_generator_sha256()
-                if current_generator is not None and recorded.get(
+                if current_generator is None or recorded.get(
                     "generator_code_sha256"
                 ) != current_generator:
                     logger.info(
@@ -1150,7 +1149,7 @@ def _create_custom_structures_rtstruct_unlocked(
 
         if warning_entries:
             try:
-                meta_dir = course_dir / "metadata"
+                meta_dir = output_path(course_dir, "metadata")
                 meta_dir.mkdir(parents=True, exist_ok=True)
                 flag_path = meta_dir / "custom_structure_warnings.json"
                 payload = {
@@ -1162,12 +1161,12 @@ def _create_custom_structures_rtstruct_unlocked(
                 logger.warning("Failed to record custom structure warnings: %s", exc)
         else:
             try:
-                flag_path = course_dir / "metadata" / "custom_structure_warnings.json"
+                flag_path = output_path(course_dir, "metadata/custom_structure_warnings.json")
                 flag_path.unlink(missing_ok=True)
             except Exception:
                 pass
 
-        out_path = course_dir / "RS_custom.dcm"
+        out_path = output_path(course_dir, "RS_custom.dcm")
         _assert_unique_roi_numbers(rtstruct.ds, f"RS_custom before save for {course_dir}")
         # rt-utils add_roi places mask slices on a uniform grid; on a CT with
         # mixed slice spacing the added contours miss the planes they reference
@@ -1201,7 +1200,7 @@ def _create_custom_structures_rtstruct_unlocked(
 
         # Record generator metadata to enable safe/stable staleness checks.
         try:
-            meta_dir = course_dir / "metadata"
+            meta_dir = output_path(course_dir, "metadata")
             meta_dir.mkdir(parents=True, exist_ok=True)
             published_dataset = pydicom.dcmread(str(out_path), stop_before_pixels=True)
             config_sha256 = ""
@@ -1211,6 +1210,7 @@ def _create_custom_structures_rtstruct_unlocked(
                 "opencv_runtime": opencv_runtime_provenance(),
                 "version": _RS_CUSTOM_META_VERSION,
                 "generator_code_sha256": rs_custom_generator_sha256(),
+                "binding": _custom_binding(course_dir, config_path, provided_manual, provided_auto).as_dict(),
                 "base_source": base_source,
                 "parent_sop_instance_uid": str(published_dataset.PredecessorStructureSetSequence[0].ReferencedSOPInstanceUID),
                 "rs_custom_sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
@@ -1232,7 +1232,7 @@ def _create_custom_structures_rtstruct_unlocked(
             }
             (meta_dir / "rs_custom_meta.json").write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
         except Exception as exc:
-            logger.debug("Failed writing rs_custom_meta.json for %s: %s", course_dir, exc)
+            raise RuntimeError("RS_CUSTOM_METADATA_WRITE_FAILED") from exc
         try:
             from .segmentation import record_segmentation_resume_decision
 
@@ -1285,8 +1285,19 @@ def _create_custom_structures_rtstruct(
     lock_path = lock_dir / ".rs_custom.lock"
     with lock_path.open("a+b") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        out_path = course_dir / "RS_custom.dcm"
-        if out_path.is_file() and not _is_rs_custom_stale(
+        out_path = output_path(course_dir, "RS_custom.dcm")
+        existing = course_dir / "RS_custom.dcm"
+        if staging() and existing.is_file() and not _is_rs_custom_stale(
+                existing, config_path, rs_manual, rs_auto):
+            import shutil
+            for name in ("RS_custom.dcm", "metadata/rs_custom_meta.json", "metadata/custom_structure_warnings.json"):
+                source = course_dir / name
+                if source.is_file():
+                    destination = output_path(course_dir, name)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, destination)
+            return out_path
+        if not staging() and out_path.is_file() and not _is_rs_custom_stale(
             out_path,
             config_path,
             rs_manual,
@@ -1307,3 +1318,20 @@ def _create_custom_structures_rtstruct(
             rs_manual,
             rs_auto,
         )
+
+
+
+def _custom_binding(course_dir, config_path, rs_manual=None, rs_auto=None):
+    from .dvh_generation import binding
+    contract = load_course_contract(course_dir)
+    sources = {}
+    for name, path in (("manual", contract.authoritative_rtstruct_path),
+                       ("provided_manual", rs_manual), ("provided_auto", rs_auto),
+                       ("planning_ct_nifti", getattr(contract, "planning_ct_nifti", None))):
+        if path and Path(path).is_file():
+            sources[name] = Path(path)
+    if contract.planning_ct_dir:
+        ct = Path(contract.planning_ct_dir)
+        sources.update(("planning_ct/" + path.relative_to(ct).as_posix(), path)
+                       for path in sorted(ct.rglob("*")) if path.is_file() and path.suffix != ".age")
+    return binding(course_dir, {}, config_path, custom_only=True, extra_inputs=sorted(sources.items()))
