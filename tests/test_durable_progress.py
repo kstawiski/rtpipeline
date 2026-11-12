@@ -1,0 +1,588 @@
+"""Synthetic durable I/O tests; no clinical fixtures, network or pipeline calls."""
+from dataclasses import replace
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+from rtpipeline import durable_progress as dp
+
+ROOT = Path(__file__).resolve().parents[1]
+BINDING = dp.Binding("a" * 64, "b" * 64, "c" * 64)
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    def refused(*args, **kwargs):
+        raise AssertionError("network forbidden in synthetic durable progress tests")
+    for name in ("socket", "create_connection", "getaddrinfo"):
+        monkeypatch.setattr(socket, name, refused)
+
+
+@pytest.fixture(autouse=True)
+def remove_synthetic_outputs(tmp_path):
+    yield
+    shutil.rmtree(tmp_path)
+
+
+def child_code(code):
+    # Children are isolated, dependency-free interpreters with no bytecode writes.
+    # They may only import the package and operate on the passed synthetic paths.
+    return ("import sys\nsys.path.insert(0, " + repr(str(ROOT)) + ")\n"
+            "def boundary(event, args):\n"
+            "    if event.startswith('socket.'):\n"
+            "        raise RuntimeError('NETWORK_FORBIDDEN')\n"
+            "sys.addaudithook(boundary)\n" + code)
+
+
+def run_child(code):
+    result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
+                            capture_output=True, text=True, timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def transaction(cache):
+    directories = list(cache.root.iterdir())
+    assert len(directories) == 1
+    return directories[0]
+
+
+def test_journal_round_trip_readback_reopen_and_fsync(tmp_path, monkeypatch):
+    path = tmp_path / "progress.jsonl"
+    syncs = []
+    real = os.fsync
+    def synced(fd):
+        syncs.append(fd)
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", synced)
+    with dp.ProgressJournal(path) as journal:
+        syncs.clear()
+        first = journal.append({"item": "SYNTH_A", "value": "Łódź"})
+        second = journal.append({"item": "SYNTH_B", "value": 2})
+        assert len(syncs) == 2
+        assert dp.ProgressJournal.read(path).records == [first, second]
+    with dp.ProgressJournal(path) as journal:
+        third = journal.append({"event": "done"})
+    read = dp.ProgressJournal.read(path)
+    assert read.records == [first, second, third]
+    assert read.report == {"records": 3, "truncated_last_line": 0}
+    assert [row["sequence"] for row in read.records] == [1, 2, 3]
+    for row in read.records:
+        assert row["schema_version"] == 1 and row["utc"].endswith("Z")
+        body = {key: value for key, value in row.items() if key != "sha256"}
+        assert row["sha256"] == hashlib.sha256(dp._json(body)).hexdigest()
+
+
+@pytest.mark.parametrize("tail", [b'{"body":', b'{"complete_but_no_newline":true}'])
+def test_truncated_last_line_is_reported_and_append_refused(tmp_path, tail):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        committed = journal.append({"item": "SYNTH_A"})
+    with path.open("ab") as stream:
+        stream.write(tail)
+    before = path.read_bytes()
+    read = dp.ProgressJournal.read(path)
+    assert read.records == [committed]
+    assert read.report == {"records": 1, "truncated_last_line": 1}
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_JOURNAL_TRUNCATED"):
+        dp.ProgressJournal(path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["hash", "sequence", "schema", "json", "duplicate", "utc", "nested"])
+def test_complete_corrupt_journal_line_is_never_accepted(tmp_path, fault):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        row = journal.append({"value": 1})
+    if fault == "hash":
+        row["body"]["value"] = 9
+    elif fault == "sequence":
+        row["sequence"] = 2
+    elif fault == "schema":
+        row["schema_version"] = True
+    elif fault == "utc":
+        row["utc"] = "yesterday"
+    if fault not in {"hash", "json", "duplicate"}:
+        row["sha256"] = dp._sha(dp._json({k: v for k, v in row.items() if k != "sha256"}))
+    raw = dp._json(row)
+    if fault == "json":
+        raw = b"not JSON"
+    elif fault == "duplicate":
+        raw = raw[:-1] + b',"sequence":1}'
+    elif fault == "nested":
+        raw = b"[" * 2000 + b"0" + b"]" * 2000
+    path.write_bytes(raw + b"\n")
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_JOURNAL_CORRUPT"):
+        dp.ProgressJournal.read(path)
+
+
+def test_cache_roundtrip_two_phase_and_readback(tmp_path, monkeypatch):
+    cache = dp.ResultCache(tmp_path / "cache")
+    real = dp._atomic_write
+    phases = []
+    def write(path, raw):
+        phases.append(path.name)
+        if path.name == "commit.json":
+            assert (path.parent / "payload.json").read_bytes() == dp._json({"value": 42})
+            assert cache.load_valid(BINDING).report["incomplete"] == 1
+        return real(path, raw)
+    monkeypatch.setattr(dp, "_atomic_write", write)
+    marker = cache.put("SYNTH_A", {"value": 42}, BINDING)
+    directory = transaction(cache)
+    assert phases == ["payload.json", "commit.json"]
+    payload = (directory / "payload.json").read_bytes()
+    assert json.loads(payload) == {"value": 42}
+    assert json.loads((directory / "commit.json").read_bytes()) == marker
+    assert marker["payload_sha256"] == hashlib.sha256(payload).hexdigest()
+    loaded = dp.ResultCache(cache.root).load_valid(BINDING.as_dict())
+    assert loaded.entries == {"SYNTH_A": {"value": 42}}
+    assert loaded.report == {"total": 1, "valid": 1, "stale": 0, "incomplete": 0,
+                             "corrupt": 0, "conflict": 0}
+
+
+@pytest.mark.parametrize("field", ["code_sha256", "config_sha256", "inputs_sha256"])
+def test_changed_binding_is_stale_and_retained(tmp_path, field):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", [1, 2], BINDING)
+    changed = replace(BINDING, **{field: "d" * 64})
+    read = cache.load_valid(changed)
+    assert read.entries == {} and read.report["stale"] == 1
+    assert cache.load_valid(BINDING).entries == {"SYNTH_A": [1, 2]}
+    assert (transaction(cache) / "commit.json").exists()
+
+
+@pytest.mark.parametrize("fault", ["payload", "marker", "identity", "duplicate", "nonfinite", "nested"])
+def test_corrupt_cache_excluded_without_deletion(tmp_path, fault):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", {"value": 1}, BINDING)
+    directory = transaction(cache)
+    marker_path = directory / "commit.json"
+    if fault == "payload":
+        (directory / "payload.json").write_bytes(b'{"value":2}')
+    elif fault == "marker":
+        marker_path.write_bytes(b"broken")
+    elif fault == "nested":
+        marker_path.write_bytes(b"[" * 2000 + b"0" + b"]" * 2000)
+    elif fault == "identity":
+        marker = json.loads(marker_path.read_bytes())
+        marker["item_key"] = "SYNTH_B"
+        marker_path.write_bytes(dp._json(marker))
+    elif fault == "duplicate":
+        raw = marker_path.read_bytes().rstrip()
+        marker_path.write_bytes(raw[:-1] + b',"schema_version":1}')
+    elif fault == "nonfinite":
+        raw = b'{"value":NaN}'
+        (directory / "payload.json").write_bytes(raw)
+        marker = json.loads(marker_path.read_bytes())
+        marker["payload_sha256"] = dp._sha(raw)
+        marker_path.write_bytes(dp._json(marker))
+    read = cache.load_valid(BINDING)
+    assert read.entries == {} and read.report["corrupt"] == 1
+    assert directory.exists() and marker_path.exists()
+
+
+@pytest.mark.parametrize("missing", ["commit.json", "payload.json"])
+def test_incomplete_entry_excluded_and_retained(tmp_path, missing):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", 1, BINDING)
+    directory = transaction(cache)
+    (directory / missing).unlink()
+    read = cache.load_valid(BINDING)
+    assert read.entries == {} and read.report["incomplete"] == 1
+    assert directory.exists()
+
+
+def test_exact_code_bytes_config_and_frozen_inputs_bind(tmp_path):
+    first, helper = tmp_path / "checker.py", tmp_path / "helper.py"
+    first.write_bytes(b"# exact bytes\r\nvalue = 1\n")
+    helper.write_bytes(b"helper = 2\n")
+    files = {"checker.py": first, "helper.py": helper}
+    config, inputs = {"gate": 3}, {"SYNTH_A": "frozen-hash"}
+    initial = dp.make_binding(files, config, inputs)
+    assert initial == dp.make_binding(dict(reversed(list(files.items()))), config, inputs)
+    first.write_bytes(first.read_bytes() + b"# comment\n")
+    assert dp.make_binding(files, config, inputs).code_sha256 != initial.code_sha256
+    first.write_bytes(b"# exact bytes\r\nvalue = 1\n")
+    helper.write_bytes(b"helper = 2\n ")
+    assert dp.make_binding(files, config, inputs).code_sha256 != initial.code_sha256
+    assert dp.make_binding(files, {"gate": 4}, inputs).config_sha256 != initial.config_sha256
+    assert dp.make_binding(files, config, {"SYNTH_A": "changed"}).inputs_sha256 != initial.inputs_sha256
+    assert dp.make_binding(files, b"a\r\n", b"manifest").config_sha256 == dp._sha(b"a\r\n")
+    assert dp.file_sha256(first) == hashlib.sha256(first.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("binding", [{}, {**BINDING.as_dict(), "extra": 1},
+                                    {**BINDING.as_dict(), "code_sha256": "branch-name"}])
+def test_invalid_binding_is_refused(tmp_path, binding):
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_INVALID_BINDING"):
+        dp.ResultCache(tmp_path / "cache").load_valid(binding)
+
+
+def test_resume_partitions_requested_items_and_counts_only(tmp_path):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_B", 2, BINDING)
+    cache.put("UNREQUESTED", 99, BINDING)
+    reuse, compute, report = dp.resume_plan(["SYNTH_A", "SYNTH_B", "SYNTH_C"], cache, BINDING)
+    assert reuse == {"SYNTH_B": 2} and compute == ["SYNTH_A", "SYNTH_C"]
+    assert (report["items"], report["reuse"], report["compute"]) == (3, 1, 2)
+    assert all(type(value) is int for value in report.values())
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_INVALID_ITEMS"):
+        dp.resume_plan(["SYNTH_A", "SYNTH_A"], cache, BINDING)
+
+
+def test_conflicting_commits_excluded_and_duplicates_counted(tmp_path):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", 1, BINDING)
+    cache.put("SYNTH_A", 1, BINDING)
+    read = cache.load_valid(BINDING)
+    assert read.entries == {"SYNTH_A": 1} and read.report["valid"] == 2
+    cache.put("SYNTH_A", 2, BINDING)
+    read = cache.load_valid(BINDING)
+    assert read.entries == {} and read.report["conflict"] == 3
+    assert read.report["valid"] == 0 and len(list(cache.root.iterdir())) == 3
+
+
+def test_seal_runs_before_disk_write_and_hashes_stored_bytes(tmp_path):
+    cache = dp.ResultCache(tmp_path / "cache", seal=lambda raw: b"SYNTHETIC-SEALED:" + raw[::-1])
+    marker = cache.put("SYNTH_A", {"value": 1}, BINDING)
+    directory = transaction(cache)
+    assert not (directory / "payload.json").exists()
+    sealed = (directory / "payload.age").read_bytes()  # synthetic bytes only
+    assert marker["sealed"] is True and marker["payload_sha256"] == dp._sha(sealed)
+    assert cache.load_valid(BINDING).entries == {"SYNTH_A": sealed}
+    reader = dp.ResultCache(cache.root, unseal=lambda raw: raw.split(b":", 1)[1][::-1])
+    assert reader.load_valid(BINDING).entries == {"SYNTH_A": {"value": 1}}
+
+
+@pytest.mark.parametrize("committed", [0, 7, 19])
+@pytest.mark.skipif(os.name != "posix", reason="SIGKILL test requires POSIX")
+def test_sigkill_and_resume_reuses_exact_committed_items(tmp_path, committed):
+    root = tmp_path / "cache"
+    journal = tmp_path / "journal"
+    code = f"""
+import json, time
+from rtpipeline.durable_progress import Binding, GuardSafeSink, ResultCache
+binding = Binding(**{BINDING.as_dict()!r})
+with GuardSafeSink({str(journal)!r}, cache=ResultCache({str(root)!r})) as sink:
+    for index in range({committed}):
+        sink.store(f'SYNTH_{{index:02}}', {{'square': index * index}}, binding)
+        print('COMMITTED', flush=True)
+    print('READY', flush=True)
+    time.sleep(30)
+"""
+    process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            for expected in [b"COMMITTED"] * committed + [b"READY"]:
+                assert selector.select(10), "computing child stopped acknowledging commits"
+                assert process.stdout.readline().strip() == expected
+        process.kill()
+        assert process.wait(timeout=10) == -signal.SIGKILL
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        process.stdout.close()
+        process.stderr.close()
+    items = [f"SYNTH_{index:02}" for index in range(20)]
+    cache = dp.ResultCache(root)
+    reuse, compute, report = dp.resume_plan(items, cache, BINDING)
+    assert list(reuse) == items[:committed]
+    assert compute == items[committed:]
+    assert report["reuse"] == committed and report["compute"] == 20 - committed
+    with dp.GuardSafeSink(journal, cache=cache) as sink:
+        for item in compute:
+            index = int(item.rsplit("_", 1)[1])
+            sink.store(item, {"square": index * index}, BINDING)
+    expected = {item: {"square": index * index} for index, item in enumerate(items)}
+    uninterrupted = dp.ResultCache(tmp_path / "uninterrupted")
+    for item, result in expected.items():
+        uninterrupted.put(item, result, BINDING)
+    assert cache.load_valid(BINDING).entries == uninterrupted.load_valid(BINDING).entries == expected
+    assert dp.ProgressJournal.read(journal).report == {"records": 20, "truncated_last_line": 0}
+    final = tmp_path / "final.json"
+    assert dp.final_result_writer(final, expected)["verified"] is True
+    assert json.loads(final.read_bytes()) == expected
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGKILL test requires POSIX")
+def test_writer_drains_complete_queued_requests_after_computing_sigkill(tmp_path):
+    journal = tmp_path / "journal"
+    code = f"""
+import time
+from rtpipeline.durable_progress import GuardSafeSink, _json, _write_all
+sink = GuardSafeSink({str(journal)!r})
+requests = b''.join(_json({{'op': 'journal', 'record': {{'index': i}}}}) + b'\\n' for i in range(12))
+_write_all(sink._process.stdin, requests)
+print('QUEUED', flush=True)
+time.sleep(30)
+"""
+    process = subprocess.Popen([sys.executable, "-I", "-S", "-B", "-c", child_code(code)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(10)
+        assert process.stdout.readline().strip() == "QUEUED"
+        process.kill()
+        process.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            read = dp.ProgressJournal.read(journal)
+            if read.report["records"] == 12:
+                break
+            time.sleep(0.02)
+        assert [row["body"]["index"] for row in read.records] == list(range(12))
+        assert read.report["truncated_last_line"] == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        process.stdout.close()
+        process.stderr.close()
+
+
+GUARD = '''
+import os, stat, sys
+class Refusal(Exception):
+    pass
+def require(ok, code):
+    if not ok:
+        raise Refusal(code)
+def read_only_guard():
+    def audit(event, args):
+        if event == 'open':
+            mode, flags = args[1:3]
+            null_sink = args[0] == '/dev/null' and stat.S_ISCHR(os.stat('/dev/null').st_mode) and os.stat('/dev/null').st_rdev == os.makedev(1,3)
+            pipe = isinstance(args[0], int) and stat.S_ISFIFO(os.fstat(args[0]).st_mode)
+            require(pipe or null_sink or not (isinstance(mode, str) and any(x in mode for x in 'wax+')), 'READ_ONLY_VIOLATION')
+            require(pipe or null_sink or not (isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)), 'READ_ONLY_VIOLATION')
+        if event in {'os.remove', 'os.rename', 'os.mkdir', 'os.rmdir', 'os.chmod', 'os.utime', 'os.link', 'os.symlink', 'os.truncate'}:
+            raise Refusal('READ_ONLY_VIOLATION')
+    sys.addaudithook(audit)
+'''
+
+
+@pytest.mark.skipif(os.name != "posix", reason="checker audit semantics are POSIX")
+def test_read_only_guard_persists_journal_cache_and_verified_final(tmp_path):
+    code = GUARD + f'''
+from pathlib import Path
+from rtpipeline.durable_progress import Binding, GuardSafeSink, ResultCache, final_result_writer
+root = Path({str(tmp_path)!r})
+cache = ResultCache(root / 'cache')
+regular_fd = os.open(root / 'preopened', os.O_WRONLY | os.O_CREAT, 0o600)
+sink = GuardSafeSink(root / 'journal', cache=cache)
+read_only_guard()
+refused = 0
+for action in (lambda: open(root / 'refused', 'w'),
+               lambda: os.open(root / 'refused', os.O_CREAT | os.O_WRONLY),
+               lambda: open(regular_fd, 'w', closefd=False),
+               lambda: (root / 'refused-dir').mkdir()):
+    try:
+        action()
+    except Refusal:
+        refused += 1
+assert refused == 4
+with open('/dev/null', 'w') as null:
+    null.write('allowed')
+read_fd, write_fd = os.pipe()
+with open(write_fd, 'wb') as pipe:
+    pipe.write(b'allowed')
+assert os.read(read_fd, 7) == b'allowed'
+os.close(read_fd)
+os.close(regular_fd)
+sink.send({{'event': 'guard-active'}})
+sink.store('SYNTH_A', {{'value': 7}}, Binding(**{BINDING.as_dict()!r}))
+receipt = final_result_writer(root / 'final.json', {{'status': 'ok'}}, sink=sink)
+assert receipt['verified'] and receipt['bytes'] == len((root / 'final.json').read_bytes())
+sink.close()
+print('GUARD_OK')
+'''
+    assert run_child(code).strip() == "GUARD_OK"
+    assert [row["body"]["event"] for row in dp.ProgressJournal.read(tmp_path / "journal").records] == [
+        "guard-active", "cache_commit"]
+    assert dp.ResultCache(tmp_path / "cache").load_valid(BINDING).entries == {"SYNTH_A": {"value": 7}}
+    assert json.loads((tmp_path / "final.json").read_bytes()) == {"status": "ok"}
+    assert not (tmp_path / "refused").exists()
+
+
+def test_computation_exception_preserves_commits_and_failure_aggregate(tmp_path):
+    cache = dp.ResultCache(tmp_path / "cache")
+    final = tmp_path / "final.json"
+    with pytest.raises(RuntimeError, match="synthetic computation failure"):
+        with dp.GuardSafeSink(tmp_path / "journal", cache=cache) as sink:
+            try:
+                for item in ("SYNTH_A", "SYNTH_B"):
+                    sink.store(item, {"done": True}, BINDING)
+                raise RuntimeError("synthetic computation failure")
+            except RuntimeError:
+                dp.final_result_writer(final, {"status": "failed", "error_code": "SYNTHETIC_FAILURE",
+                                               "committed_items": 2}, sink=sink)
+                raise
+    assert cache.load_valid(BINDING).entries == {"SYNTH_A": {"done": True}, "SYNTH_B": {"done": True}}
+    assert json.loads(final.read_bytes()) == {"status": "failed", "error_code": "SYNTHETIC_FAILURE",
+                                            "committed_items": 2}
+    assert dp.ProgressJournal.read(tmp_path / "journal").records[-1]["body"] == {
+        "event": "exception", "exception_type": "RuntimeError"}
+
+
+@pytest.mark.parametrize("phase", ["payload", "marker"])
+def test_injected_disk_full_preserves_previous_valid_cache(tmp_path, monkeypatch, phase):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_A", {"value": 1}, BINDING)
+    original = {path: path.read_bytes() for path in cache.root.rglob("*") if path.is_file()}
+    real = dp._write_all
+    def fail(stream, raw):
+        marker = b'"payload_sha256"' in bytes(raw)
+        if marker == (phase == "marker"):
+            stream.write(raw[:3])
+            raise OSError(errno.ENOSPC, "synthetic full disk")
+        return real(stream, raw)
+    monkeypatch.setattr(dp, "_write_all", fail)
+    with pytest.raises(dp.DurableProgressError) as caught:
+        cache.put("SYNTH_A", {"value": 2}, BINDING)
+    assert caught.value.code == dp.WRITE_FAILED
+    assert {path: path.read_bytes() for path in original} == original
+    read = cache.load_valid(BINDING)
+    assert read.entries == {"SYNTH_A": {"value": 1}} and read.report["incomplete"] == 1
+
+
+@pytest.mark.parametrize("stage", ["write", "fsync", "replace"])
+def test_final_write_failure_preserves_old_aggregate(tmp_path, monkeypatch, stage):
+    path = tmp_path / "final.json"
+    dp.final_result_writer(path, {"status": "previous"})
+    before = path.read_bytes()
+    def fail(*args):
+        raise OSError(errno.ENOSPC, "synthetic full disk")
+    if stage == "write":
+        monkeypatch.setattr(dp, "_write_all", fail)
+    else:
+        monkeypatch.setattr(os, stage, fail)
+    with pytest.raises(dp.DurableProgressError) as caught:
+        dp.final_result_writer(path, {"status": "new"})
+    assert caught.value.code == dp.WRITE_FAILED and path.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_final_result_verifies_before_and_after_rename(tmp_path, monkeypatch):
+    path = tmp_path / "final"
+    path.write_bytes(b"previous")
+    def corrupt(stream, raw):
+        stream.write(b"wrong")
+    monkeypatch.setattr(dp, "_write_all", corrupt)
+    with pytest.raises(dp.DurableProgressError, match=dp.VERIFY_FAILED):
+        dp.final_result_writer(path, b"expected")
+    assert path.read_bytes() == b"previous"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_final_destination_readback_mismatch_never_reports_success(tmp_path, monkeypatch):
+    path = tmp_path / "final"
+    real = Path.read_bytes
+    def read(target):
+        return b"wrong read-back" if target == path else real(target)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    with pytest.raises(dp.DurableProgressError, match=dp.VERIFY_FAILED):
+        dp.final_result_writer(path, b"expected")
+    assert real(path) == b"expected"
+
+
+def test_sink_writer_error_propagates_fixed_code_and_bad_startup_is_reaped(tmp_path):
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_bytes(b"synthetic")
+    with pytest.raises(dp.DurableProgressError, match=dp.READ_FAILED):
+        dp.GuardSafeSink(blocked / "journal")
+    with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+        dp.GuardSafeSink(tmp_path / "missing" / "journal")
+    sink = dp.GuardSafeSink(tmp_path / "journal", cache=dp.ResultCache(blocked))
+    with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+        sink.store("SYNTH_A", 1, BINDING)
+    with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+        sink.close()
+    assert sink._process.poll() is not None
+    assert blocked.read_bytes() == b"synthetic"
+
+
+def test_sink_final_error_and_context_preserve_computation_exception(tmp_path):
+    sink = dp.GuardSafeSink(tmp_path / "journal")
+    with pytest.raises(RuntimeError, match="computation"):
+        with sink:
+            with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+                dp.final_result_writer(tmp_path / "missing" / "final", {}, sink=sink)
+            raise RuntimeError("computation")
+    assert sink._process.poll() is not None
+
+
+def test_exception_exposes_secondary_persistence_failure(tmp_path):
+    sink = dp.GuardSafeSink(tmp_path / "journal")
+    sink._process.kill()
+    sink._process.wait(timeout=10)
+    with pytest.raises(RuntimeError, match="computation") as caught:
+        with sink:
+            raise RuntimeError("computation")
+    assert caught.value.durable_progress_error.code == dp.WRITE_FAILED
+
+
+def test_journal_partial_write_poisoned_until_explicit_recovery(tmp_path, monkeypatch):
+    path = tmp_path / "journal"
+    with dp.ProgressJournal(path) as journal:
+        journal.append({"committed": True})
+        def fail(stream, raw):
+            stream.write(raw[:5])
+            raise OSError(errno.ENOSPC, "synthetic")
+        monkeypatch.setattr(dp, "_write_all", fail)
+        with pytest.raises(dp.DurableProgressError, match=dp.WRITE_FAILED):
+            journal.append({"partial": True})
+        with pytest.raises(dp.DurableProgressError, match="DURABLE_JOURNAL_CLOSED"):
+            journal.append({"must_not_follow_partial": True})
+    read = dp.ProgressJournal.read(path)
+    assert read.report == {"records": 1, "truncated_last_line": 1}
+
+
+def test_threaded_sink_serialization_and_explicit_idempotent_close(tmp_path):
+    sink = dp.GuardSafeSink(tmp_path / "journal")
+    errors = []
+    def send(index):
+        try:
+            sink.send({"index": index})
+        except Exception as error:
+            errors.append(error)
+    threads = [threading.Thread(target=send, args=(index,)) for index in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    sink.close()
+    sink.close()
+    assert not errors
+    records = dp.ProgressJournal.read(tmp_path / "journal").records
+    assert sorted(row["body"]["index"] for row in records) == list(range(12))
+    with pytest.raises(dp.DurableProgressError, match="DURABLE_SINK_CLOSED"):
+        sink.send({"closed": True})
+
+
+def test_module_import_and_writer_need_only_standard_library(tmp_path):
+    code = f'''
+from pathlib import Path
+from rtpipeline.durable_progress import GuardSafeSink
+with GuardSafeSink(Path({str(tmp_path)!r}) / 'journal') as sink:
+    sink.send({{'stdlib': True}})
+assert not any(name in sys.modules for name in ('numpy', 'pandas', 'pydicom', 'torch'))
+print('STDLIB_OK')
+'''
+    assert run_child(code).strip() == "STDLIB_OK"
