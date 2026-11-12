@@ -474,8 +474,8 @@ def test_scoped_reader_regressions_pass(runs, variant):
     assert set(zip(table.segmentation_source, table.structure)) == {
         ("Manual", "GTV1"), ("AutoRTS_total", "urinary_bladder")}
 
-    # (b) The selected ROI with a one-point item is measured. The unselected
-    # one is read by rt_utils as before and stays a tolerated failure.
+    # (b) The selected ROI is measured after withholding its one-point item.
+    # Raw unselected items retain the installed rasterizer's behavior.
     s2 = _sidecar(outputs, "S2")
     assert _dispositions(s2) == []
     assert _tolerated(s2) == ([] if int(cv2.__version__.split(".")[0]) >= 5 else

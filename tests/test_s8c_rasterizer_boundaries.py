@@ -192,6 +192,23 @@ def test_robustness_admission_rejects_unrecorded_rows_first(tmp_path, monkeypatc
 
 
 def test_workflow_orders_custom_builder_before_both_consumers():
+    import importlib.util
+    if importlib.util.find_spec("snakemake") is None:
+        import os
+        import subprocess
+        from conftest import snakemake_executable
+        executable = snakemake_executable()
+        assert executable, "the workflow runtime is required for the parser gate"
+        interpreter = Path(executable).with_name("python")
+        script = (
+            "import sys; sys.path[:0] = " + repr([str(ROOT), str(ROOT / "tests")]) + "; "
+            "from test_s8c_rasterizer_boundaries import test_workflow_orders_custom_builder_before_both_consumers as check; check()"
+        )
+        result = subprocess.run([str(interpreter), "-B", "-c", script],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "LD_LIBRARY_PATH": str(interpreter.parent.parent / "lib")})
+        assert result.returncode == 0, result.stdout + result.stderr
+        return
     from test_robustness_snakefile_parse import parse_snakefile_source
     compiled, _, _ = parse_snakefile_source((ROOT / 'Snakefile').read_text())
     tree = ast.parse(compiled)
