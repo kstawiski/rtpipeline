@@ -4123,10 +4123,14 @@ def _mr_series_fingerprint(series_root: Path) -> Dict[str, str]:
     return entries
 
 
+_MR_PROGRESS_DIRECTORIES = frozenset({'.radiomics-progress', '.radiomics_mr-progress'})
+
+
 def _mr_source_inventory(mr_root: Path) -> Dict[str, Dict[str, str]]:
     """Fingerprint every MR series directory currently under the course."""
     try:
-        series_dirs = sorted(path for path in mr_root.iterdir() if path.is_dir())
+        series_dirs = sorted(path for path in mr_root.iterdir()
+                             if path.is_dir() and path.name not in _MR_PROGRESS_DIRECTORIES)
     except OSError:
         return {}
     return {path.name: _mr_series_fingerprint(path) for path in series_dirs}
@@ -4596,7 +4600,8 @@ def radiomics_for_course_mr(
     dispositions: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
     min_voxels_limit, _ = _ct_voxel_limits(config)
-    series_dirs = sorted(path for path in mr_root.iterdir() if path.is_dir())
+    series_dirs = sorted(path for path in mr_root.iterdir()
+                         if path.is_dir() and path.name not in _MR_PROGRESS_DIRECTORIES)
     # Bind the live source bytes before anything is read, resolved or prepared,
     # so a source replaced while this course is being measured cannot publish.
     source_inventory = _mr_source_inventory(mr_root)

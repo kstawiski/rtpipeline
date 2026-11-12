@@ -854,10 +854,15 @@ def _evaluated_robustness_sources(
                     meta = json.loads((course_dir / "metadata/rs_custom_meta.json").read_text())
                     if "custom_config_sha256" not in meta:
                         raise ValueError("active custom-structure configuration is unbound in RS_custom metadata")
+                    configured = {"path": str(active.resolve()),
+                                  "sha256": _custom_configuration_digest(active)}
+                    # Preserve the historical bytes when the scientific digest
+                    # already is the whole-file digest. Label the digest only
+                    # when operational worker lines actually were excluded.
+                    if configured['sha256'] != _file_sha256(active):
+                        configured['digest_kind'] = 'custom-scientific-bytes-v1'
                     binding.update(custom_provenance=load_custom_structure_provenance(active),
-                                   custom_structures_config={"path": str(active.resolve()),
-                                       "sha256": _custom_configuration_digest(active),
-                                       "digest_kind": "custom-scientific-bytes-v1"})
+                                   custom_structures_config=configured)
                 except Exception as exc:
                     failed(source, path, exc)
             binding = _scope_custom_robustness_binding(binding, inventory, independent_custom_names)
@@ -1104,9 +1109,13 @@ def _file_sha256(path: Path) -> str:
 
 
 def _custom_configuration_digest(path, record=None):
-    if record is None or record.get("digest_kind") == "custom-scientific-bytes-v1":
-        from .config_dependencies import scientific_custom_config_sha256
-        return scientific_custom_config_sha256(path)
+    from .config_dependencies import scientific_custom_config_sha256
+    scientific = scientific_custom_config_sha256(path)
+    if (record is None or record.get("digest_kind") == "custom-scientific-bytes-v1"
+            or record.get('sha256') == scientific):
+        # An originally worker-free file needs no new serialized field to
+        # remain valid after adding only an operational worker budget.
+        return scientific
     return _file_sha256(Path(path))
 
 

@@ -652,11 +652,22 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
 
 @pytest.mark.integration
 @pytest.mark.requires_snakemake
-def test_uninterrupted_scientific_bytes_match_base(tmp_path):
+@pytest.mark.parametrize('nonmeasurement', [False, True], ids=['measured', 'with-disposition'])
+def test_uninterrupted_scientific_bytes_match_base(tmp_path, nonmeasurement):
     """Same source bytes, paths, parameters and runtimes against actual 3f94c63."""
     from io import BytesIO
     from test_dvh_durable_resume import ROOT
     pipeline = PhaseBProduction(tmp_path)
+    if nonmeasurement:
+        import pydicom
+        source = tmp_path / 'Input/struct.dcm'
+        dataset = pydicom.dcmread(source)
+        contour = dataset.ROIContourSequence[-1].ContourSequence[0]
+        contour.ContourGeometricType = 'POINT'
+        contour.NumberOfContourPoints = 1
+        contour.ContourData = [-4., -2., 5.]
+        dataset.ROIContourSequence[-1].ContourSequence = [contour]
+        dataset.save_as(source, enforce_file_format=True)
     course = pipeline.organize()
     clean = tmp_path / "organized"
     shutil.copytree(pipeline.output, clean, symlinks=True)
@@ -714,10 +725,16 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
     for name, expected in candidate_dispositions.items():
         actual = (pipeline.output / name).read_bytes()
         left, right = json.loads(expected), json.loads(actual)
+        destination = os.environ.get('WS516_EVIDENCE_DIR')
+        if destination:
+            prefix = ('with-disposition__' if nonmeasurement else '') + name.replace('/', '__')
+            Path(destination, prefix + '.candidate.json').write_bytes(expected)
+            Path(destination, prefix + '.base.json').write_bytes(actual)
         assert left.keys() == right.keys()
         changed_fields = [field for field in left if left[field] != right[field]]
         assert changed_fields == ['code_identity'], (name, changed_fields)
         assert left['rows'] == right['rows']  # Every disposition, in publication order.
+        assert bool(left['rows']) == nonmeasurement
         assert left['rows_sha256'] == right['rows_sha256']
         assert {k: v for k, v in left.items() if k != 'code_identity'} == {
             k: v for k, v in right.items() if k != 'code_identity'}
@@ -807,4 +824,4 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
             "differences_limited_to_packaging_time_and_declared_code_hash": True}
     destination = os.environ.get("WS516_EVIDENCE_DIR")
     if destination:
-        Path(destination, "base-byte-equality.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+        Path(destination, 'base-byte-equality' + ('-with-disposition' if nonmeasurement else '') + '.json').write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")

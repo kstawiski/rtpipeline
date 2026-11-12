@@ -3191,12 +3191,13 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             )
         return result
 
-    from .radiomics_conda import _mr_source_inventory, _mr_source_drift
+    from .radiomics_conda import _mr_source_inventory, _mr_source_drift, _MR_PROGRESS_DIRECTORIES
     source_inventory = _mr_source_inventory(mr_root)
     rows: List[Dict[str, object]] = []
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
-    for series_root in sorted(p for p in mr_root.iterdir() if p.is_dir()):
+    for series_root in sorted(p for p in mr_root.iterdir()
+                              if p.is_dir() and p.name not in _MR_PROGRESS_DIRECTORIES):
         nifti_dir = series_root / 'NIFTI'
         dicom_dir = series_root / 'DICOM'
         if not dicom_dir.exists():
@@ -3518,21 +3519,26 @@ def _mr_parameter_arm(normalize_override: Optional[bool]) -> str:
     return "mr_normalized" if normalize_override else "mr_native_intensity"
 
 
+def _mr_roi_item(config, image, mask, *, root, identity, source_files, provenance):
+    from .extraction_progress import BoundItem, image_identity
+    from .durable_progress import file_sha256
+    return BoundItem(root, identity,
+        {'configuration': radiomics_settings(config), 'execution': dict(provenance)},
+        {'image': image_identity(image), 'mask': image_identity(mask),
+         'sources': [{'path': str(path), 'sha256': file_sha256(path)}
+                     for path in sorted(set(source_files))]})
+
+
 def _mr_roi_features(config, image, mask, extractor, *, root, identity,
-                     source_files, provenance):
+                     source_files, provenance, item=None):
     """Commit normalized scalar features before acknowledging one MR ROI.
 
     The immutable transaction binds decoded geometry/voxels, every consumed
     source byte, configured/effective parameters, deciding code and runtime.
     Failed extraction and failed persistence never become reusable outcomes.
     """
-    from .extraction_progress import BoundItem, image_identity
-    from .durable_progress import file_sha256
-    item = BoundItem(root, identity,
-        {'configuration': radiomics_settings(config), 'execution': dict(provenance)},
-        {'image': image_identity(image), 'mask': image_identity(mask),
-         'sources': [{'path': str(path), 'sha256': file_sha256(path)}
-                     for path in sorted(set(source_files))]})
+    item = item or _mr_roi_item(config, image, mask, root=root, identity=identity,
+        source_files=source_files, provenance=provenance)
     with item.locked():
         cached = item.load()
         if cached is not None:
@@ -4283,6 +4289,23 @@ def _mr_auto_rows(
 
     label_map = dict(label_map or {})
     schema_failures: List[BaseException] = []
+    progress_root = config.output_root / series.patient_id / f'MR_{series.series_uid}' / '.radiomics-progress'
+    source_files = source.files + _mr_image_source_files(series.dir)
+    execution = {**parameter_provenance, 'rasterizer_backend': (
+        'dicom-seg/no-polygon-fill' if source.kind == 'auto_dicom_seg' else 'nifti/no-polygon-fill')}
+    items, cached_rows, missing_labels = {}, {}, []
+    for lab in labels:
+        mask = _mask_from_array_like(img, arr == lab, array_order='zyx')
+        item = _mr_roi_item(config, img, mask, root=progress_root,
+            identity={'series_uid': series.series_uid, 'source': str(source.path), 'label': lab},
+            source_files=source_files, provenance=execution)
+        items[lab] = item
+        cached = item.load()
+        if cached is None:
+            missing_labels.append(lab)
+        else:
+            cached_rows[lab] = _source_row(label_map.get(lab, f'Segment_{lab}'),
+                status='success', stable_identifier=f'total_mr_label:{lab}', measurements=cached)
 
     def _do_lab(lab: int) -> Optional[Dict[str, Any]]:
         roi = label_map.get(lab, f'Segment_{lab}')
@@ -4312,10 +4335,9 @@ def _mr_auto_rows(
                 )
             m_img = _mask_from_array_like(img, mask, array_order="zyx")
             res = _mr_roi_features(config, img, m_img, ext,
-                root=config.output_root / series.patient_id / f'MR_{series.series_uid}' / '.radiomics-progress',
+                root=progress_root,
                 identity={'series_uid': series.series_uid, 'source': str(source.path), 'label': lab},
-                source_files=source.files + _mr_image_source_files(series.dir),
-                provenance={**parameter_provenance, 'effective_parameter_hash': observed})
+                source_files=source_files, provenance=execution, item=items[lab])
             return _source_row(roi, status='success', stable_identifier=identifier,
                                measurements=res)
         except (RadiomicsFeatureTypeError, DurableProgressError) as exc:
@@ -4330,15 +4352,15 @@ def _mr_auto_rows(
 
     results = run_tasks_with_adaptive_workers(
         f"Radiomics MR (TotalSegmentator {'DICOM' if source.kind == 'auto_dicom_seg' else 'NIfTI'})",
-        labels,
+        missing_labels,
         _do_lab,
         max_workers=config.effective_workers(),
         logger=logger,
-    )
+    ) if missing_labels else []
     if schema_failures:
         raise schema_failures[0]
     unaccounted = [
-        lab for lab, rec in zip(labels, list(results) + [None] * (len(labels) - len(results)))
+        lab for lab, rec in zip(missing_labels, list(results) + [None] * (len(missing_labels) - len(results)))
         if not isinstance(rec, dict)
     ]
     if unaccounted:
@@ -4346,7 +4368,8 @@ def _mr_auto_rows(
             f"MR radiomics did not account for TotalSegmentator label(s) "
             f"{', '.join(str(lab) for lab in unaccounted)} from {source.path}"
         )
-    return [rec for rec in results if isinstance(rec, dict)]
+    completed = {**cached_rows, **dict(zip(missing_labels, results))}
+    return [completed[lab] for lab in labels]
 
 
 def _radiomics_course_identity(course: Any) -> tuple[str, str]:

@@ -278,3 +278,24 @@ def test_mr_persistence_failure_cannot_publish_optional_roi(tmp_path, monkeypatc
         radiomics.radiomics_for_mr_series(config,series)
     assert not output.exists() and not output.with_suffix('.parquet').exists()
     assert not list(output.parent.rglob('commit.json'))
+
+
+@pytest.mark.usefixtures('rasterizer_guard_stub')
+def test_mr_auto_resume_schedules_only_missing_labels(tmp_path, monkeypatch):
+    from test_mr_series_dispositions import _env
+    from test_mr_series_acceptance import _auto_source
+    from rtpipeline import radiomics
+    config,series,_,output = _env(monkeypatch,tmp_path,fail_mask_coord=(1,2,2))
+    config.resume = False  # Exercise ROI scheduling beneath the publication gate.
+    monkeypatch.setattr(radiomics,'_find_mr_manual_rs',lambda *a,**k: [])
+    _auto_source(monkeypatch,output)
+    submitted = []
+    def run(label,tasks,function,**kwargs):
+        submitted.append(list(tasks))
+        return [function(task) for task in tasks]
+    monkeypatch.setattr(radiomics,'run_tasks_with_adaptive_workers',run)
+    radiomics.radiomics_for_mr_series(config,series)
+    radiomics._extractor(config,'MR')._fail_mask_coord = None
+    radiomics.radiomics_for_mr_series(config,series)
+    radiomics.radiomics_for_mr_series(config,series)
+    assert submitted == [[1,2],[2]]
