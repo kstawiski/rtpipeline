@@ -785,8 +785,10 @@ def test_real_batch_publishes_mr_measurements_and_dispositions(tmp_path, monkeyp
     monkeypatch.setenv("RTPIPELINE_RADIOMICS_BATCH", "0")
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
 
+    calls = []
     def fake_extract(image_path, mask_path, params_file, label, large_roi):
         assert Path(image_path).exists() and Path(mask_path).exists()
+        calls.append(rc.file_sha256(Path(mask_path)))
         return {
             "original_firstorder_Mean": 12.5,
             "original_shape_VoxelVolume": 250.0,
@@ -821,11 +823,22 @@ def test_real_batch_publishes_mr_measurements_and_dispositions(tmp_path, monkeyp
     assert ledger["liver"]["reason_code"] == "extracted"
     assert ledger["spleen"]["reason_code"] == "not_computed_valid_empty_scope"
     assert ledger["kidney_left"]["reason_code"] == "failed_source_read"
-    # a checkpoint written by the real batch must not be reusable across a mask change
+    # Real tasks use bound items; an unbound Parquet checkpoint cannot authorize
+    # reuse. Successful measurements survive while typed failures stay visible.
     checkpoint = course_dir / "MR" / "radiomics_mr_checkpoint.parquet"
-    assert checkpoint.exists()
+    assert not checkpoint.exists()
+    from rtpipeline.durable_progress import Binding, ResultCache
+    markers = list((course_dir / 'MR/.radiomics_mr-progress').rglob('commit.json'))
+    assert len(markers) == 1
+    marker = json.loads(markers[0].read_text())
+    assert marker['item_key'] in ResultCache(markers[0].parent.parent).load_valid(
+        Binding(**marker['binding'])).entries
+    rc.radiomics_for_course_mr(course_dir, _Config(min_voxels=10))
+    assert len(calls) == 1
+    assert set(_published(course_dir).radiomics_course_status) == {'extracted_with_failures'}
     _write_mask(course_dir / "MR" / "mr_ok", "liver", 55)
     rc.radiomics_for_course_mr(course_dir, _Config(min_voxels=10))
+    assert len(calls) == 2 and calls[0] != calls[1]
     assert (
         _published(course_dir).set_index("roi_original_name").loc["liver", "mask_identity"]
         == rc.file_sha256(course_dir / "MR" / "mr_ok" / "Segmentation_TotalSegmentator" / "total_mr--liver.nii.gz")
