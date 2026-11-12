@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import uuid
 
 from .durable_progress import (Binding, DurableProgressError, ProgressJournal,
@@ -29,6 +30,60 @@ _UPSTREAM_RECEIPTS = (".organized", ".segmentation_done", ".custom_models_done",
 _UPSTREAM_FIELDS = ("schema", "status", "stage", "stage_name", "patient_id", "course_id",
                     "content_closure_sha256", "output_set_sha256",
                     "configuration_dependency_sha256", "code_identity_sha256", "environment_fingerprint")
+_DVH_ENVIRONMENT_PACKAGES = ("numpy", "pandas", "pydicom", "SimpleITK", "scipy",
+    "xlsxwriter", "openpyxl", "dicompyler-core", "rt-utils", "opencv-python",
+    "opencv-python-headless", "pyarrow", "nibabel", "matplotlib", "scikit-image")
+
+
+def dvh_environment_record():
+    """Numerical/publication runtime identity, independent of host and location."""
+    from .stage_completion import environment_record
+    record = environment_record(_DVH_ENVIRONMENT_PACKAGES)
+    return {"python": ".".join(record["python"].split(".")[:2]),
+            "implementation": record["implementation"], "machine": record["machine"],
+            "libc": record["libc"], "packages": record["packages"]}
+
+
+def workflow_binding_parameters(parameters):
+    """Keep DVH decisions; runtime locations have separate content identities.
+
+    Settings, custom YAML, code and course inputs are already bound by content.
+    Campaign failure handling, logging and worker budgets do not decide a
+    successful generation. Extra CLI overrides remain decisions, with file
+    arguments replaced by their bytes' identities rather than their locations.
+    """
+    result = {"stage": parameters.get("stage", "dvh"),
+              "enabled": parameters.get("enabled", True)}
+    tokens = shlex.split(parameters.get("extra_args", "") or "")
+    overrides = []
+    locations = {"--dicom-root", "--outdir", "--logs", "--max-workers"}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        option, equals, value = token.partition("=")
+        if option in locations:
+            if not equals:
+                index += 1
+                if index >= len(tokens):
+                    raise ValueError("missing CLI location value")
+        else:
+            # File arguments can be relative as well as absolute. The CLI
+            # resolves these in the same working directory as the binding.
+            if option in {"--custom-structures", "--manifest"}:
+                if not equals:
+                    index += 1
+                    value = tokens[index]
+                overrides.append({"option": option, "sha256": file_sha256(value)})
+            elif equals and Path(value).is_absolute():
+                overrides.append({"option": option, "sha256": file_sha256(value)})
+            elif Path(token).is_absolute():
+                overrides.append({"sha256": file_sha256(token)})
+            else:
+                overrides.append(token)
+        index += 1
+    if overrides:
+        result["extra_args"] = overrides
+    return result
 
 
 def output_path(course, relative):
@@ -66,8 +121,7 @@ def input_manifest(course, *, include_derived=True):
     logs and the DVH generation itself are deliberately outside this inventory.
     """
     course = Path(course)
-    pending = course / ".dvh/upstream-recompute.json"
-    if pending.is_file() and any(not (course / name).is_file() for name in _read(pending)["upstream"]):
+    if any(not (course / name).is_file() for name in _pending_upstream(course)):
         raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
     files = set()
     for name in ("DICOM", "CT", "NIFTI", "Segmentation_TotalSegmentator", "Segmentation_CustomModels"):
@@ -120,7 +174,6 @@ def binding(course, settings, custom_config=None, *, custom_only=False, extra_in
             _include_derived=True):
     from .dvh import DVH_MEASUREMENT_CODE_SOURCES
     from .custom_structures_rtstruct import RS_CUSTOM_GENERATOR_CODE_SOURCES
-    from .stage_completion import environment_record
     package = Path(__file__).resolve().parent
     sources = RS_CUSTOM_GENERATOR_CODE_SOURCES if custom_only else DVH_MEASUREMENT_CODE_SOURCES
     sources = set(sources) | {"dvh_generation.py", "durable_progress.py", "radiomics_rasterizer.py",
@@ -142,11 +195,10 @@ def binding(course, settings, custom_config=None, *, custom_only=False, extra_in
             parameters = json.loads(os.environ.get("RTPIPELINE_DVH_RULE_PARAMETERS", "{}"))
             if not isinstance(parameters, dict):
                 raise ValueError("workflow parameters must be an object")
-            config["workflow_parameters"] = parameters
-        except (ValueError, TypeError) as exc:
+            config["workflow_parameters"] = workflow_binding_parameters(parameters)
+        except (OSError, ValueError, TypeError, IndexError) as exc:
             raise DurableProgressError("DVH_BINDING_UNREADABLE") from exc
-        config["environment"] = environment_record(("numpy", "pandas", "pydicom", "SimpleITK",
-            "scipy", "xlsxwriter", "openpyxl", "dicompyler-core", "rt-utils", "opencv-python", "opencv-python-headless", "pyarrow"))
+        config["environment"] = dvh_environment_record()
     try:
         inputs = input_manifest(course, include_derived=_include_derived and not custom_only)
         inputs.extend({"source": name, "sha256": file_sha256(path)} for name, path in extra_inputs)
@@ -333,6 +385,78 @@ def _event(journal, event, **fields):
     journal.append({"event": event, **fields})
 
 
+def _pending_upstream(course, journal=None):
+    """Refuse corrupt pending evidence on every read, retaining its bytes.
+
+    A hashed quarantine copy preserves evidence. Keep the original pending path
+    too: moving it away would turn a second invocation into an empty decision.
+    An unreadable file stays in place even when quarantine cannot read it.
+    """
+    path = Path(course) / ".dvh/upstream-recompute.json"
+    try:
+        pending = _read(path)
+        upstream = pending["upstream"]
+        if (not isinstance(upstream, list) or not upstream
+                or any(name not in _UPSTREAM_RECEIPTS for name in upstream)):
+            raise ValueError("invalid pending upstream inventory")
+        return upstream
+    except FileNotFoundError:
+        if not path.is_symlink():
+            return []
+        error = ValueError("dangling pending upstream link")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        error = exc
+    code = "DVH_UPSTREAM_PENDING_CORRUPT"
+    evidence = {}
+    try:
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        quarantine = path.with_name(path.name + ".corrupt-" + digest)
+        final_result_writer(quarantine, raw)
+        evidence = {"sha256": digest, "bytes": len(raw), "quarantine": quarantine.name}
+        final_result_writer(quarantine.with_name(quarantine.name + ".json"), evidence)
+    except (OSError, DurableProgressError):
+        evidence["quarantine_reason_code"] = "DVH_UPSTREAM_QUARANTINE_FAILED"
+    if journal is None:
+        with ProgressJournal.recover(path.parent / "progress.jsonl") as opened:
+            _event(opened, "upstream_pending_corrupt", reason_code=code, **evidence)
+    else:
+        _event(journal, "upstream_pending_corrupt", reason_code=code, **evidence)
+    raise DurableProgressError(code) from error
+
+
+def read_attempt(path, reason_code, *, failure_fields=None):
+    """Read attempt evidence or durably record a fixed failure before refusing."""
+    path = Path(path)
+    try:
+        attempt = _read(path)
+        if (not isinstance(attempt, dict) or "binding" not in attempt
+                or attempt.get("state") not in {"started", "failed", "committed"}
+                or type(attempt.get("attempt_number")) is not int
+                or attempt["attempt_number"] < 1):
+            raise ValueError("invalid attempt record")
+        if attempt["binding"] is not None:
+            Binding(**attempt["binding"])
+        return attempt
+    except FileNotFoundError:
+        if not path.is_symlink():
+            return {}
+        error = ValueError("dangling attempt link")
+    except (OSError, ValueError, TypeError, KeyError, DurableProgressError) as exc:
+        error = exc
+    # A damaged predecessor cannot supply an honest attempt count or binding.
+    # Start the failure projection with explicit caller-provided identities.
+    failed = {"binding": None, **(failure_fields or {}), "state": "failed",
+              "reason_code": reason_code, "attempt_number": 1}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _fsync_dir(path.parent.parent)
+        final_result_writer(path, failed)
+    except OSError as exc:
+        raise DurableProgressError("DVH_ATTEMPT_FAILURE_WRITE_FAILED") from exc
+    raise DurableProgressError(reason_code) from error
+
+
 def _upstream_requires_recompute(path):
     text = Path(path).read_text()
     # A failed course is an explicit negative outcome, not an unbound success
@@ -352,7 +476,7 @@ def route_legacy_upstream(course, journal):
     """Invalidate unbound stage receipts so their DAG producers must run again."""
     course = Path(course)
     pending = course / ".dvh/upstream-recompute.json"
-    invalid = set(_read(pending)["upstream"] if pending.is_file() else ())
+    invalid = set(_pending_upstream(course, journal))
     for name in _UPSTREAM_RECEIPTS:
         path = course / name
         if not path.is_file():
@@ -431,14 +555,16 @@ def reconcile_ledger(course, marker):
     attempt_paths = (course / ".dvh/attempt.json",
         directory.parent / "attempts" / target.name)
     accepted_bindings = [marker["binding"]]
-    if attempt_paths[0].is_file():
-        local_attempt = _read(attempt_paths[0])
-        if local_attempt.get("binding") == marker["binding"] and local_attempt.get("launch_binding"):
-            accepted_bindings.append(local_attempt["launch_binding"])
+    failure_fields = dict(binding=marker["binding"], patient=course.parent.name,
+                          course=course.name, stage="dvh")
+    local_attempt = read_attempt(attempt_paths[0], "DVH_ATTEMPT_CORRUPT",
+                                 failure_fields=failure_fields)
+    if local_attempt.get("binding") == marker["binding"] and local_attempt.get("launch_binding"):
+        accepted_bindings.append(local_attempt["launch_binding"])
     for path in attempt_paths:
-        if not path.is_file():
-            continue
-        attempt = _read(path)
+        attempt = read_attempt(path, "DVH_ATTEMPT_CORRUPT" if path == attempt_paths[0]
+                               else "DVH_LEDGER_ATTEMPT_CORRUPT",
+                               failure_fields=failure_fields)
         if attempt.get("binding") in accepted_bindings and (
                 attempt.get("state") != "committed" or attempt.get("binding") != marker["binding"]):
             final_result_writer(path, {**attempt, "binding": marker["binding"],
@@ -542,12 +668,13 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
             prepared.mkdir(exist_ok=True)
             _fsync_dir(root)
             attempt_path = root / "attempt.json"
-            previous = _read(attempt_path) if attempt_path.exists() else {}
+            previous = read_attempt(attempt_path, "DVH_ATTEMPT_CORRUPT",
+                                    failure_fields={"binding": expected.as_dict()})
             if previous.get("binding") == expected.as_dict():
                 if previous.get("state") == "failed" and not retry_failed:
                     raise DurableProgressError("DVH_FAILED_RETRY_REQUIRES_EXPLICIT_RULE")
                 if previous.get("state") == "started":
-                    _event(journal, "interrupted", reason_code="DVH_INTERRUPTED", attempt_id=previous["attempt_id"])
+                    _event(journal, "interrupted", reason_code="DVH_INTERRUPTED", attempt_id=previous.get("attempt_id"))
             identity = uuid.uuid4().hex
             attempt = dict(attempt_id=identity, binding=expected.as_dict(), state="started",
                            attempt_number=(previous.get("attempt_number", 0) + 1

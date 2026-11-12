@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .radiomics_rasterizer import opencv_runtime_provenance
-from .dvh_generation import output_path, logical_path, staging
+from .dvh_generation import output_path, logical_path, staging, effective_settings
 
 import copy
 from dataclasses import dataclass
@@ -2877,16 +2877,19 @@ def _is_dvh_up_to_date(
     course_dir: Path,
     dvh_path: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
+    *,
+    settings: Optional[Mapping[str, Any]] = None,
 ) -> bool:
     """
-    Check if DVH output is up-to-date with all input dependencies.
+    Validate the exact generation and legacy dependency checks for the caller.
 
-    Returns True if dvh_metrics.xlsx is newer than all relevant inputs
-    (RP, RD, RS files, custom model outputs), False otherwise.
+    The production generation runner owns reuse. Direct callers of the legacy
+    checker can supply the same effective settings as their computation.
     """
     from .dvh_generation import binding, current, effective_settings
     try:
-        current(course_dir, binding(course_dir, effective_settings(), custom_structures_config))
+        current(course_dir, binding(course_dir, effective_settings() if settings is None else settings,
+                                    custom_structures_config))
     except Exception:
         return False
     if not dvh_path.exists():
@@ -3765,7 +3768,10 @@ def _compute_dvh_for_course(
     )
 
     # Check if DVH is already up-to-date (skip recomputation on re-runs).
-    if not staging() and _is_dvh_up_to_date(course_dir, out_xlsx, custom_structures_config):
+    if not staging() and _is_dvh_up_to_date(
+        course_dir, out_xlsx, custom_structures_config,
+        settings=effective_settings(use_cropped, estimate_rx_from_ctv1, rx_dose_gy, max_total_dose_gy),
+    ):
         logger.info("DVH up-to-date for %s; reusing existing results", course_dir.name)
         return out_xlsx
 

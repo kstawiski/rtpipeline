@@ -970,3 +970,37 @@ assert not any(name in sys.modules for name in ('numpy', 'pandas', 'pydicom', 't
 print('STDLIB_OK')
 '''
     assert run_child(code).strip() == "STDLIB_OK"
+
+
+@pytest.mark.parametrize("error_number", [errno.EIO, errno.EACCES])
+@pytest.mark.parametrize("filename", ["payload.json", "commit.json"])
+def test_per_entry_io_error_excludes_only_that_transaction(tmp_path, monkeypatch, error_number, filename):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_BAD", {"value": 1}, BINDING)
+    bad = transaction(cache)
+    cache.put("SYNTH_GOOD", {"value": 2}, BINDING)
+    original = Path.read_bytes
+    def read(path):
+        if path == bad / filename:
+            raise OSError(error_number, "synthetic per-entry read failure")
+        return original(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", read)
+        reused, pending, report = dp.resume_plan(["SYNTH_BAD", "SYNTH_GOOD"], cache, BINDING)
+    assert reused == {"SYNTH_GOOD": {"value": 2}} and pending == ["SYNTH_BAD"]
+    assert report["cache_corrupt"] == 1 and report["cache_valid"] == 1
+    assert (bad / filename).is_file()
+    assert cache.load_valid(BINDING).report["valid"] == 2
+
+
+def test_cache_root_listing_error_keeps_fixed_read_failure(tmp_path, monkeypatch):
+    cache = dp.ResultCache(tmp_path / "cache")
+    cache.put("SYNTH_GOOD", 1, BINDING)
+    original = Path.iterdir
+    def listed(path):
+        if path == cache.root:
+            raise OSError(errno.EIO, "synthetic root listing failure")
+        return original(path)
+    monkeypatch.setattr(Path, "iterdir", listed)
+    with pytest.raises(dp.DurableProgressError, match=dp.READ_FAILED):
+        cache.load_valid(BINDING)

@@ -607,3 +607,166 @@ def test_preflight_keeps_failed_upstream_closed_without_automatic_retry(tmp_path
     assert gen.preflight(root.parents[1], config)["courses"] == []
     assert receipt.read_text() == failed
     assert not (root / ".dvh").exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["run", "preflight", "input_manifest"])
+@pytest.mark.parametrize("corruption", ['{"upstream":', '{}', '[]', '{"upstream":null}',
+                                         '{"upstream":["../outside"]}', 'io_error'])
+def test_corrupt_pending_upstream_is_quarantined_and_never_empty(tmp_path, monkeypatch, entrypoint, corruption):
+    import errno
+    import hashlib
+    root = tmp_path / "Output/SYNTH/COURSE"
+    (root / ".dvh").mkdir(parents=True)
+    pending = root / ".dvh/upstream-recompute.json"
+    raw = corruption.encode()
+    pending.write_bytes(raw)
+    config = tmp_path / "config.yaml"
+    config.write_text('{}')
+    original = Path.read_text
+    if corruption == "io_error":
+        def read(path, *args, **kwargs):
+            if path == pending:
+                raise OSError(errno.EIO, "synthetic pending read error")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", read)
+    action = {"run": lambda: gen.run(root, {}, None, lambda: pytest.fail("computed with corrupt pending")),
+              "preflight": lambda: gen.preflight(root.parents[1], config),
+              "input_manifest": lambda: gen.input_manifest(root)}[entrypoint]
+    for _ in range(2):
+        with pytest.raises(DurableProgressError, match="DVH_UPSTREAM_PENDING_CORRUPT"):
+            action()
+    assert pending.read_bytes() == raw
+    digest = hashlib.sha256(raw).hexdigest()
+    quarantine = pending.with_name(pending.name + ".corrupt-" + digest)
+    assert quarantine.read_bytes() == raw
+    evidence = json.loads(original(quarantine.with_name(quarantine.name + ".json")))
+    assert evidence["sha256"] == digest and evidence["bytes"] == len(raw)
+    assert events(root)[-1]["reason_code"] == "DVH_UPSTREAM_PENDING_CORRUPT"
+
+
+def test_unreadable_pending_stays_closed_when_quarantine_cannot_read(tmp_path, monkeypatch):
+    import errno
+    root = tmp_path / "SYNTH/COURSE"
+    (root / ".dvh").mkdir(parents=True)
+    pending = root / ".dvh/upstream-recompute.json"
+    pending.write_bytes(b"synthetic unreadable evidence")
+    for method in ("read_text", "read_bytes"):
+        original = getattr(Path, method)
+        def read(path, *args, _original=original, **kwargs):
+            if path == pending:
+                raise OSError(errno.EACCES, "synthetic unreadable pending")
+            return _original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, method, read)
+    with pytest.raises(DurableProgressError, match="DVH_UPSTREAM_PENDING_CORRUPT"):
+        gen.input_manifest(root)
+    assert pending.is_file()
+    assert events(root)[-1]["quarantine_reason_code"] == "DVH_UPSTREAM_QUARANTINE_FAILED"
+
+
+@pytest.mark.parametrize("entrypoint", ["run_without_generation", "run_with_generation", "preflight"])
+def test_corrupt_local_attempt_has_fixed_failure_projection(tmp_path, entrypoint):
+    root = course(tmp_path / "Output")
+    if entrypoint != "run_without_generation":
+        assert measure(root)
+    else:
+        (root / ".dvh").mkdir()
+    attempt = root / ".dvh/attempt.json"
+    attempt.write_text('{"state":')
+    if entrypoint == "preflight":
+        config = tmp_path / "config.yaml"
+        config.write_text('{}')
+        assert gen.preflight(root.parents[1], config)["courses"][0]["reason_code"] == "DVH_ATTEMPT_CORRUPT"
+    else:
+        with pytest.raises(DurableProgressError, match="DVH_ATTEMPT_CORRUPT"):
+            measure(root)
+    failed = json.loads(attempt.read_text())
+    assert failed["state"] == "failed" and failed["reason_code"] == "DVH_ATTEMPT_CORRUPT"
+
+
+@pytest.mark.parametrize("change", ["release", "system", "python_patch", "machine", "implementation", "python_minor", "libc", "numpy", "pyarrow"])
+def test_binding_environment_uses_only_deciding_runtime_fields(tmp_path, monkeypatch, change):
+    import copy
+    from rtpipeline import stage_completion
+    original = stage_completion.environment_record(gen._DVH_ENVIRONMENT_PACKAGES)
+    record = copy.deepcopy(original)
+    monkeypatch.setattr(stage_completion, "environment_record", lambda _: record)
+    root = tmp_path / "course"
+    root.mkdir()
+    before = gen.binding(root, gen.effective_settings())
+    if change in {"numpy", "pyarrow"}:
+        record["packages"][change] += ".changed"
+    elif change in {"python_patch", "python_minor"}:
+        parts = record["python"].split('.')
+        index = 2 if change == "python_patch" else 1
+        parts[index] = str(int(parts[index]) + 1)
+        record["python"] = '.'.join(parts)
+    else:
+        record[change] = ["other-libc", "1.0"] if change == "libc" else "other-value"
+    after = gen.binding(root, gen.effective_settings())
+    if change in {"release", "system", "python_patch"}:
+        assert after == before
+    else:
+        assert after.config_sha256 != before.config_sha256
+        assert after.code_sha256 == before.code_sha256
+    projected = gen.dvh_environment_record()
+    assert set(projected) == {"python", "implementation", "machine", "libc", "packages"}
+
+
+@pytest.mark.parametrize("field", ["python", "python_bin", "root_dir", "configfile", "dicom_root", "output_dir", "logs_dir", "custom_structures", "campaign_mode"])
+def test_binding_ignores_workflow_locations_and_campaign_policy(tmp_path, monkeypatch, field):
+    root = tmp_path / "course"
+    root.mkdir()
+    parameters = {"stage": "dvh", field: False if field == "campaign_mode" else "/old/checkout/location"}
+    monkeypatch.setenv("RTPIPELINE_DVH_RULE_PARAMETERS", json.dumps(parameters))
+    before = gen.binding(root, gen.effective_settings())
+    parameters[field] = True if field == "campaign_mode" else "/moved/checkout/location"
+    monkeypatch.setenv("RTPIPELINE_DVH_RULE_PARAMETERS", json.dumps(parameters))
+    assert gen.binding(root, gen.effective_settings()) == before
+
+
+def test_workflow_file_override_binds_content_and_deciding_override_changes(tmp_path, monkeypatch):
+    one, two = tmp_path / "one.yaml", tmp_path / "two.yaml"
+    one.write_text("structures: []")
+    two.write_bytes(one.read_bytes())
+    root = tmp_path / "course"
+    root.mkdir()
+    def bound(path, limit):
+        monkeypatch.setenv("RTPIPELINE_DVH_RULE_PARAMETERS", json.dumps({"extra_args":
+            f"--custom-structures {path} --max-total-dose-gy {limit}"}))
+        return gen.binding(root, gen.effective_settings(), path)
+    before = bound(one, 80)
+    assert bound(two, 80) == before
+    assert bound(two, 90).config_sha256 != before.config_sha256
+    two.write_text("structures: [changed]")
+    assert bound(two, 80).config_sha256 != before.config_sha256
+
+
+def test_legacy_checker_uses_explicit_nondefault_caller_settings(tmp_path, monkeypatch):
+    root = course(tmp_path)
+    assert measure(root, use_cropped=False, max_total_dose_gy=80.0)
+    settings = gen.effective_settings(use_cropped=False, max_total_dose_gy=80.0)
+    assert dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx", settings=settings)
+    assert not dvh._is_dvh_up_to_date(root, root / "dvh_metrics.xlsx")
+    monkeypatch.setattr(dvh, "staging", lambda: False)
+    def checked(course_dir, output, custom, *, settings):
+        assert settings == gen.effective_settings(False, False, 42.0, 80.0)
+        return True
+    monkeypatch.setattr(dvh, "_is_dvh_up_to_date", checked)
+    assert dvh._compute_dvh_for_course(root, use_cropped=False, rx_dose_gy=42.0,
+                                       max_total_dose_gy=80.0) == root / "dvh_metrics.xlsx"
+
+
+def test_moving_identical_checkout_preserves_the_whole_binding(tmp_path, monkeypatch):
+    import shutil
+    root = tmp_path / "course"
+    root.mkdir()
+    before = gen.binding(root, gen.effective_settings())
+    relocated = tmp_path / "moved-checkout"
+    relocated.mkdir()
+    repository = Path(gen.__file__).parent.parent
+    for name in ("rtpipeline", "workflow"):
+        shutil.copytree(repository / name, relocated / name,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(repository / "Snakefile", relocated / "Snakefile")
+    monkeypatch.setattr(gen, "__file__", str(relocated / "rtpipeline/dvh_generation.py"))
+    assert gen.binding(root, gen.effective_settings()) == before

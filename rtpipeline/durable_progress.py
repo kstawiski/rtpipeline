@@ -405,14 +405,11 @@ class ResultCache:
             directories = sorted(self.root.iterdir())
             for directory in directories:
                 counts["total"] += 1
-                if not directory.is_dir():
-                    counts["corrupt"] += 1
-                    continue
-                marker_path = directory / "commit.json"
-                if not marker_path.exists():
-                    counts["incomplete"] += 1
-                    continue
                 try:
+                    if not directory.is_dir():
+                        counts["corrupt"] += 1
+                        continue
+                    marker_path = directory / "commit.json"
                     marker = _loads(marker_path.read_bytes())
                     if not isinstance(marker, dict) or set(marker) != {
                             "schema_version", "item_key", "key_sha256", "binding", "payload_sha256", "sealed"}:
@@ -447,11 +444,11 @@ class ResultCache:
                     hashes[item] = result_hash
                     entries[item] = result
                     accepted_counts[item] = accepted_counts.get(item, 0) + 1
-                except (ValueError, TypeError, KeyError, UnicodeError, RecursionError,
-                        DurableProgressError, IsADirectoryError, NotADirectoryError):
-                    counts["corrupt"] += 1
                 except FileNotFoundError:
                     counts["incomplete"] += 1
+                except (OSError, ValueError, TypeError, KeyError, UnicodeError,
+                        RecursionError, DurableProgressError):
+                    counts["corrupt"] += 1
             for item in conflicts:
                 entries.pop(item)
                 counts["conflict"] += accepted_counts.pop(item)

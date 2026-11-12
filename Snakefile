@@ -948,7 +948,8 @@ _DVH_RULE_PARAMETERS = {
     "output_dir": str(OUTPUT_DIR), "logs_dir": str(LOGS_DIR),
     "custom_structures": CUSTOM_STRUCTURES_CONFIG,
 }
-os.environ["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(_DVH_RULE_PARAMETERS, sort_keys=True)
+os.environ["RTPIPELINE_DVH_RULE_PARAMETERS"] = json.dumps(
+    {"stage": _DVH_RULE_PARAMETERS["stage"]}, sort_keys=True)
 
 # DVH performs a fresh per-course code/config/input check before every DAG
 # decision. Invalidate only that completion alias; preserve committed artifacts.
