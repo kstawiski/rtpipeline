@@ -233,11 +233,10 @@ def copy_ct_series(
                 dst_dir,
             )
         return
-    # Purge stale contents so a corrected re-run does not inherit a prior garbage-bag CT.
-    _clear_dir(dst_dir)
     ensure_dir(dst_dir)
     # Track used indices to prevent collisions when InstanceNumber is not unique
     used_indices: set[int] = set()
+    destinations = []
     for idx, inst in enumerate(series):
         # Prefer instance_number if valid and not already used, else use enumeration index
         if inst.instance_number is not None and inst.instance_number not in used_indices:
@@ -249,6 +248,15 @@ def copy_ct_series(
                 file_idx += 1
         used_indices.add(file_idx)
         dst = dst_dir / f"CT_{file_idx:05d}.dcm"
+        destinations.append((inst, dst))
+    expected = {dst for _, dst in destinations}
+    for path in dst_dir.iterdir():
+        if path not in expected:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    for inst, dst in destinations:
         if copy_manager is not None:
             actual, _copied = copy_manager.copy_dicom(inst.path, dst, skip_if_exists=True, materialize=True)
             # SOP dedup may return a copy at a foreign path without placing a file at dst.
@@ -259,7 +267,12 @@ def copy_ct_series(
                 except OSError:
                     shutil.copy2(actual, dst)
         else:
-            shutil.copy2(inst.path, dst)
+            from .artifact_progress import staged_file
+            from .durable_progress import file_sha256
+            with staged_file(dst) as temporary:
+                shutil.copy2(inst.path, temporary)
+                if file_sha256(temporary) != file_sha256(inst.path):
+                    raise OSError(f"CT copy verification failed: {dst}")
 
 
 def pick_primary_series(series_map: Dict[str, List[CTInstance]]) -> Optional[List[CTInstance]]:

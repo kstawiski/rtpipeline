@@ -384,4 +384,8 @@ def test_altered_import_is_not_treated_as_current(course):
     rtstruct.write_bytes(rtstruct.read_bytes() + b"edited")
     fake.calls.clear()
     rtseg.run_for_course(settings, course_dir, client=fake)
-    assert fake.calls and fake.calls[0][0] == "upload"
+    # Repair the import from the already submitted job. A damaged local copy
+    # does not require another remote inference or upload.
+    assert fake.calls and fake.calls[0] == ("wait", "job-1")
+    assert not any(call[0] in {"upload", "submit"} for call in fake.calls)
+    assert not rtstruct.read_bytes().endswith(b"edited")

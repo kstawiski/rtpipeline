@@ -389,14 +389,10 @@ def _execute_visualization_task(task: _VisualizationTask) -> bool:
 def _execute_qc_task(task: _QCTask) -> bool | None:
     from .quality_control import generate_qc_report
 
-    try:
-        qc_dir = task.course.dirs.qc_reports
-        qc_dir.mkdir(parents=True, exist_ok=True)
-        generate_qc_report(task.course.dirs.root, qc_dir)
-        return True
-    except Exception as exc:  # noqa: BLE001 - log and continue
-        logger.warning("QC stage failed for %s: %s", task.course.dirs.root, exc)
-        return None
+    qc_dir = task.course.dirs.qc_reports
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    generate_qc_report(task.course.dirs.root, qc_dir)
+    return True
 
 
 def _derive_segmentation_thread_limit(device: str, worker_budget: int) -> int:

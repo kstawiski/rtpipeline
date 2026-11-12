@@ -376,7 +376,7 @@ def test_projected_dose_preserves_first_referenced_uid_order(tmp_path):
     assert source_read.source.result.row["plan_id"] == image_uid
 
 
-def test_streamed_inventory_digest_matches_v1_canonical_payload(tmp_path):
+def test_streamed_inventory_digest_matches_v2_canonical_payload(tmp_path):
     root = tmp_path / "dicom"
     paths = [_write_ct(root / "CT_1.dcm"), _write_ct(root / "CT_2.dcm")]
     sources = [meta._metadata_source_file(path).source for path in paths]
@@ -390,12 +390,13 @@ def test_streamed_inventory_digest_matches_v1_canonical_payload(tmp_path):
             source.ctime_ns,
             source.device,
             source.inode,
+            meta._sha256_file(source.path),
         ]
         for source in sources
     ]
     expected = meta._canonical_sha256(
         {
-            "schema": "rtpipeline-source-inventory-v1",
+            "schema": "rtpipeline-source-inventory-v2",
             "root": str(root.resolve(strict=False)),
             "scope_sha256": identity.scope_digest,
             "files": records,
@@ -554,6 +555,7 @@ def test_metadata_cache_rejects_modified_output(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
     _write_ct(cfg.dicom_root / "CT_1.dcm")
     exported = meta.export_metadata(cfg)
+    expected = pd.read_excel(exported["ct_images"])
     exported["ct_images"].write_bytes(b"not an xlsx")
 
     reads = 0
@@ -567,8 +569,8 @@ def test_metadata_cache_rejects_modified_output(tmp_path, monkeypatch):
     monkeypatch.setattr(meta.pydicom, "dcmread", counted)
     repaired = meta.export_metadata(cfg)
 
-    assert reads > 0
-    assert len(pd.read_excel(repaired["ct_images"])) == 1
+    assert reads == 0  # Rebuild only the damaged publication from committed rows.
+    pd.testing.assert_frame_equal(pd.read_excel(repaired["ct_images"]), expected)
 
 
 def test_partial_supported_modality_failure_does_not_publish(tmp_path, monkeypatch):

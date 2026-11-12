@@ -157,6 +157,12 @@ def test_n4_production_resume_validates_existing_model_rtstruct(tmp_path, monkey
     targets = [masks / f'{base}--{model}.dcm' for model in ('total', 'test_extra')]
     for target in targets:
         target.write_bytes(b'existing writer output')
+    nifti = seg.load_course_contract(course).planning_ct_nifti
+    for model_name, target in zip(('total', 'test_extra'), targets):
+        paths = sorted(masks.glob(model_name + '--*.nii.gz'))
+        seg._model_progress(cfg, masks, model_name, nifti).commit_artifacts(paths,
+            model_entry={'model': model_name, 'masks': [path.name for path in paths],
+                         'rtstruct': target.name, 'rtstruct_ok': True})
     monkeypatch.setattr(seg, '_series_masks_current', lambda *a, **k: (True, 'current synthetic masks'))
     monkeypatch.setattr(seg, 'run_totalsegmentator', lambda *a, **k: pytest.fail('resume ran inference'))
     if caller == 'course':
@@ -203,7 +209,8 @@ def test_n4_custom_model_rebuilds_from_existing_masks_without_inference(tmp_path
     from rtpipeline import custom_models as cm
     from rtpipeline.layout import build_course_dirs
     course, ct, masks = _geometry_course(tmp_path, _uniform_z(), ANISOTROPIC)
-    model = SimpleNamespace(name='synthetic', expected_structures=lambda: ['wide_box', 'tall_box'])
+    model = cm.CustomModelDefinition('synthetic', tmp_path, 'stand-in', '3d', 'all', {},
+        [cm.NetworkDefinition('net', 'net', None, None, 'synthetic', ['wide_box', 'tall_box'])], ['net'])
     output = course / 'Segmentation_CustomModels/synthetic'
     output.mkdir(parents=True)
     structures = []
@@ -212,9 +219,17 @@ def test_n4_custom_model_rebuilds_from_existing_masks_without_inference(tmp_path
         structures.append({'name': name, 'file': f'{name}.nii.gz'})
     (output / 'rtstruct.dcm').write_bytes(b'stale writer')
     (output / 'manifest.json').write_text(json.dumps({'structures': structures}))
+    # Writer repair is permitted only after the inference masks have a current
+    # input/model binding; an existence-only legacy mask set is not reusable.
+    cfg = _cfg(tmp_path)
+    from rtpipeline.course_contract import load_course_contract
+    contract = load_course_contract(course)
+    cm._custom_progress(cfg, course, model, contract.planning_ct_nifti).commit_artifacts(
+        [*(output / entry['file'] for entry in structures), output / 'manifest.json'])
+    cm._save_custom_configuration(cfg, course, model)
     monkeypatch.setattr(cm, '_check_custom_model_eligibility', lambda *a: (True, 'synthetic'))
     monkeypatch.setattr(cm, '_run_single_model', lambda *a: pytest.fail('RTSTRUCT-only repair reran inference'))
-    cm.run_custom_models_for_course(_cfg(tmp_path), SimpleNamespace(dirs=build_course_dirs(course),
+    cm.run_custom_models_for_course(cfg, SimpleNamespace(dirs=build_course_dirs(course),
         patient_id='synthetic', course_id='course'), [model])
     assert geometry_adapter_output_current(output / 'rtstruct.dcm', ct)
     _assert_physical_extent(output / 'rtstruct.dcm', _uniform_z(), ANISOTROPIC)

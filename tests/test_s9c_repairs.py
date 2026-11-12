@@ -266,6 +266,23 @@ def test_f10_parallel_guards_receive_aligned_array(tmp_path, monkeypatch):
     mask = np.zeros((8,9,4),dtype=bool)
     mask[1:5,2:7,1:3] = True
     builder = SimpleNamespace(series_data=series, get_roi_mask_by_name=lambda _:mask)
+    # The bound extraction path requires source bytes even when its reader is
+    # replaced by this physical-alignment stand-in.
+    from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, RTStructureSetStorage, generate_uid
+    from robustness_prep_fixture import contour
+    file_meta = FileMetaDataset()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.MediaStorageSOPClassUID = RTStructureSetStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds = FileDataset(str(tmp_path / 'RS.dcm'), {}, file_meta=file_meta, preamble=b'\0' * 128)
+    ds.SOPClassUID, ds.SOPInstanceUID = RTStructureSetStorage, file_meta.MediaStorageSOPInstanceUID
+    roi, roi_contours = Dataset(), Dataset()
+    roi.ROINumber, roi.ROIName = 1, 'PTV'
+    roi_contours.ReferencedROINumber = 1
+    roi_contours.ContourSequence = [contour('CLOSED_PLANAR', [6, 2, 4, 12, 2, 4, 12, 8, 4, 6, 8, 4])]
+    ds.StructureSetROISequence, ds.ROIContourSequence = [roi], [roi_contours]
+    ds.save_as(tmp_path / 'RS.dcm', enforce_file_format=True)
     monkeypatch.setattr(rp, '_get_builder', lambda _:builder)
     expected = np.moveaxis(sitk.GetArrayFromImage(rtstruct_mask_to_image(mask,series,image)),0,-1)>0
     def guard(observed, **kwargs):
@@ -275,7 +292,7 @@ def test_f10_parallel_guards_receive_aligned_array(tmp_path, monkeypatch):
     monkeypatch.setattr(rp,'_WORKER_STATE',dict(img=image,extractor=SimpleNamespace(settings={}),
         min_voxels=1,max_voxels=10000,skip_rois=set(),config=SimpleNamespace()))
     task = rp._RoiTask(source='Manual', rs_path=str(tmp_path/'RS.dcm'),roi_name='PTV',
-        course_dir=str(tmp_path),series_uid='1.2.3', mask_identity='mask',stable_roi_identifier='roi',
+        course_dir=str(tmp_path),series_uid='1.2.3', mask_identity=str(ds.SOPInstanceUID),stable_roi_identifier='roi',
         decision=classify_ct_roi('Manual','PTV'),run_identifier='run',code_revision='revision',
         configured_parameter_hashes={},effective_parameter_hashes={},required=False)
     with pytest.raises(RuntimeError,match='guard observed physical alignment'):
@@ -293,7 +310,7 @@ def write_sidecar(nifti):
 def test_f7_model_reuse_is_geometry_scoped(tmp_path, columns, spacing, adapter):
     from robustness_prep_fixture import write_ct
     from rtpipeline.segmentation import _ensure_model_rtstruct_from_masks
-    from rtpipeline.custom_models import _model_outputs_ready
+    from rtpipeline.custom_models import _model_geometry_ready as _model_outputs_ready
     ct = tmp_path/'CT'
     write_ct(ct, rows=8, columns=columns, slices=3, spacing=spacing)
     seg = tmp_path/'seg'

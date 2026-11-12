@@ -86,6 +86,46 @@ class QualityControlError(Exception):
     pass
 
 
+def _qc_inputs(course_dir):
+    from .artifact_progress import inventory
+    course_dir = Path(course_dir)
+    paths = set()
+    for name in ("DICOM", "NIFTI", "Segmentation_TotalSegmentator", "Segmentation_CustomModels", "Segmentation_Original"):
+        paths.update(p for p in (course_dir / name).rglob("*")
+                     if p.is_file() and not any(part.startswith(".") for part in p.relative_to(course_dir).parts))
+    for name in ("RP.dcm", "RD.dcm", "RS.dcm", "RS_auto.dcm", "RS_auto_cropped.dcm",
+                 "cropping_metadata.json", "metadata/case_metadata.json"):
+        path = course_dir / name
+        if path.is_file():
+            paths.add(path)
+    return inventory(paths, course_dir)
+
+
+def _qc_item(course_dir, name, settings, inputs=None, environment=None):
+    from .artifact_progress import ArtifactItem, code_files
+    return ArtifactItem(Path(course_dir) / ".qc-progress/items", name, settings,
+        _qc_inputs(course_dir) if inputs is None else inputs, base=course_dir,
+        code=code_files("quality_control.py", "rtstruct_geometry.py", "course_contract.py"), environment=environment)
+
+
+def validate_qc_publication(course_dir, *, verify_environment=True):
+    course_dir = Path(course_dir)
+    record = json.loads((course_dir / ".qc-progress/current.json").read_text())
+    value = _qc_item(course_dir, "report", record["settings"],
+        environment=None if verify_environment else record["environment"]).load()
+    expected = f"qc_reports/qc_report_{course_dir.parent.name}_{course_dir.name}.json"
+    if value is None or expected not in value["artifacts"]:
+        raise ValueError("QC publication is missing or stale")
+    report = json.loads((course_dir / expected).read_text())
+    required = {"file_existence", "consistency", "structure_cropping", "segmentation_validation"}
+    existence = report.get("checks", {}).get("file_existence", {})
+    required.update(name for flag, name in (("ct_exists", "ct_validation"), ("rp_exists", "rp_validation"),
+        ("rd_exists", "rd_validation")) if existence.get(flag))
+    if set(value.get("checks", [])) != required or set(report.get("checks", {})) | {"segmentation_validation"} != required:
+        raise ValueError("QC publication omits a required check")
+    return value
+
+
 class DICOMValidator:
     """Validates DICOM files for consistency and integrity."""
 
@@ -121,24 +161,42 @@ class DICOMValidator:
 
         try:
             # Basic file existence
-            results["checks"]["file_existence"] = self._check_file_existence()
+            def check(name, function):
+                from .artifact_progress import inventory
+                paths = {
+                    "ct_validation": list(self.ct_dir.glob("*.dcm")),
+                    "rp_validation": [self.rp_path], "rd_validation": [self.rd_path],
+                    "structure_cropping": [*self.ct_dir.glob("*.dcm"), self.rs_path,
+                        self.rs_auto_path, self.course_dir / "cropping_metadata.json"],
+                }.get(name)
+                item = _qc_item(self.course_dir, ["check", name],
+                    {"skip_structure_cropping": self.skip_structure_cropping} if name == "structure_cropping" else {},
+                    inventory((path for path in paths if path.is_file()), self.course_dir) if paths is not None else None)
+                cached = item.load()
+                if cached is None:
+                    value = json.loads(json.dumps(function(), default=str))
+                    if name == "structure_cropping" and value.get("errors"):
+                        raise QualityControlError("Required structure cropping check failed")
+                    cached = item.commit_artifacts([], result=value)
+                return cached["result"]
+            results["checks"]["file_existence"] = check("file_existence", self._check_file_existence)
 
             # DICOM header validation
             if results["checks"]["file_existence"]["ct_exists"]:
-                results["checks"]["ct_validation"] = self._validate_ct_series()
+                results["checks"]["ct_validation"] = check("ct_validation", self._validate_ct_series)
 
             if results["checks"]["file_existence"]["rp_exists"]:
-                results["checks"]["rp_validation"] = self._validate_rt_plan()
+                results["checks"]["rp_validation"] = check("rp_validation", self._validate_rt_plan)
 
             if results["checks"]["file_existence"]["rd_exists"]:
-                results["checks"]["rd_validation"] = self._validate_rt_dose()
+                results["checks"]["rd_validation"] = check("rd_validation", self._validate_rt_dose)
 
             # Cross-modality consistency
-            results["checks"]["consistency"] = self._check_consistency()
+            results["checks"]["consistency"] = check("consistency", self._check_consistency)
 
             # Segmentation cropping detection (can be skipped for performance)
             if not self.skip_structure_cropping:
-                results["checks"]["structure_cropping"] = self._segmentation_cropping()
+                results["checks"]["structure_cropping"] = check("structure_cropping", self._segmentation_cropping)
             else:
                 results["checks"]["structure_cropping"] = {"status": "SKIP", "reason": "skipped by configuration"}
 
@@ -147,8 +205,7 @@ class DICOMValidator:
 
         except Exception as e:
             logger.error(f"Quality control failed for {self.course_dir}: {e}")
-            results["error"] = str(e)
-            results["overall_status"] = "ERROR"
+            raise QualityControlError(f"Required QC check failed for {self.course_dir}") from e
 
         return results
 
@@ -523,16 +580,32 @@ def generate_qc_report(course_dir: Path, output_dir: Path, skip_structure_croppi
     Returns:
         Path to the generated QC report
     """
+    from .artifact_progress import write_json
+    from .durable_progress import final_result_writer
+    settings = {"skip_structure_cropping": skip_structure_cropping}
+    progress = _qc_item(course_dir, "report", settings)
+    report_path = output_dir / f"qc_report_{course_dir.parent.name}_{course_dir.name}.json"
+    if progress.load() is not None:
+        from .extraction_progress import runtime_environment
+        final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
+        return report_path
     validator = DICOMValidator(course_dir, skip_structure_cropping=skip_structure_cropping)
     qc_results = validator.validate_all()
 
     # Add segmentation volume validation
-    qc_results["segmentation_validation"] = validate_segmentation_volumes(course_dir)
+    item = _qc_item(course_dir, ["check", "segmentation_validation"], settings)
+    cached = item.load()
+    if cached is None:
+        cached = item.commit_artifacts([], result=validate_segmentation_volumes(course_dir))
+    qc_results["segmentation_validation"] = cached["result"]
 
     # Save report
-    report_path = output_dir / f"qc_report_{course_dir.parent.name}_{course_dir.name}.json"
-    with open(report_path, 'w') as f:
-        json.dump(qc_results, f, indent=2, default=str)
+    write_json(report_path, qc_results, indent=2, default=str)
+    if _qc_item(course_dir, "report", settings).binding != progress.binding:
+        raise QualityControlError("QC inputs changed during report generation")
+    progress.commit_artifacts([report_path], checks=list(qc_results["checks"]) + ["segmentation_validation"])
+    from .extraction_progress import runtime_environment
+    final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
 
     logger.info(f"QC report saved to {report_path}")
     return report_path
@@ -1101,7 +1174,33 @@ def save_body_region_qc(
     qc_dir = dirs.qc_reports
     qc_dir.mkdir(parents=True, exist_ok=True)
 
-    results = detect_body_regions(course_dir, model_region_requirements)
+    from .artifact_progress import inventory, staged_file, write_json
+    import tempfile
+    import shutil
+    total_masks = [p for p in dirs.segmentation_totalseg.rglob("*.nii.gz")
+                   if "_cropped" not in p.name and not any(part.startswith(".") for part in p.relative_to(course_dir).parts)]
+    mask_inputs = inventory(total_masks, course_dir)
+    settings = {"requirements": model_region_requirements, "activation": conda_activate}
+    def run_check(name, function, inputs):
+        item = _qc_item(course_dir, ["body", name], settings, inputs)
+        cached = item.load()
+        if cached is not None:
+            return cached["result"]
+        with tempfile.TemporaryDirectory(prefix=".body-qc-", dir=qc_dir) as scratch:
+            value = function(Path(scratch))
+            artifacts = []
+            for path in Path(scratch).iterdir():
+                if not path.is_file():
+                    continue
+                json.loads(path.read_text())
+                target = qc_dir / path.name
+                with staged_file(target) as temporary:
+                    shutil.copyfile(path, temporary)
+                artifacts.append(target)
+        if value.get("status") != "error":
+            item.commit_artifacts(artifacts, result=value, disposition=value.get("status", "success"))
+        return value
+    results = run_check("regions", lambda scratch: detect_body_regions(course_dir, model_region_requirements), mask_inputs)
 
     # The contract loader has already validated this required input. A contract
     # with no planning NIfTI is a deliberate non-CT path, not a scan invitation.
@@ -1113,13 +1212,13 @@ def save_body_region_qc(
     if nifti_path and nifti_path.exists():
         # Run contrast phase detection
         try:
-            phase_result = detect_contrast_phase(
-                nifti_path,
-                output_dir=qc_dir,
-                conda_activate=conda_activate,
-            )
+            phase_result = run_check("phase", lambda scratch: detect_contrast_phase(
+                nifti_path, output_dir=scratch, conda_activate=conda_activate), inventory([nifti_path], course_dir))
             results["contrast_phase"] = phase_result
         except Exception as e:
+            from .durable_progress import DurableProgressError
+            if isinstance(e, (DurableProgressError, OSError)):
+                raise
             logger.warning(f"Contrast phase detection failed: {e}")
             results["contrast_phase"] = {
                 "phase": "unknown",
@@ -1129,13 +1228,13 @@ def save_body_region_qc(
 
         # Run modality detection
         try:
-            modality_result = detect_modality(
-                nifti_path,
-                output_dir=qc_dir,
-                conda_activate=conda_activate,
-            )
+            modality_result = run_check("modality", lambda scratch: detect_modality(
+                nifti_path, output_dir=scratch, conda_activate=conda_activate), inventory([nifti_path], course_dir))
             results["image_modality"] = modality_result
         except Exception as e:
+            from .durable_progress import DurableProgressError
+            if isinstance(e, (DurableProgressError, OSError)):
+                raise
             logger.warning(f"Modality detection failed: {e}")
             results["image_modality"] = {
                 "modality": "unknown",
@@ -1147,8 +1246,7 @@ def save_body_region_qc(
         results["image_modality"] = {"modality": "unknown", "status": "unavailable", "reason": "CT NIfTI not found"}
 
     output_path = qc_dir / output_filename
-    with open(output_path, 'w') as f:
-        json.dump(results, f, indent=2, default=str)
+    write_json(output_path, results, indent=2, default=str)
 
     logger.info(f"Body region QC saved to {output_path}")
     return output_path

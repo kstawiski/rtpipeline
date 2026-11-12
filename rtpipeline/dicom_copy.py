@@ -129,25 +129,11 @@ class DicomCopyManager:
         """Persist registry and header cache to disk."""
         ensure_dir(self._registry_path.parent)
 
-        try:
-            registry_data = {
-                uid: str(path) for uid, path in self._sop_uid_registry.items()
-            }
-            self._registry_path.write_text(
-                json.dumps(registry_data, indent=2, sort_keys=True),
-                encoding="utf-8"
-            )
-        except Exception as e:
-            logger.warning("Failed to save SOP UID registry: %s", e)
-
+        from .artifact_progress import write_json
+        registry_data = {uid: str(path) for uid, path in self._sop_uid_registry.items()}
+        write_json(self._registry_path, registry_data, indent=2, sort_keys=True)
         if self.config.cache_headers:
-            try:
-                self._header_cache_path.write_text(
-                    json.dumps(self._header_cache, indent=2, sort_keys=True),
-                    encoding="utf-8"
-                )
-            except Exception as e:
-                logger.warning("Failed to save header cache: %s", e)
+            write_json(self._header_cache_path, self._header_cache, indent=2, sort_keys=True)
 
     def get_cached_header(self, src: Path) -> Optional[dict]:
         """Get cached DICOM header for a source file."""
@@ -178,7 +164,9 @@ class DicomCopyManager:
         # Keep existing persisted-cache precedence. Only discovery-seeded entries
         # acquire the new per-run inventory validation.
         cached = self._header_cache.get(key)
-        if key not in self._discovery_cached_paths and cached and cached.get("SOPInstanceUID"):
+        from .durable_progress import file_sha256
+        digest = file_sha256(src)
+        if cached and cached.get("_source_sha256") == digest and cached.get("SOPInstanceUID"):
             return cached["SOPInstanceUID"]
 
         identity = cached_source_identity(src)
@@ -187,7 +175,7 @@ class DicomCopyManager:
                 return None
             if self.config.cache_headers:
                 with self._lock:
-                    self._header_cache[key] = identity.copy()
+                    self._header_cache[key] = dict(identity, _source_sha256=digest)
                     self._discovery_cached_paths.add(key)
             return identity["SOPInstanceUID"]
 
@@ -203,6 +191,7 @@ class DicomCopyManager:
         # Cache the header
         if self.config.cache_headers:
             self._cache_header(src, ds)
+            self._header_cache[key]["_source_sha256"] = digest
 
         return sop_uid
 
@@ -288,10 +277,15 @@ class DicomCopyManager:
             If deduplicated, returns path to existing copy.
         """
         ensure_dir(dst.parent)
-
-        # Check if destination already exists
-        if skip_if_exists and dst.exists():
-            return dst, False
+        from .artifact_progress import ArtifactItem, code_files, staged_file
+        from .durable_progress import file_sha256
+        source_digest = file_sha256(src)
+        progress = ArtifactItem(self.output_root / "_CACHE/copy-progress", str(dst), {},
+            {"source": str(src), "sha256": source_digest}, base=self.output_root,
+            code=code_files("dicom_copy.py"), environment={})
+        cached = progress.load() if skip_if_exists else None
+        if cached is not None:
+            return Path(cached.get("destination", str(dst))), False
 
         # SOPInstanceUID deduplication
         sop_uid = None  # Initialize to avoid UnboundLocalError when dedup disabled
@@ -300,29 +294,36 @@ class DicomCopyManager:
             if sop_uid:
                 with self._lock:
                     existing = self._sop_uid_registry.get(sop_uid)
-                    if not materialize and existing and existing.exists() and existing != dst:
+                    if (not materialize and existing and existing.exists() and existing != dst
+                            and file_sha256(existing) == source_digest):
                         self.stats.skipped_duplicate += 1
                         logger.debug(
                             "Skipping duplicate SOP %s: %s already at %s",
                             sop_uid, src, existing
                         )
+                        progress.commit_artifacts([existing], destination=str(existing))
                         return existing, False
 
         # A source hardlink changes source ctime (also when output is removed).
         # Organize fingerprints that ctime in metadata_export.json. Independent
         # materialization must preserve the source inventory across runs.
-        if not materialize and self._try_hardlink(src, dst):
+        if skip_if_exists and dst.is_file() and file_sha256(dst) == source_digest:
+            progress.commit_artifacts([dst], destination=str(dst))
+            return dst, False
+        with staged_file(dst) as temporary:
+            linked = not materialize and self._try_hardlink(src, temporary)
+            if not linked:
+                shutil.copy2(src, temporary)
+            if file_sha256(temporary) != source_digest or file_sha256(src) != source_digest:
+                raise IOError(f"DICOM copy verification failed: {src}")
+        progress.commit_artifacts([dst], destination=str(dst))
+        if linked:
             if self.config.dedup_by_sop_uid and sop_uid:
                 with self._lock:
                     self._sop_uid_registry[sop_uid] = min(
                         self._sop_uid_registry.get(sop_uid, dst), dst, key=str
                     )
             return dst, True
-
-        # Fall back to regular copy
-        if dst.exists() and not os.path.samefile(src, dst):
-            dst.unlink()
-        shutil.copy2(src, dst)
 
         with self._lock:
             self.stats.copied += 1
@@ -331,12 +332,9 @@ class DicomCopyManager:
                     self._sop_uid_registry.get(sop_uid, dst), dst, key=str
                 )
 
-        # Verify if enabled
         if self.config.verify_checksum:
             if not self._verify_copy(src, dst):
-                # Re-copy on failure
-                shutil.copy2(src, dst)
-                self._verify_copy(src, dst)
+                raise IOError(f"DICOM copy verification failed: {src}")
 
         return dst, True
 
@@ -373,11 +371,11 @@ class DicomCopyManager:
             if self.config.dedup_by_sop_uid:
                 src_uid = self._get_sop_uid(src)
                 dst_uid = self._get_sop_uid(dest)
-                if src_uid and src_uid == dst_uid:
+                if (src_uid and src_uid == dst_uid) or dst_uid is None:
                     # Same DICOM, skip
                     with self._lock:
                         self.stats.skipped_duplicate += 1
-                    return dest, False
+                    return self.copy_dicom(src, dest, materialize=materialize)
 
             # Different file, need unique name
             stem = dest.stem
@@ -400,7 +398,8 @@ class DicomCopyManager:
 
         with self._lock:
             existing = self._sop_uid_registry.get(sop_uid)
-            return existing is not None and existing.exists()
+            from .durable_progress import file_sha256
+            return existing is not None and existing.is_file() and file_sha256(existing) == file_sha256(src)
 
     def get_existing_copy(self, src: Path) -> Optional[Path]:
         """Get path to existing copy of this DICOM (by SOP UID)."""
@@ -413,7 +412,8 @@ class DicomCopyManager:
 
         with self._lock:
             existing = self._sop_uid_registry.get(sop_uid)
-            if existing and existing.exists():
+            from .durable_progress import file_sha256
+            if existing and existing.is_file() and file_sha256(existing) == file_sha256(src):
                 return existing
         return None
 

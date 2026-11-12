@@ -264,6 +264,7 @@ def test_cached_parquet_output_is_rejected_when_inconsistent(
     monkeypatch.setattr(meta, "_EXCEL_MAX_ROWS", 2)
     exported = meta.export_metadata(cfg)
     parquet_path = exported["ct_images"]
+    expected = pd.read_parquet(parquet_path)
     workbook_path = parquet_path.with_suffix(".xlsx")
     if damage == "stale_workbook":
         workbook_path.write_bytes(b"stale workbook from an earlier run")
@@ -283,9 +284,9 @@ def test_cached_parquet_output_is_rejected_when_inconsistent(
     monkeypatch.setattr(meta.pydicom, "dcmread", counted)
     repaired = meta.export_metadata(cfg)
 
-    assert reads > 0
+    assert reads == 0
     assert repaired["ct_images"] == parquet_path
-    assert len(pd.read_parquet(parquet_path)) == 2
+    pd.testing.assert_frame_equal(pd.read_parquet(parquet_path), expected)
     assert not workbook_path.exists()
 
 
@@ -294,6 +295,7 @@ def test_cache_with_unrecorded_parquet_sibling_is_rejected(tmp_path, monkeypatch
     cfg = _config(tmp_path)
     _write_ct(cfg.dicom_root / "CT_1.dcm")
     exported = meta.export_metadata(cfg)
+    expected = pd.read_excel(exported["ct_images"])
     exported["ct_images"].with_suffix(".parquet").write_bytes(b"residue")
 
     reads = 0
@@ -307,8 +309,9 @@ def test_cache_with_unrecorded_parquet_sibling_is_rejected(tmp_path, monkeypatch
     monkeypatch.setattr(meta.pydicom, "dcmread", counted)
     repaired = meta.export_metadata(cfg)
 
-    assert reads > 0
+    assert reads == 0
     assert repaired["ct_images"].suffix == ".xlsx"
+    pd.testing.assert_frame_equal(pd.read_excel(repaired["ct_images"]), expected)
     assert not repaired["ct_images"].with_suffix(".parquet").exists()
 
 
@@ -395,12 +398,27 @@ def test_normal_size_export_is_byte_identical_to_baseline(tmp_path, monkeypatch)
 
     baseline_paths, baseline_files = outputs["baseline"]
     current_paths, current_files = outputs["current"]
+    # New durable row transactions are operational evidence. Their payloads
+    # are independently read back in Phase C's interruption tests.
+    current_files = {name: value for name, value in current_files.items()
+                     if not name.startswith("_CACHE/metadata-progress/")}
     assert current_paths == baseline_paths
     assert sorted(current_files) == sorted(baseline_files)
     assert "_CACHE/metadata_export.json" in current_files
     assert len([name for name in current_files if name.startswith("Data/")]) == 6
     for name in baseline_files:
-        assert current_files[name] == baseline_files[name], name
+        if name == "_CACHE/metadata_export.json":
+            old, new = json.loads(baseline_files[name]), json.loads(current_files[name])
+            assert new["cache_key_sha256"] != old["cache_key_sha256"]
+            assert new["source"]["inventory_sha256"] != old["source"]["inventory_sha256"]
+            for record in (old, new):
+                record.pop("cache_key_sha256"); record.pop("manifest_sha256")
+                record["source"].pop("inventory_sha256")
+            assert new == old
+            identity = meta._source_inventory_identity(dicom_root, None, max_workers=1)[0]
+            assert meta._load_cached_outputs(cfg, meta._export_dir(cfg.output_root), identity) is not None
+        else:
+            assert current_files[name] == baseline_files[name], name
 
 
 # --- aggregation copy into _RESULTS ---------------------------------------------

@@ -791,6 +791,50 @@ def crop_image_to_boundaries(
     return cropped, clamp_info  # type: ignore[return-value]
 
 
+def _crop_sources(course_dir, output_suffix="_cropped"):
+    from .layout import build_course_dirs
+    contract = load_course_contract(course_dir)
+    sources = []
+    if contract.planning_ct_nifti is not None:
+        sources.append(("ct", contract.planning_ct_nifti))
+    root = build_course_dirs(course_dir).segmentation_totalseg
+    directories = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")) if root.exists() else []
+    if directories:
+        sources.extend((p.stem, p) for p in directories[0].glob("*.nii.gz")
+                       if "_cropped" not in p.name and output_suffix not in p.name
+                       and not p.name.startswith("."))
+    return sources
+
+
+def _crop_publication_item(course_dir, settings, environment=None):
+    from .artifact_progress import ArtifactItem, code_files, inventory
+    sources = _crop_sources(course_dir, settings["output_suffix"])
+    contract = load_course_contract(course_dir)
+    ct_files = (p for p in contract.planning_ct_dir.glob("*.dcm") if p.is_file()) if contract.planning_ct_dir else ()
+    return ArtifactItem(course_dir / ".crop-progress/items", "publication", settings,
+        {"images": inventory((path for _, path in sources), course_dir),
+         "ct_dicom": inventory(ct_files, course_dir)}, base=course_dir,
+        code=code_files("anatomical_cropping.py", "rtstruct_geometry.py", "course_contract.py"), environment=environment)
+
+
+def validate_crop_publication(course_dir, expected_settings=None, *, verify_environment=True):
+    course_dir = Path(course_dir)
+    record = json.loads((course_dir / ".crop-progress/current.json").read_text())
+    if expected_settings is not None and record["settings"] != expected_settings:
+        raise ValueError("Crop publication configuration changed")
+    item = _crop_publication_item(course_dir, record["settings"], None if verify_environment else record["environment"])
+    value = item.load()
+    if value is None:
+        raise ValueError("Crop publication is missing or stale")
+    metadata = json.loads((course_dir / "cropping_metadata.json").read_text())
+    sources = _crop_sources(course_dir, record["settings"]["output_suffix"])
+    expected = {key: str(path.parent / (path.name.removesuffix(".nii.gz") + record["settings"]["output_suffix"] + ".nii.gz"))
+                for key, path in sources}
+    if metadata.get("cropped_files") != expected:
+        raise ValueError("Crop publication does not declare the exact current inventory")
+    return value
+
+
 def apply_systematic_cropping(
     course_dir: Path,
     region: str = "pelvis",
@@ -909,56 +953,49 @@ def apply_systematic_cropping(
         'ct_extent_mm': None,
     }
 
-    # Crop the planning CT selected by organize.
-    ct_nifti = contract.planning_ct_nifti
-
-    if ct_nifti is not None:
-        try:
-            ct_img = sitk.ReadImage(str(ct_nifti))
-            ct_cropped, clamp_info = crop_image_to_boundaries(
-                ct_img,
-                superior_z,
-                inferior_z,
-                warn_once=warn_once,
-            )
-            clamp_summary.update(clamp_info)
-
-            ct_cropped_path = ct_nifti.parent / f"{ct_nifti.stem.replace('.nii', '')}{output_suffix}.nii.gz"
-            sitk.WriteImage(ct_cropped, str(ct_cropped_path))
-            cropped_files['ct'] = ct_cropped_path
-
-            logger.info(f"Cropped CT: {ct_img.GetSize()} → {ct_cropped.GetSize()}")
-        except Exception as e:
-            logger.error(f"Failed to crop CT: {e}")
-
-    # Crop all segmentation masks
-    seg_root = course_dirs.segmentation_totalseg
-    if seg_root.exists():
-        candidate_dirs = sorted(p for p in seg_root.iterdir() if p.is_dir())
-        if candidate_dirs:
-            seg_dir = candidate_dirs[0]
-
-            for mask_path in seg_dir.glob("*.nii.gz"):
-                try:
-                    mask_img = sitk.ReadImage(str(mask_path))
-                    mask_cropped, _ = crop_image_to_boundaries(
-                        mask_img,
-                        superior_z,
-                        inferior_z,
-                        warn_once=warn_once,
-                    )
-
-                    # Create cropped filename
-                    mask_stem = mask_path.stem.replace('.nii', '')
-                    mask_cropped_path = mask_path.parent / f"{mask_stem}{output_suffix}.nii.gz"
-                    sitk.WriteImage(mask_cropped, str(mask_cropped_path))
-
-                    cropped_files[mask_path.stem] = mask_cropped_path
-                    logger.debug(f"Cropped mask: {mask_path.name}")
-
-                except Exception as e:
-                    logger.warning(f"Failed to crop mask {mask_path.name}: {e}")
-                    continue
+    from .artifact_progress import ArtifactItem, code_files, inventory, staged_file, write_json
+    from .durable_progress import final_result_writer
+    settings = dict(region=region, output_suffix=output_suffix,
+                    inferior_margin_cm=inferior_margin_cm, superior_margin_cm=superior_margin_cm)
+    publication = _crop_publication_item(course_dir, settings)
+    existing = publication.load()
+    if existing is not None:
+        from .extraction_progress import runtime_environment
+        final_result_writer(course_dir / ".crop-progress/current.json", {"settings": settings, "environment": runtime_environment()})
+        return {key: Path(path) for key, path in existing["cropped_files"].items()}
+    sources = _crop_sources(course_dir, output_suffix)
+    if not sources or sources[0][0] != "ct":
+        raise ValueError("Cropping requires the contracted planning CT NIfTI")
+    expected_paths = {path.parent / (path.name.removesuffix(".nii.gz") + output_suffix + ".nii.gz")
+                      for _, path in sources}
+    # Only the crop namespace is owned here. Remove orphaned earlier crops,
+    # including repeated suffixes, before a writer can enumerate them.
+    for directory in {path.parent for _, path in sources}:
+        for path in directory.glob(f"*{output_suffix}*.nii.gz"):
+            if path not in expected_paths and path not in {p for _, p in sources}:
+                path.unlink()
+    for key, source in sources:
+        target = source.parent / (source.name.removesuffix(".nii.gz") + output_suffix + ".nii.gz")
+        progress = ArtifactItem(course_dir / ".crop-progress/items", ["image", str(source.relative_to(course_dir))],
+            dict(settings, superior_z=superior_z, inferior_z=inferior_z),
+            inventory([source], course_dir), base=course_dir,
+            code=code_files("anatomical_cropping.py", "course_contract.py"))
+        cached = progress.load()
+        if cached is None:
+            image = sitk.ReadImage(str(source))
+            cropped, clamp_info = crop_image_to_boundaries(image, superior_z, inferior_z, warn_once=warn_once)
+            with staged_file(target) as temporary:
+                sitk.WriteImage(cropped, str(temporary))
+                parsed = sitk.ReadImage(str(temporary))
+                if parsed.GetSize() != cropped.GetSize() or any(not np.allclose(
+                        getattr(parsed, method)(), getattr(cropped, method)(), rtol=1e-6, atol=1e-5)
+                        for method in ("GetSpacing", "GetOrigin", "GetDirection")) or not np.array_equal(
+                        sitk.GetArrayViewFromImage(parsed), sitk.GetArrayViewFromImage(cropped)):
+                    raise RuntimeError(f"Crop read-back failed: {source.name}")
+            cached = progress.commit_artifacts([target], clamp_info=clamp_info)
+        if key == "ct":
+            clamp_summary.update(cached["clamp_info"])
+        cropped_files[key] = target
 
     # Save cropping metadata
     metadata = {
@@ -973,27 +1010,42 @@ def apply_systematic_cropping(
     }
 
     metadata_path = course_dir / "cropping_metadata.json"
-    with open(metadata_path, 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-    logger.info(f"Saved cropping metadata: {metadata_path}")
-    logger.info(f"Cropped {len(cropped_files)} NIfTI files total")
-
-    # Create cropped RTSTRUCT from cropped masks
-    rs_auto_cropped = _create_rtstruct_from_cropped_masks(
-        course_dir,
-        course_dirs,
-        output_suffix
-    )
-
+    cropped_masks = [path for key, path in cropped_files.items() if key != "ct"]
+    nonempty = any(np.any(sitk.GetArrayFromImage(sitk.ReadImage(str(path)))) for path in cropped_masks)
+    rtstruct_item = ArtifactItem(course_dir / ".crop-progress/items", "rtstruct", settings,
+        inventory([*cropped_masks, *(contract.planning_ct_dir.iterdir() if contract.planning_ct_dir else [])]),
+        base=course_dir, code=code_files("anatomical_cropping.py", "rtstruct_geometry.py"))
+    rtstruct_commit = rtstruct_item.load()
+    rs_auto_cropped = None
+    if nonempty:
+        target = course_dir / "RS_auto_cropped.dcm"
+        if rtstruct_commit is None:
+            with staged_file(target) as temporary:
+                produced = _create_rtstruct_from_cropped_masks(course_dir, course_dirs, output_suffix,
+                                                               output_path=temporary)
+                if produced is None:
+                    raise RuntimeError("Required cropped RTSTRUCT was not produced")
+                import pydicom
+                pydicom.dcmread(str(temporary))
+            rtstruct_item.commit_artifacts([target], disposition="produced")
+        rs_auto_cropped = target
+    else:
+        (course_dir / "RS_auto_cropped.dcm").unlink(missing_ok=True)
+        if rtstruct_commit is None:
+            rtstruct_item.commit_artifacts([], disposition="no_nonempty_cropped_masks")
     if rs_auto_cropped:
-        logger.info(f"Created cropped RTSTRUCT: {rs_auto_cropped}")
         metadata['rs_auto_cropped'] = str(rs_auto_cropped)
         metadata['opencv_runtime'] = opencv_runtime_provenance()
-
-        # Save updated metadata
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
+    write_json(metadata_path, metadata, indent=2)
+    artifacts = [*cropped_files.values(), metadata_path]
+    if rs_auto_cropped:
+        artifacts.append(rs_auto_cropped)
+    if _crop_publication_item(course_dir, settings).binding != publication.binding:
+        raise RuntimeError("Crop inputs changed during publication")
+    publication.commit_artifacts(artifacts, cropped_files={key: str(path) for key, path in cropped_files.items()})
+    from .extraction_progress import runtime_environment
+    final_result_writer(course_dir / ".crop-progress/current.json", {"settings": settings, "environment": runtime_environment()})
+    logger.info(f"Saved cropping metadata: {metadata_path}")
 
     return cropped_files
 
@@ -1001,7 +1053,8 @@ def apply_systematic_cropping(
 def _create_rtstruct_from_cropped_masks(
     course_dir: Path,
     course_dirs,
-    output_suffix: str
+    output_suffix: str,
+    output_path: Optional[Path] = None,
 ) -> Optional[Path]:
     """
     Create RTSTRUCT file from cropped NIfTI masks.
@@ -1108,8 +1161,7 @@ def _create_rtstruct_from_cropped_masks(
 
 
         except Exception as e:
-            logger.warning(f"Failed to add ROI {roi_name}: {e}")
-            continue
+            raise RuntimeError(f"Required cropped ROI {roi_name} could not be written") from e
 
     if added_count == 0:
         logger.warning("No ROIs added to cropped RTSTRUCT")
@@ -1124,7 +1176,7 @@ def _create_rtstruct_from_cropped_masks(
         return None
 
     # Save cropped RTSTRUCT
-    output_path = course_dir / "RS_auto_cropped.dcm"
+    output_path = output_path or course_dir / "RS_auto_cropped.dcm"
     try:
         rtstruct.save(str(output_path))
         logger.info(f"Created RS_auto_cropped.dcm with {added_count} ROIs")

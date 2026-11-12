@@ -173,6 +173,8 @@ def _iter_binary_masks(nifti_dir: Path, prefix: Optional[str] = None) -> Iterabl
 
     masks: list[Tuple[str, sitk.Image]] = []
     for mask_path in sorted(nifti_dir.glob("*.nii*")):
+        if "_cropped" in mask_path.name:
+            continue
         name_lower = mask_path.name.lower()
         if name_lower in {"segmentations.nii", "segmentations.nii.gz", "segmentation.nii", "segmentation.nii.gz"}:
             # Skip potential multi-label files handled separately
@@ -415,6 +417,8 @@ def _derived_rtstruct_dependencies_are_current(
                 item
                 for item in segmentation_root.rglob("*")
                 if item.is_file() and item.suffix in {".gz", ".nii", ".dcm"}
+                and "_cropped" not in item.name
+                and not any(part.startswith(".") for part in item.relative_to(segmentation_root).parts)
             )
         return not any(item.stat().st_mtime > output_mtime for item in dependencies)
     except Exception:

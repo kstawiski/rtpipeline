@@ -83,6 +83,9 @@ def _validate_organize(
             )
             course_path = safe_course_path
             load_course_contract(course_path)
+            if (course_path / ".organize-progress.json").is_file():
+                from .organize import validate_organized_course_progress
+                validate_organized_course_progress(course_path)
         except Exception as exc:
             reason = f"manifest validation failed: {type(exc).__name__}: {exc}"
             invalid = {
@@ -153,6 +156,9 @@ def _validate_organize(
         from .plan_disposition import source_dispositions_match_source
         source = ledger["source_plan_dispositions"]
         ledger["source_history_current"] = source_dispositions_match_source(source, source.get("source_root", ""))
+        from .organize_publication import source_bytes_current
+        ledger["source_bytes_current"] = source_bytes_current(output_dir, source.get("source_root", ""),
+            source.get("discovery_scope_patient_ids"))
     return {
         "mode": "quarantine" if quarantine_invalid else "check",
         "ledger": ledger,
@@ -321,6 +327,10 @@ def _parser() -> argparse.ArgumentParser:
     aggregate_resume = subparsers.add_parser("validate-aggregate-resume")
     aggregate_resume.add_argument("--output-dir", required=True)
 
+    phase_c_resume = subparsers.add_parser("validate-phase-c-resume")
+    phase_c_resume.add_argument("--output-dir", required=True)
+    phase_c_resume.add_argument("--configfile", required=True)
+
     dvh_binding = subparsers.add_parser("dvh-launch-binding")
     dvh_binding.add_argument("--course-dir", required=True)
     dvh_binding.add_argument("--configfile", required=True)
@@ -372,6 +382,9 @@ def main(argv: list[str] | None = None) -> int:
         elif operation == "validate-aggregate-resume":
             from .aggregate_generation import preflight
             payload = preflight(Path(args.output_dir))
+        elif operation == "validate-phase-c-resume":
+            from .phase_c_progress import preflight
+            payload = preflight(Path(args.output_dir), Path(args.configfile))
         elif operation == "dvh-launch-binding":
             from .dvh_generation import launch_binding
             payload = launch_binding(Path(args.course_dir), Path(args.configfile), args.custom_config)

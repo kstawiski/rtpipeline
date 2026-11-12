@@ -877,6 +877,12 @@ def _manifest_input(wildcards):
     return str(_manifest_path())
 
 
+def _course_manifest_input(wildcards):
+    # The checkpoint determines course membership. A peer course's refresh
+    # must not invalidate this course; its own bound receipts do that.
+    return ancient(str(_manifest_path()))
+
+
 def _organized_input(wildcards):
     # Wait for the checkpoint before resolving its per-course side effect.
     _manifest_path()
@@ -897,6 +903,16 @@ QC_SENTINEL_PATTERN = str(OUTPUT_DIR / "{patient}" / "{course}" / ".qc_done")
 # or no longer validates, so its manifest is regenerated before course inputs.
 if COURSE_MANIFEST.exists():
     try:
+        from rtpipeline.organize_publication import validate as _validate_organize_publication
+        _validate_organize_publication(OUTPUT_DIR)
+        from rtpipeline.snakemake_delegate import invoke as _organize_invoke, runtime_environment as _organize_env
+        from types import SimpleNamespace as _OrganizeParams
+        _organize_check = _organize_invoke(python=PYTHON_MAIN, operation="validate-organize",
+            arguments=["--output-dir", str(OUTPUT_DIR), "--mode", "check"],
+            result_dir=LOGS_DIR / "organize-resume", env=_organize_env(
+                _OrganizeParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE), python_bin=PYTHON_MAIN_BIN)))
+        if _organize_check["ledger"].get("source_bytes_current") is not True:
+            raise ValueError("Organize source byte inventory changed")
         _manifest_courses = json.loads(COURSE_MANIFEST.read_text(encoding="utf-8"))["courses"]
         if not isinstance(_manifest_courses, list):
             raise ValueError("Manifest courses must be a list")
@@ -929,6 +945,13 @@ _GENERIC_STAGE_COMPLETION_DEPENDENCIES = (
     ("crop_ct", ".crop_ct_done", CROP_CT_CONFIG_DEPENDENCY),
     ("qc", ".qc_done", QC_CONFIG_DEPENDENCY),
 )
+if any(list(OUTPUT_DIR.glob("*/*/" + name)) for _, name, _ in _GENERIC_STAGE_COMPLETION_DEPENDENCIES):
+    from rtpipeline.snakemake_delegate import invoke as _phase_c_invoke, runtime_environment as _phase_c_env
+    from types import SimpleNamespace as _PhaseCParams
+    _phase_c_invoke(python=PYTHON_MAIN, operation="validate-phase-c-resume",
+        arguments=["--output-dir", str(OUTPUT_DIR), "--configfile", str(EFFECTIVE_CONFIGFILE)],
+        result_dir=LOGS_DIR / "phase-c-resume", env=_phase_c_env(
+            _PhaseCParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE), python_bin=PYTHON_MAIN_BIN)))
 from rtpipeline.config_dependencies import invalidate_unbound_outputs
 for _stage_name, _sentinel_name, _dependency in _GENERIC_STAGE_COMPLETION_DEPENDENCIES:
     _existing_stage_sentinels = list(OUTPUT_DIR.glob(f"*/*/{_sentinel_name}"))
@@ -1139,7 +1162,7 @@ _seg_params_lambda = lambda w: (
 
 rule segmentation_course:
     input:
-        manifest=_manifest_input,
+        manifest=_course_manifest_input,
         organized=_organized_input,
         configuration=SEGMENTATION_CONFIG_DEPENDENCY
     output:
@@ -1194,7 +1217,7 @@ _custom_params_lambda = lambda w: (
 if config.get("container_mode", False):
     rule segmentation_custom_models:
         input:
-            manifest=_manifest_input,
+            manifest=_course_manifest_input,
             segmentation=SEGMENTATION_SENTINEL_PATTERN,
             configuration=CUSTOM_MODELS_CONFIG_DEPENDENCY
         output:
@@ -1226,7 +1249,7 @@ if config.get("container_mode", False):
 else:
     rule segmentation_custom_models:
         input:
-            manifest=_manifest_input,
+            manifest=_course_manifest_input,
             segmentation=SEGMENTATION_SENTINEL_PATTERN,
             configuration=CUSTOM_MODELS_CONFIG_DEPENDENCY
         output:
@@ -1259,7 +1282,7 @@ else:
 
 rule crop_ct_course:
     input:
-        manifest=_manifest_input,
+        manifest=_course_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         custom=CUSTOM_SEG_SENTINEL_PATTERN,
         configuration=CROP_CT_CONFIG_DEPENDENCY
@@ -1293,7 +1316,7 @@ rule crop_ct_course:
 
 rule dvh_course:
     input:
-        manifest=_manifest_input,
+        manifest=_course_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         custom=CUSTOM_SEG_SENTINEL_PATTERN,
         crop=CROP_CT_SENTINEL_PATTERN,
@@ -1323,7 +1346,7 @@ rule dvh_course:
 
 
 _radiomics_input_dict = {
-    "manifest": _manifest_input,
+    "manifest": _course_manifest_input,
     "segmentation": SEGMENTATION_SENTINEL_PATTERN,
     "custom": CUSTOM_SEG_SENTINEL_PATTERN,
     "crop": CROP_CT_SENTINEL_PATTERN,
@@ -1408,7 +1431,7 @@ else:
 
 rule qc_course:
     input:
-        manifest=_manifest_input,
+        manifest=_course_manifest_input,
         segmentation=SEGMENTATION_SENTINEL_PATTERN,
         crop=CROP_CT_SENTINEL_PATTERN,
         configuration=QC_CONFIG_DEPENDENCY
@@ -1438,7 +1461,7 @@ rule qc_course:
 
 
 _robustness_input_dict = {
-    "manifest": _manifest_input,
+    "manifest": _course_manifest_input,
     "dvh": DVH_SENTINEL_PATTERN,
     "radiomics": RADIOMICS_SENTINEL_PATTERN,
     "configuration": ROBUSTNESS_CONFIG_DEPENDENCY,

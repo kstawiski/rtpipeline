@@ -60,6 +60,8 @@ _COMMON_CODE_SOURCES = (
     "__init__.py",
     "cli.py",
     "stage_completion.py",
+    "artifact_progress.py",
+    "phase_c_progress.py",
     "original_segmentation.py",
     "radiomics_rasterizer.py",
     "workflow_delegate.py",
@@ -93,6 +95,10 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             *_COMMON_CODE_SOURCES,
             "workflow/scripts/organize_courses.py",
             "organize.py",
+            "organize_publication.py",
+            "ct.py",
+            "dicom_copy.py",
+            "segmentation.py",
             "rtstruct_geometry.py",
             "course_contract.py",
             "prescription.py",
@@ -157,7 +163,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         name="crop_ct",
         sentinel=".crop_ct_done",
         configuration_stage="crop-ct",
-        binding_policy="crop-ct-content-v1",
+        binding_policy="crop-ct-content-v2",
         rules=(
             ArtifactRule(
                 "cropped_image_or_mask",
@@ -170,7 +176,7 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
             ArtifactRule("cropping_metadata", "cropping_metadata.json", "content_sha256"),
         ),
         required_roles=frozenset({"cropped_image_or_mask", "cropping_metadata"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "rtstruct_geometry.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "anatomical_cropping.py", "artifact_progress.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK", "rt-utils"),
     ),
     "dvh": StageDefinition(
@@ -207,10 +213,10 @@ _STAGE_DEFINITIONS: dict[str, StageDefinition] = {
         name="qc",
         sentinel=".qc_done",
         configuration_stage="qc",
-        binding_policy="qc-content-v1",
-        rules=(ArtifactRule("qc_report", "qc_reports/**/*.json", "content_sha256"),),
+        binding_policy="qc-content-v2",
+        rules=(ArtifactRule("qc_report", "qc_reports/qc_report_*.json", "content_sha256"),),
         required_roles=frozenset({"qc_report"}),
-        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "rtstruct_geometry.py", "course_contract.py"),
+        code_sources=(*_COMMON_CODE_SOURCES, "quality_control.py", "artifact_progress.py", "rtstruct_geometry.py", "course_contract.py"),
         environment_packages=("numpy", "pydicom", "SimpleITK"),
     ),
 }
@@ -456,6 +462,15 @@ def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dic
     for rule in definition.rules:
         allowed = _rule_manifest_paths(root, rule)
         for candidate in sorted(root.glob(rule.pattern)):
+            if any(part.startswith(".") for part in candidate.relative_to(root).parts):
+                continue
+            relative_parts = candidate.relative_to(root).parts
+            if (definition.name in {"organize", "segmentation"} and "_cropped" in candidate.name
+                    and candidate.name.endswith((".nii", ".nii.gz"))
+                    and relative_parts[0] in {"NIFTI", "Segmentation_TotalSegmentator"}):
+                continue
+            if definition.name == "qc" and candidate.name != f"qc_report_{root.parent.name}_{root.name}.json":
+                continue
             if not (candidate.is_file() or candidate.is_symlink()):
                 continue
             relative = candidate.relative_to(root).as_posix()
@@ -499,7 +514,23 @@ def _validate_stage_specific_outcome(
     definition: StageDefinition,
     status: str,
     outputs: Sequence[Mapping[str, Any]],
+    configuration=None,
 ) -> str | None:
+    if status == "ok" and definition.name == "organize" and (course_dir / ".organize-progress.json").is_file():
+        from .organize import validate_organized_course_progress
+        validate_organized_course_progress(course_dir, verify_environment=False)
+    if status == "ok" and definition.name == "crop_ct":
+        from .anatomical_cropping import validate_crop_publication
+        expected = None
+        if configuration is not None:
+            crop_config = configuration["payload"].get("ct_cropping", {})
+            expected = {"region": crop_config.get("region", "pelvis"), "output_suffix": "_cropped",
+                "inferior_margin_cm": crop_config.get("inferior_margin_cm"),
+                "superior_margin_cm": crop_config.get("superior_margin_cm")}
+        validate_crop_publication(course_dir, expected, verify_environment=False)
+    if status == "ok" and definition.name == "qc":
+        from .quality_control import validate_qc_publication
+        validate_qc_publication(course_dir, verify_environment=False)
     if definition.name == "segmentation" and status == "ok":
         from .original_segmentation import original_export_entries, require_current_original_export
 
@@ -568,7 +599,7 @@ def stage_completion_payload(
     )
     outputs = [] if terminal_status == "disabled" else _discover_outputs(root, definition)
     _validate_required_roles(definition, terminal_status, outputs)
-    measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs)
+    measurement_outcome = _validate_stage_specific_outcome(root, definition, terminal_status, outputs, configuration)
     code = _code_identity(definition)
     environment = environment_record(definition.environment_packages)
     runtime_provenance = {}
@@ -664,6 +695,16 @@ def write_stage_completion_sentinel(
         status=status,
         configuration_dependency=configuration_dependency,
     )
+    if stage_definition(stage).name == "organize" and destination.is_file():
+        try:
+            existing = validate_stage_completion_sentinel(destination, expected_stage=stage,
+                expected_patient=root.parent.name, expected_course=root.name)
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        else:
+            unchanged = dict(payload, completed_at_utc=existing["completed_at_utc"])
+            if unchanged == existing:
+                return existing
     if stage_definition(stage).name == "dvh":
         from .durable_progress import final_result_writer
         final_result_writer(destination, payload)
@@ -812,7 +853,7 @@ def validate_stage_completion_payload(
     if payload.get("content_closure_sha256") != _content_closure(outputs):
         raise ValueError("Stage completion content-closure digest is invalid")
     _validate_required_roles(definition, status, outputs)
-    measurement_outcome = _validate_stage_specific_outcome(root, definition, status, outputs)
+    measurement_outcome = _validate_stage_specific_outcome(root, definition, status, outputs, configuration)
     if payload.get("measurement_outcome") != measurement_outcome:
         raise ValueError("Stage completion measurement outcome disagrees with its bound outputs")
     return dict(payload)
