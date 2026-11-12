@@ -262,6 +262,9 @@ def test_current_rs_auto_and_rs_custom_are_reused_without_model_or_rebuild(monke
     custom_ds = pydicom.dcmread(course / "RS_custom.dcm")
     assign_derived_identity(custom_ds, str(custom_ds.SOPInstanceUID), str(custom_ds.SOPClassUID))
     custom_ds.save_as(course / "RS_custom.dcm")
+    segmentation._ensure_model_rtstruct_from_masks(
+        course / "DICOM/CT", seg_dir, seg_dir.name, "total")
+    assert auto_rtstruct.build_auto_rtstruct(course) == rs_auto
     # The generator records the publication it wrote, and a publication with no
     # current generator record is regenerated regardless of mtimes (see
     # tests/test_custom_structures_generator_epoch.py). Reuse is therefore a
@@ -277,6 +280,7 @@ def test_current_rs_auto_and_rs_custom_are_reused_without_model_or_rebuild(monke
                 "opencv_runtime": {"opencv_version": "5.0.0"},
                 "generator_code_sha256": custom_structures_rtstruct.rs_custom_generator_sha256(),
                 "rs_custom_sop_instance_uid": str(published_custom.SOPInstanceUID),
+                "binding": custom_structures_rtstruct._custom_binding(course, None, None, None).as_dict(),
                 "planning_ct_series_instance_uid": series_uid,
             }
         ),

@@ -2813,7 +2813,7 @@ def segment_course(config: PipelineConfig, course_dir: Path, force: bool = False
 
     manifest_path = base_dir / "manifest.json"
     manifest_needs_update = any(
-        isinstance(decision, dict) and decision.get("action") != "reused"
+        isinstance(decision, dict) and decision.get("action") in {"rebuilt", "skipped"}
         for decision in resume_decisions.values()
     )
     if attempted_any or (
