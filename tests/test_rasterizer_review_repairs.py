@@ -273,17 +273,27 @@ def test_qc_report_records_actual_runtime(tmp_path):
     (tmp_path / 'qc').mkdir()
     path = generate_qc_report(course, tmp_path / 'qc', skip_structure_cropping=True)
     assert json.loads(path.read_text())['opencv_runtime'] == rasterizer.opencv_runtime_provenance()
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    assert generate_qc_report(course, tmp_path / 'qc', skip_structure_cropping=True) == path
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    path.write_text('{}')
+    generate_qc_report(course, tmp_path / 'qc', skip_structure_cropping=True)
+    repaired, previous = json.loads(path.read_text()), json.loads(before[0])
+    repaired['timestamp'] = previous['timestamp']  # A new report records its publication time.
+    assert repaired == previous
 
 
 def test_crop_metadata_records_runtime_after_rtstruct_write(tmp_path, monkeypatch):
     from rtpipeline import anatomical_cropping as cropping
     course = tmp_path / 'P1' / 'C1'
     fixtures._write_contract(course)
+    import SimpleITK as sitk
+    mask = course / 'Segmentation_TotalSegmentator/CT/total--brain.nii.gz'
+    mask.parent.mkdir(parents=True)
+    sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8) + 1, str(mask))
     monkeypatch.setattr(cropping, 'determine_brain_crop_boundaries', lambda *_a, **_k: (30.0, -30.0))
-    def write_rtstruct(*_args):
-        path = course / 'RS_auto_cropped.dcm'
-        path.write_bytes(b'synthetic written RTSTRUCT')
-        return path
+    def write_rtstruct(*_args, output_path=None):
+        return fixtures.write_synthetic_rtstruct(output_path, roi_names=('brain',))
     monkeypatch.setattr(cropping, '_create_rtstruct_from_cropped_masks', write_rtstruct)
     cropping.apply_systematic_cropping(course, region='brain')
     metadata = json.loads((course / 'cropping_metadata.json').read_text())

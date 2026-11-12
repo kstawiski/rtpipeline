@@ -101,10 +101,10 @@ def _qc_inputs(course_dir):
     return inventory(paths, course_dir)
 
 
-def _qc_item(course_dir, name, settings, inputs=None, environment=None):
+def _qc_item(course_dir, name, settings, inputs=None, environment=None, *, artifact_base=None):
     from .artifact_progress import ArtifactItem, code_files
     return ArtifactItem(Path(course_dir) / ".qc-progress/items", name, settings,
-        _qc_inputs(course_dir) if inputs is None else inputs, base=course_dir,
+        _qc_inputs(course_dir) if inputs is None else inputs, base=artifact_base or course_dir,
         code=code_files("quality_control.py", "rtstruct_geometry.py", "course_contract.py"), environment=environment)
 
 
@@ -583,11 +583,16 @@ def generate_qc_report(course_dir: Path, output_dir: Path, skip_structure_croppi
     from .artifact_progress import write_json
     from .durable_progress import final_result_writer
     settings = {"skip_structure_cropping": skip_structure_cropping}
-    progress = _qc_item(course_dir, "report", settings)
     report_path = output_dir / f"qc_report_{course_dir.parent.name}_{course_dir.name}.json"
+    canonical = output_dir.resolve() == (course_dir / "qc_reports").resolve()
+    def report_item():
+        return _qc_item(course_dir, "report" if canonical else ["report", str(report_path.resolve())],
+            settings, artifact_base=course_dir if canonical else output_dir)
+    progress = report_item()
     if progress.load() is not None:
-        from .extraction_progress import runtime_environment
-        final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
+        if canonical:
+            from .extraction_progress import runtime_environment
+            final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
         return report_path
     validator = DICOMValidator(course_dir, skip_structure_cropping=skip_structure_cropping)
     qc_results = validator.validate_all()
@@ -601,11 +606,12 @@ def generate_qc_report(course_dir: Path, output_dir: Path, skip_structure_croppi
 
     # Save report
     write_json(report_path, qc_results, indent=2, default=str)
-    if _qc_item(course_dir, "report", settings).binding != progress.binding:
+    if report_item().binding != progress.binding:
         raise QualityControlError("QC inputs changed during report generation")
     progress.commit_artifacts([report_path], checks=list(qc_results["checks"]) + ["segmentation_validation"])
-    from .extraction_progress import runtime_environment
-    final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
+    if canonical:
+        from .extraction_progress import runtime_environment
+        final_result_writer(Path(course_dir) / ".qc-progress/current.json", {"settings": settings, "environment": runtime_environment()})
 
     logger.info(f"QC report saved to {report_path}")
     return report_path

@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import SimpleITK as sitk
 
 import rtpipeline.anatomical_cropping as anatomical_cropping
 import rtpipeline.cli as cli
@@ -45,7 +46,8 @@ from course_contract_test_utils import (
 
 @pytest.fixture(autouse=True)
 def _authoritative_contract_fixture(tmp_path: Path) -> None:
-    write_minimal_course_contract(tmp_path)
+    root_ct = write_synthetic_planning_ct(tmp_path)
+    write_minimal_course_contract(tmp_path, planning_ct_dir=root_ct)
     course_dir = tmp_path / "course"
     planning_ct_dir = write_synthetic_planning_ct(course_dir)
     write_minimal_course_contract(course_dir, planning_ct_dir=planning_ct_dir)
@@ -281,7 +283,9 @@ def test_keep_original_non_default_warns_and_is_ignored(tmp_path, monkeypatch):
         )
     assert any(issubclass(w.category, DeprecationWarning) for w in caught)
     # Ignored: behavior (return value / files kept) is unaffected by the flag.
-    assert result == {}
+    assert set(result) == {"ct"}
+    assert result["ct"].is_file()
+    assert (tmp_path / "NIFTI/ct.nii.gz").is_file()
 
 
 def test_keep_original_config_knob_kept_on_pipeline_config(tmp_path):
@@ -304,7 +308,7 @@ def _prepare_resumed_course(tmp_path, monkeypatch, *, dicom_name: str) -> tuple[
     course_dirs.ensure()
 
     nifti_path = course_dirs.nifti / "series1.nii.gz"
-    nifti_path.write_bytes(b"fake nifti")
+    sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkInt16), str(nifti_path))
     write_minimal_course_contract(
         course_dir,
         planning_ct_dir=course_dirs.dicom_ct,
@@ -319,9 +323,13 @@ def _prepare_resumed_course(tmp_path, monkeypatch, *, dicom_name: str) -> tuple[
     dicom_path = base_dir / dicom_name
     dicom_path.write_bytes(b"fake rtstruct")
 
-    (base_dir / "total--liver.nii.gz").write_text("fake mask", encoding="utf-8")
+    mask_path = base_dir / "total--liver.nii.gz"
+    sitk.WriteImage(sitk.Image([2, 2, 2], sitk.sitkUInt8) + 1, str(mask_path))
     manifest = {"models": [{"model": "total", "masks": ["total--liver.nii.gz"]}]}
     (base_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    segmentation._model_progress(_cfg(tmp_path), base_dir, "total", nifti_path).commit_artifacts(
+        [mask_path], model_entry=manifest["models"][0])
+    monkeypatch.setattr(segmentation, "run_totalsegmentator", lambda *a, **k: pytest.fail("unexpected inference"))
     monkeypatch.setattr(segmentation, "_series_masks_current", lambda *args, **kwargs: (True, "named-DICOM resume fixture"))
 
     return course_dir, dicom_path
