@@ -21,7 +21,7 @@ from .extraction_progress import BoundItem
 def code_files(*names):
     root = Path(__file__).parent
     return {name: root / name for name in
-            ("artifact_progress.py", "extraction_progress.py", "durable_progress.py", *names)}
+            ("artifact_progress.py", "extraction_progress.py", "durable_progress.py", "output_inventory.py", *names)}
 
 
 def propagate_persistence_failure(error):

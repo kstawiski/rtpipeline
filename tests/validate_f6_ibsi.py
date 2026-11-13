@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import SimpleITK as sitk
@@ -144,8 +145,15 @@ def check_synthetic(folder):
 
 
 def benchmark(folder):
+    from ibsi_validation_data import validation_root
+    data_root = validation_root(REPO)
+    if data_root is None:
+        raise FileNotFoundError("Repository IBSI CT phantom validation data is unavailable")
     sys.path.insert(0, str(REPO / "validation/ibsi/scripts"))
     import run_validation as v
+    v.ROOT = data_root
+    v.SOURCE = data_root / "data/public_sources_20261027"
+    v.OUT = data_root / "results"
     import check_preprocessing as diagnostics
     from feature_map import load_mapping
     image, mask = v.read_phantom("ct_radiomics")

@@ -231,6 +231,19 @@ def test_masks_from_different_planning_ct_rerun_model(monkeypatch, tmp_path):
     assert audit["decisions"]["total"]["model_run"] is True
 
 
+@pytest.mark.parametrize("field", ["series_instance_uid", "sop_hash"])
+def test_model_receipt_binds_source_identity_even_with_identical_nifti_bytes(tmp_path, field):
+    course, _, nifti, seg_dir, _, _ = _make_course(tmp_path)
+    config = PipelineConfig(tmp_path / "input", tmp_path / "output", tmp_path / "logs",
+                            segmentation_temp_root=tmp_path / "seg-tmp")
+    assert segmentation._model_progress(config, seg_dir, "total", nifti).load() is not None
+    sidecar = nifti.with_name(segmentation._strip_nifti_base(nifti) + ".metadata.json")
+    metadata = json.loads(sidecar.read_text())
+    metadata[field] = "different-synthetic-source"
+    sidecar.write_text(json.dumps(metadata))
+    assert segmentation._model_progress(config, seg_dir, "total", nifti).load() is None
+
+
 def test_incomplete_masks_rerun_model(monkeypatch, tmp_path):
     course, _, _, seg_dir, _, _ = _make_course(tmp_path)
     (seg_dir / "total--spleen.nii.gz").unlink()

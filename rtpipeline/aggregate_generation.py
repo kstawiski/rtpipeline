@@ -20,7 +20,7 @@ def standard_code_manifest():
     package = Path(__file__).parent
     return {name: package / name for name in ("workflow_aggregate.py", "dvh_aggregate.py",
         "radiomics_ct_contract.py", "radiomics_schema.py", "radiomics_cohort.py",
-        "aggregate_generation.py", "extraction_progress.py", "durable_progress.py",
+        "aggregate_generation.py", "extraction_progress.py", "durable_progress.py", "output_inventory.py",
         "course_manifest.py", "course_contract.py", "stage_completion.py",
         "roi_requiredness.py", "missing_values.py", "acquisition_scale.py")}
 
@@ -66,6 +66,7 @@ def snapshot(output_root):
     Robustness is an independent DAG branch with its own frozen admission and
     commit. Its in-flight evidence must not invalidate standard reductions.
     """
+    from .output_inventory import is_operational_path
     root = Path(output_root)
     files = set()
     for name in ("_COURSES", "_campaign_ledger/records"):
@@ -89,7 +90,8 @@ def snapshot(output_root):
             files.update(p for p in (course / "MR").glob("radiomics_mr.*") if p.is_file() and p.suffix in {".xlsx", ".parquet"})
     for stem in ("plans", "structure_sets", "dosimetrics", "fractions", "metadata", "CT_images"):
         files.update(p for p in (root / "Data").glob(stem + ".*") if p.is_file() and p.suffix in {".xlsx", ".parquet"})
-    return [{"path": p.relative_to(root).as_posix(), "sha256": file_sha256(p)} for p in sorted(files)]
+    return [{"path": p.relative_to(root).as_posix(), "sha256": file_sha256(p)}
+            for p in sorted(files) if not is_operational_path(p.relative_to(root))]
 
 
 def commit(artifacts, receipt, *, inputs=None, verify=None):

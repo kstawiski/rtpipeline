@@ -1131,7 +1131,11 @@ def _ensure_ct_nifti(
             shutil.rmtree(tmp_dir)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         try:
-            skip_native = require_hygiene or effective_stack_override is not None
+            # Removing an adjudication does not authorize a native converter to
+            # choose among the stacks that previously required that adjudication.
+            skip_native = (require_hygiene or effective_stack_override is not None
+                           or (existing_conversion is not None
+                               and existing_conversion.get("method") == CT_HYGIENE_METHOD))
             generated = (
                 None
                 if skip_native
@@ -1396,8 +1400,15 @@ def _model_progress(config, base_dir, model, source_nifti, extra_args=()):
         "totalseg_roi_subset", "conda_activate")}
     settings["extra_args"] = list(extra_args or ())
     weight_files = _totalseg_weights_identity(config, model, extra_args)
+    sidecar = source_nifti.with_name(_strip_nifti_base(source_nifti) + ".metadata.json")
+    try:
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        metadata = {}
+    source_identity = {key: metadata.get(key) for key in ("series_instance_uid", "sop_hash")}
     item = ArtifactItem(base_dir / ".model-progress", model, settings,
-        {"image": _file_sha256(source_nifti), "weights": weight_files}, base=base_dir,
+        {"image": _file_sha256(source_nifti), "source_identity": source_identity,
+         "weights": weight_files}, base=base_dir,
         code=code_files("segmentation.py", "rtstruct_geometry.py"),
         environment=environment_record(("TotalSegmentator", "torch", "nnunetv2", "SimpleITK")))
     return item
@@ -1441,6 +1452,12 @@ def _restore_committed_model(base_dir, model, committed, source_nifti, provenanc
             manifest = {}
     except (OSError, ValueError):
         manifest = {}
+    # A receipt authenticates mask bytes, not a contradictory source claim in
+    # the published manifest. Leave that claim for the normal currentness
+    # check to reject; recovery must never relabel masks from another CT.
+    if any(manifest.get(key) not in (None, "", value)
+           for key, value in (provenance or {}).items()):
+        return
     current = next((item for item in manifest.get("models", []) if isinstance(item, dict) and item.get("model") == model), None)
     if current is None or current.get("masks") != entry["masks"] or any(
             manifest.get(key) != value for key, value in (provenance or {}).items()):

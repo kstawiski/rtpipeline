@@ -5548,10 +5548,12 @@ def _organize_checkpoint_dir(config: PipelineConfig) -> Path:
 
 
 def _organized_artifacts(course_dir):
+    from .output_inventory import is_operational_path
     paths = []
     for name in ("DICOM", "DICOM_related", "MR", "NIFTI", "Segmentation_Original"):
         paths.extend(p for p in (course_dir / name).rglob("*")
                      if p.is_file() and p.suffix != ".age" and "_cropped" not in p.name
+                     and not is_operational_path(p.relative_to(course_dir))
                      and "Segmentation_TotalSegmentator" not in p.relative_to(course_dir).parts
                      and not any(part.startswith(".") for part in p.relative_to(course_dir).parts))
     for name in ("RP.dcm", "RD.dcm", "RS.dcm", "metadata/case_metadata.json", "metadata/case_metadata.xlsx",

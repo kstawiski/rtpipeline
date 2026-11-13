@@ -157,7 +157,10 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
     shutil.rmtree(cfg.output_root)
     assert len(organize.organize_and_merge(cfg, metadata_snapshot={})) == 4
     actual = _tree_digest(cfg.output_root)
-    assert actual.keys() == expected.keys()
+    assert actual.keys() == expected.keys(), {
+        "extra": sorted(actual.keys() - expected.keys()),
+        "missing": sorted(expected.keys() - actual.keys()),
+    }
     assert [name for name in expected if expected[name] != actual[name]] == []
 
 

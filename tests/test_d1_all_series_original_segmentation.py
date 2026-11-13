@@ -10,6 +10,7 @@ import types
 from pathlib import Path
 
 import numpy as np
+import SimpleITK as sitk
 
 from rtpipeline import organize, segmentation
 from rtpipeline.config import PipelineConfig

@@ -154,8 +154,9 @@ def _run(package_root: Path, work: Path, inputs: Path, config: Path) -> dict:
 
 
 def _collect(output_root: Path) -> dict:
+    from rtpipeline.output_inventory import scientific_files
     collected = {}
-    for path in sorted(output_root.rglob("*")):
+    for path in scientific_files(output_root):
         relative = path.relative_to(output_root)
         if any(part.startswith(".") and part != ".radiomics_robustness_done" for part in relative.parts):
             continue

@@ -220,8 +220,9 @@ def _run(package_root: Path, work: Path, inputs: Path, config: Path, **env_overr
 
 
 def _collect(output_root: Path) -> dict:
+    from rtpipeline.output_inventory import scientific_files
     collected = {}
-    for path in sorted(output_root.rglob("*")):
+    for path in scientific_files(output_root):
         relative = path.relative_to(output_root)
         if any(part.startswith(".") and part != ".radiomics_robustness_done" for part in relative.parts):
             continue
@@ -281,8 +282,25 @@ def canonical_table(frame: pd.DataFrame, ids) -> pd.DataFrame:
         if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
     frame = frame.reindex(columns=sorted(frame.columns))
-    order = frame.astype(str).agg("\x1f".join, axis=1).sort_values(kind="stable").index
-    return frame.loc[order].reset_index(drop=True)
+    # pandas 3's string dtype preserves missing values through astype(str).
+    # Tagged scalar keys distinguish missing values from literal "nan" and
+    # avoid delimiter collisions, while comparisons retain the original data.
+    def key(value):
+        return ("missing", "") if pd.isna(value) else (type(value).__name__, str(value))
+    order = sorted(range(len(frame)), key=lambda i: tuple(
+        key(value) for value in frame.iloc[i]))
+    return frame.iloc[order].reset_index(drop=True)
+
+
+@pytest.mark.parametrize("dtype", [object, "str", "string"])
+def test_canonical_table_preserves_missing_and_literal_strings(dtype):
+    frame = pd.DataFrame({"text": pd.Series([float("nan"), "nan", "a\x1fb", "a", ""], dtype=dtype),
+                          "value": [1., 1., 3., 4., 5.]})
+    observed = canonical_table(frame.iloc[[4, 2, 1, 0, 3]], {})
+    expected = canonical_table(frame, {})
+    pd.testing.assert_frame_equal(observed, expected, check_exact=True)
+    assert observed["text"].isna().sum() == 1
+    assert (observed["text"] == "nan").sum() == 1
 
 
 def _course_outputs(run: dict, courses) -> dict:
@@ -446,12 +464,13 @@ def test_scoped_reader_regressions_fail_on_base(runs):
     log = base["log"]
     assert ("/S1/C1/RS.dcm: Loaded RTStruct references image(s) that are not contained "
             "in input series data") in log
-    assert "Expected ROI 'urinary_bladder' in " in log
     if int(cv2.__version__.split(".")[0]) < 5:
+        assert "Expected ROI 'urinary_bladder' in " in log
         assert "/S2/C1/RS_auto.dcm could not be read: OpenCV" in log and "fillPoly" in log
     else:
         assert base["codes"]["S2"] == 0
         assert _sidecar(base["outputs"], "S2")["measurement_outcome"] == "measured"
+        assert "Expected ROI 'urinary_bladder' in " not in log
     assert "Expected ROI 'GTV_far' in " in log
 
 

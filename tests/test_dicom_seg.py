@@ -68,3 +68,9 @@ def test_load_dicom_seg_propagates_overlap_failure(monkeypatch):
     )
     with pytest.raises(ValueError, match="overlapping"):
         dicom_seg.load_dicom_seg_multiclass(_seg_dataset())
+
+
+def test_missing_optional_decoder_fails_explicitly_without_decoding(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pydicom_seg", None)
+    with pytest.raises(RuntimeError, match="separately pinned NumPy 1.x conversion environment"):
+        dicom_seg.load_dicom_seg_multiclass(_seg_dataset())

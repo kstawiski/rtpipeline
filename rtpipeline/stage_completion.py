@@ -57,6 +57,7 @@ class StageDefinition:
 
 
 _COMMON_CODE_SOURCES = (
+    "output_inventory.py",
     "__init__.py",
     "cli.py",
     "stage_completion.py",
@@ -454,6 +455,7 @@ def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> li
 
 
 def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dict[str, Any]]:
+    from .output_inventory import is_operational_path
     root = Path(course_dir)
     stale = _stale_original_exports(root, definition)
     if stale:
@@ -462,6 +464,8 @@ def _discover_outputs(course_dir: Path, definition: StageDefinition) -> list[dic
     for rule in definition.rules:
         allowed = _rule_manifest_paths(root, rule)
         for candidate in sorted(root.glob(rule.pattern)):
+            if is_operational_path(candidate.relative_to(root)):
+                continue
             if any(part.startswith(".") for part in candidate.relative_to(root).parts):
                 continue
             relative_parts = candidate.relative_to(root).parts

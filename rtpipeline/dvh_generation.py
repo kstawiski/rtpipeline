@@ -120,6 +120,7 @@ def input_manifest(course, *, include_derived=True):
     DICOM bytes include SOP/series/reference identities. Outputs, runtime audit
     logs and the DVH generation itself are deliberately outside this inventory.
     """
+    from .output_inventory import is_operational_path
     course = Path(course)
     if any(not (course / name).is_file() for name in _pending_upstream(course)):
         raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
@@ -139,7 +140,7 @@ def input_manifest(course, *, include_derived=True):
         if path.is_file():
             files.add(path)
     manifest = [{"path": p.relative_to(course).as_posix(), "sha256": file_sha256(p)}
-                for p in sorted(files)]
+                for p in sorted(files) if not is_operational_path(p.relative_to(course))]
     # The upstream generation identity binds content, code, configuration and
     # environment. Receipt creation time and host are audit fields, not inputs.
     for name in _UPSTREAM_RECEIPTS:
@@ -177,7 +178,7 @@ def binding(course, settings, custom_config=None, *, custom_only=False, extra_in
         from .dvh import DVH_MEASUREMENT_CODE_SOURCES
     package = Path(__file__).resolve().parent
     sources = RS_CUSTOM_GENERATOR_CODE_SOURCES if custom_only else DVH_MEASUREMENT_CODE_SOURCES
-    sources = set(sources) | {"dvh_generation.py", "durable_progress.py", "radiomics_rasterizer.py",
+    sources = set(sources) | {"dvh_generation.py", "durable_progress.py", "output_inventory.py", "radiomics_rasterizer.py",
                               "layout.py", "utils.py", "stage_completion.py", "config_dependencies.py", "plan_profiles.py", "clinical_prescription.py",
                               "planning_ct_localizers.py", "ct_series_hygiene.py", "nifti_provenance.py"}
     if not custom_only:

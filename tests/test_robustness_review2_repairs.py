@@ -324,7 +324,8 @@ def test_migration_quarantines_only_obsolete_across_output_roots_and_dag(tmp_pat
             '    output: "P{p}/C1/.radiomics_robustness_done"\n'
             '    shell: "echo run-course-{wildcards.p}"\n'
         )
-        result = subprocess.run([sys.executable, "-m", "snakemake", "-n", "-p", "--nolock", "--cores", "1", "-s", str(snakefile), "--directory", str(root)], capture_output=True, text=True)
+        from conftest import snakemake_executable
+        result = subprocess.run([snakemake_executable(), "-n", "-p", "--nolock", "--cores", "1", "-s", str(snakefile), "--directory", str(root)], capture_output=True, text=True)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "run-course-0" in result.stdout + result.stderr
         assert all(f"run-course-{i}" not in result.stdout + result.stderr for i in range(1, 4))

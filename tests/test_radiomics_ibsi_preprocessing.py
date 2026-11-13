@@ -119,11 +119,12 @@ def numerical_receipt():
     if probe.returncode:
         pytest.skip(reason)
     repo = Path(__file__).resolve().parents[1]
-    public = repo / "validation/ibsi/data/public_sources_20261027"
+    from ibsi_validation_data import validation_root
+    public = validation_root(repo)
     with tempfile.TemporaryDirectory(prefix="f6-ibsi-", dir=os.environ.get("TMPDIR")) as directory:
         command = [str(executable), "-I", "-B", str(Path(__file__).with_name("validate_f6_ibsi.py")),
                    "--output", directory]
-        if not public.is_dir():
+        if public is None:
             command.append("--synthetic-only")
         result = subprocess.run(command, capture_output=True, text=True, timeout=240,
                                 env={**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"})

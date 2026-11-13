@@ -97,6 +97,10 @@ def _resolve_radiomics_interpreter():
     import os
     import shutil
     from pathlib import Path
+    from rtpipeline.radiomics_conda import _radiomics_env_prefix
+    prefix = _radiomics_env_prefix()
+    if prefix is not None:
+        return str(Path(prefix) / "bin" / "python")
     env_name = os.environ.get("RTPIPELINE_RADIOMICS_ENV", "rtpipeline-radiomics")
     root = os.environ.get("MAMBA_ROOT_PREFIX")
     if root:

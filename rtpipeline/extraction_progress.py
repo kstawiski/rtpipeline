@@ -62,7 +62,7 @@ def image_identity(image):
 
 def code_manifest(extra=()):
     package = Path(__file__).resolve().parent
-    names = {"extraction_progress.py", "durable_progress.py", "radiomics.py",
+    names = {"extraction_progress.py", "durable_progress.py", "output_inventory.py", "radiomics.py",
         "radiomics_parallel.py", "radiomics_conda.py", "radiomics_ct_contract.py",
         "radiomics_schema.py", "radiomics_rasterizer.py", "rtstruct_geometry.py",
         "radiomics_resource_guard.py", "radiomics_memory.py", "roi_requiredness.py", "config_dependencies.py",
@@ -94,6 +94,7 @@ def radiomics_settings(config):
 def course_binding(course, dependency=None):
     """Current nominal CT/MR producer binding for a per-course DAG target."""
     import os
+    from .output_inventory import is_operational_path
     from .dvh_generation import input_manifest
     from .radiomics_conda import _extraction_environment
     course = Path(course)
@@ -109,7 +110,8 @@ def course_binding(course, dependency=None):
             inputs.append({"path": name, "sha256": file_sha256(path)})
     for name in ("MR",):
         inputs.extend({"path": p.relative_to(course).as_posix(), "sha256": file_sha256(p)}
-                      for p in sorted((course / name).rglob("*")) if p.is_file() and p.suffix != ".age")
+                      for p in sorted((course / name).rglob("*")) if p.is_file() and p.suffix != ".age"
+                      and not is_operational_path(p.relative_to(course)))
     return make_binding(code_manifest(), {"configuration": scientific(settings),
                         "environment": _extraction_environment()}, inputs)
 

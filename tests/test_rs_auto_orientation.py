@@ -96,6 +96,18 @@ def _geometry_course(tmp_path: Path, zs, geometry):
     seg_dir.mkdir(parents=True)
     for name, box in BOXES.items():
         sitk.WriteImage(_mask_image(zs, geometry, box), str(seg_dir / f"total--{name}.nii.gz"))
+    from rtpipeline import segmentation
+    contract = segmentation.load_course_contract(course)
+    provenance = segmentation._segmentation_source_provenance(
+        contract.planning_ct_nifti,
+        str(contract.planning_ct["series_instance_uid"]),
+        str(contract.planning_ct["nifti_provenance"]["sop_hash"]),
+    )
+    (seg_dir / "manifest.json").write_text(json.dumps({
+        **provenance,
+        "models": [{"model": "total", "rtstruct": "", "masks":
+                    sorted(p.name for p in seg_dir.glob("total--*.nii.gz"))}],
+    }), encoding="utf-8")
     return course, dirs.dicom_ct, seg_dir
 
 
