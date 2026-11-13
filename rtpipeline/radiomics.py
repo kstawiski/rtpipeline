@@ -2818,7 +2818,7 @@ def radiomics_for_course(
             {"task": settings, "configuration": radiomics_settings(config)},
             {"image": image_identity(img), "mask": hashlib.sha256(task.mask.tobytes()).hexdigest(),
              "source": task.source_content_sha256})
-        cached = item.load() if getattr(config, "resume", False) else None
+        cached = item.load()
         if cached is not None:
             return restamp(cached, {"run_identifier": run_identifier, "code_revision": code_revision})
         records = _do_ct_task_uncached(task)
