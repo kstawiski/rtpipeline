@@ -395,7 +395,14 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         from radiomics import featureextractor
         original_execute = featureextractor.RadiomicsFeatureExtractor.execute
         def observed_execute(self, *args, **kwargs):
-            caller = inspect.currentframe().f_back.f_locals
+            # Find the arm-cache frame that owns this extraction (it may call
+            # the extractor through a helper), not just the immediate caller.
+            frame, caller = inspect.currentframe().f_back, {}
+            while frame is not None:
+                if isinstance(frame.f_locals.get('item'), ep.BoundItem) and 'arm' in frame.f_locals:
+                    caller = frame.f_locals
+                    break
+                frame = frame.f_back
             arm_item = caller.get('item')
             if active_stage and arm_item is not None:
                 event({'event':'scalar_extract', 'stage':active_stage, 'key':arm_item.key,
