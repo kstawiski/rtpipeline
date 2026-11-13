@@ -106,3 +106,51 @@ def test_every_durable_root_named_in_code_is_operational():
 def test_derived_progress_roots_are_operational(stem):
     # radiomics_conda and the robustness aggregate derive "." + stem + "-progress".
     assert is_operational_path(f"P/C/.{stem}-progress/partitions/a/commit.json")
+
+
+def _production_sources():
+    root = Path(__file__).resolve().parents[1]
+    return sorted((root / "rtpipeline").glob("*.py")) + sorted((root / "workflow" / "scripts").glob("*.py"))
+
+
+def test_dynamically_built_progress_roots_are_registered():
+    # Literal roots are checked above; a root assembled at run time is invisible
+    # to that scan, so each one must be registered here and match the generic rule.
+    import ast
+    registered = {
+        ("radiomics_conda.py", '"." + Path(output_path).stem + "-progress"'),
+        ("radiomics_robustness_aggregate.py", '"." + output_excel.stem + "-progress"'),
+    }
+    found = set()
+    for source in _production_sources():
+        text = source.read_text()
+        for node in ast.walk(ast.parse(text, filename=str(source))):
+            if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)) or isinstance(node, ast.JoinedStr):
+                segment = ast.get_source_segment(text, node) or ""
+                # A fragment such as "-progress" (not a complete ".<name>-progress"
+                # component, which the literal scan covers) means the name is assembled.
+                fragments = [part.value for part in ast.walk(node)
+                             if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                             and part.value.endswith("-progress") and "/" not in part.value
+                             and not part.value.startswith(".")]
+                if fragments:
+                    found.add((source.name, segment))
+    assert found == registered
+
+
+def test_commit_record_names_belong_to_the_commit_writer():
+    # ".commit.json" is reserved for aggregate_generation.commit records; a
+    # scientific output with that suffix would silently leave the inventory.
+    import ast
+    owners = {"aggregate_generation.py", "output_inventory.py", "workflow_aggregate.py",
+              "radiomics_robustness.py"}
+    names = set()
+    for source in _production_sources():
+        for node in ast.walk(ast.parse(source.read_text(), filename=str(source))):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and node.value.endswith(".commit.json")):
+                assert source.name in owners, (source.name, node.value)
+                names.add(node.value)
+    assert names == {".commit.json", "aggregate_results.commit.json",
+                     "radiomics_robustness_summary.commit.json"}
+    assert all(is_operational_path(f"_RESULTS/{name}") for name in names - {".commit.json"})
