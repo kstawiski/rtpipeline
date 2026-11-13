@@ -109,6 +109,10 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
     import types
     import zipfile
     import xlsxwriter.core
+    # Native datetime types and Excel descriptors must initialize against real
+    # datetime before each parameter gets its own deterministic clock class.
+    import pandas  # noqa: F401
+    import openpyxl  # noqa: F401
     from organize_io_fixture import synthetic
 
     class FixedTime(datetime.datetime):
@@ -153,10 +157,10 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
             historical.setattr(rtpipeline, name, module, raising=False)
             exec(compile(saved, module.__file__, 'exec'), module.__dict__)
         assert len(baseline.organize_and_merge(cfg, metadata_snapshot={})) == 4
-    expected = _tree_digest(cfg.output_root)
+    expected = _tree_digest(cfg.output_root, scientific=True)
     shutil.rmtree(cfg.output_root)
     assert len(organize.organize_and_merge(cfg, metadata_snapshot={})) == 4
-    actual = _tree_digest(cfg.output_root)
+    actual = _tree_digest(cfg.output_root, scientific=True)
     assert actual.keys() == expected.keys(), {
         "extra": sorted(actual.keys() - expected.keys()),
         "missing": sorted(expected.keys() - actual.keys()),

@@ -56,11 +56,12 @@ def _config(tmp_path: Path, binary: str) -> PipelineConfig:
     )
 
 
-def _tree_digest(root: Path) -> dict[str, str]:
+def _tree_digest(root: Path, *, scientific: bool = False) -> dict[str, str]:
     from rtpipeline.output_inventory import scientific_files
+    paths = scientific_files(root) if scientific else sorted(root.rglob("*"))
     return {
         str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in scientific_files(root)
+        for path in paths if path.is_file()
     }
 
 

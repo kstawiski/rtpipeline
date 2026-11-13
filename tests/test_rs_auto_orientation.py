@@ -91,7 +91,12 @@ def _geometry_course(tmp_path: Path, zs, geometry):
     course = tmp_path / "course"
     dirs = ar.build_course_dirs(course)
     _write_ct(dirs.dicom_ct, zs, rows=rows, columns=columns, pixel_spacing=spacing, origin_xy=origin)
-    _align_contract_ct_geometry(write_minimal_course_contract(course, planning_ct_dir=dirs.dicom_ct), dirs.dicom_ct)
+    dirs.nifti.mkdir(parents=True, exist_ok=True)
+    sitk.WriteImage(sitk.Cast(_grid(zs, geometry), sitk.sitkInt16),
+                    str(dirs.nifti / "CT_series.nii.gz"))
+    _align_contract_ct_geometry(write_minimal_course_contract(
+        course, planning_ct_dir=dirs.dicom_ct,
+        planning_ct_nifti=dirs.nifti / "CT_series.nii.gz"), dirs.dicom_ct)
     seg_dir = dirs.segmentation_totalseg / "CT_series"
     seg_dir.mkdir(parents=True)
     for name, box in BOXES.items():
