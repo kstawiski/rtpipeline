@@ -1860,9 +1860,28 @@ def _extract_ct_roi_arms_impl(
         factory, decision.primary_resegment_range_hu
     )
     effective_hashes = _effective_hashes_for_built_extractors(raw_extractor, primary_extractor, decision)
+    peak_column = "resource_guard_predicted_peak_bytes"
+
+    def run_arm(candidate):
+        # The texture budget guard raises resource_metadata[peak_column] while
+        # the extractor runs. Measure this arm's contribution on its own so a
+        # resumed arm restores exactly what a fresh run would have recorded.
+        tracked = peak_column in resource_metadata
+        prior = resource_metadata.get(peak_column)
+        if tracked:
+            resource_metadata[peak_column] = 0
+        try:
+            result = _scalarize(candidate.execute(image, mask))
+            arm_peak = int(resource_metadata[peak_column]) if tracked else None
+        finally:
+            if tracked:
+                resource_metadata[peak_column] = max(prior, resource_metadata[peak_column])
+        return result, arm_peak
+
     def execute(candidate, arm):
         if progress_root is None:
-            return _scalarize(candidate.execute(image, mask))
+            return run_arm(candidate)[0]
+        from .durable_progress import DurableProgressError
         from .extraction_progress import BoundItem, image_identity
         identity = {key: value for key, value in common_metadata.items()
                     if key in PUBLICATION_KEY_COLUMNS or key in {"perturbed_mask_identity", "measurement_type"}}
@@ -1870,19 +1889,26 @@ def _extract_ct_roi_arms_impl(
         item = BoundItem(Path(progress_root) / "arms", identity,
             {"decision": decision, "configured": configured_parameter_hashes,
              "settings": candidate.settings, "features": getattr(candidate, "enabledFeatures", {}),
-             "image_types": getattr(candidate, "enabledImagetypes", {}), "context": progress_context},
+             "image_types": getattr(candidate, "enabledImagetypes", {}), "context": progress_context,
+             "arm_payload": "features+resource_guard_peak/1"},
             {"image": image_identity(image), "mask": image_identity(mask),
              "source_identity": dict(common_metadata)})
         with item.locked():
             cached = item.load()
             if cached is not None:
-                return cached
-            result = _scalarize(candidate.execute(image, mask))
+                if (not isinstance(cached, dict) or set(cached) != {"features", "resource_guard_peak"}
+                        or (cached["resource_guard_peak"] is None) != (peak_column not in resource_metadata)):
+                    raise DurableProgressError("EXTRACTION_ARM_PAYLOAD_INVALID")
+                if cached["resource_guard_peak"] is not None:
+                    resource_metadata[peak_column] = max(
+                        resource_metadata[peak_column], int(cached["resource_guard_peak"]))
+                return cached["features"]
+            result, arm_peak = run_arm(candidate)
             expected = _configured_feature_names(candidate, observed_result=result)
             missing = expected - set(result) - _approved_undefined_feature_names(result)
             if not missing and (arm != "shape" or not shape_physicality_violations(
                     _feature_subset(result, SHAPE_FEATURE_MARKERS))):
-                item.commit(result)
+                item.commit({"features": result, "resource_guard_peak": arm_peak})
             return result
     if decision.feature_publication_policy == FEATURE_POLICY_INVENTORY_ONLY:
         return disposition_rows_for_arms(
