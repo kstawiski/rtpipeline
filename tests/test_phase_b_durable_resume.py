@@ -350,9 +350,22 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
     import rtpipeline.extraction_progress as ep
     import rtpipeline.radiomics_ct_contract as ct
     ct.new_run_identifier = lambda: "synthetic-phase-b-run"
+    import fcntl
     def event(value):
+        # Concurrent workers append while others read: serialize with an exclusive lock.
         with open(os.environ["WS516_EVENTS"], "a") as f:
-            f.write(json.dumps(value)+"\\n"); f.flush(); os.fsync(f.fileno())
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(value)+"\\n"); f.flush(); os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    def read_events():
+        with open(os.environ["WS516_EVENTS"]) as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                return [json.loads(line) for line in f.read().splitlines() if line.strip()]
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     def pause_b(name):
         if name == os.environ.get("WS515_KILL_POINT"):
             with open(os.environ["WS515_HANDSHAKE"], "w") as f:
@@ -371,11 +384,11 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
             active_key = item.key
             event({"event":"extract", "stage":stage, "key":item.key})
             if stage == "robustness" and os.environ.get("WS515_KILL_POINT") == "robustness_later":
-                counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"]) if line.strip()]
+                counts = read_events()
                 if sum(e["event"]=="extract" and e["stage"]==stage for e in counts) >= 3:
                     while sum(e["event"]=="commit" and e["stage"]==stage for e in counts) < 2:
                         time.sleep(.01)
-                        counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"]) if line.strip()]
+                        counts = read_events()
         return extract(*args, **kwargs)
     ct.extract_ct_roi_arms = counted_extract
     if sys.prefix == os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX"):
@@ -389,7 +402,7 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
                        'roi_key':active_key, 'arm':caller.get('arm')})
             value = original_execute(self, *args, **kwargs)
             if active_stage == "robustness" and os.environ.get("WS515_KILL_POINT") == "robustness_later":
-                counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"]) if line.strip()]
+                counts = read_events()
                 if sum(e["event"]=="commit" and e["stage"]=="robustness" for e in counts) >= 2:
                     pause_b("robustness_later")
             return value
@@ -436,8 +449,7 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         stage = "robustness" if ".robustness-progress" in root else (
             "reduction" if "/reductions/" in root else "radiomics")
         event({"event":"commit", "stage":stage,"key":self.key})
-        counts = [json.loads(line) for line in open(os.environ["WS516_EVENTS"])
-                  if line.strip()]
+        counts = read_events()
         n = sum(e["event"]=="commit" and e["stage"]==stage for e in counts)
         if stage=="radiomics" and n==2: pause_b("conda_stream")
         if stage=="radiomics" and n==2: pause_b("native_roi")
