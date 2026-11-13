@@ -1944,7 +1944,21 @@ def parallel_radiomics_for_course(
             logger.error("%s", fatal_error)
             raise fatal_error
 
-    records_to_write = list(rows)
+    from .radiomics_ct_contract import base_identity_key, order_rows_by_enumeration
+    records_to_write = order_rows_by_enumeration(
+        rows,
+        base_identity_key,
+        ([base_identity_key({
+            "patient_id": Path(task.course_dir).parent.name,
+            "course_id": Path(task.course_dir).name,
+            "series_uid": task.series_uid,
+            "segmentation_source": task.source,
+            "mask_identity": task.mask_identity,
+            "roi_original_name": task.roi_name,
+            "stable_roi_identifier": task.stable_roi_identifier,
+            "extraction_arm": "",
+        })] for task in tasks),
+    )
     if not records_to_write:
         if existing_df is not None and out_path.exists():
             _write_parallel_roi_ledger(course_dir, tasks, existing_df.to_dict("records"), custom_applicability, extracted=True)

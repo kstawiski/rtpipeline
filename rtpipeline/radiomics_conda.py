@@ -2365,6 +2365,10 @@ def process_radiomics_batch(
             )
             rows.extend(prior)
     rows.extend(failure_rows)
+    from .radiomics_ct_contract import order_rows_by_enumeration
+    rows = order_rows_by_enumeration(
+        rows, _roi_instance_key, (_task_expected_keys(task) for task in tasks_list)
+    )
 
     required_publication_keys = expected_keys
     try:

@@ -2237,6 +2237,36 @@ def base_identity_key(row: Mapping[str, Any]) -> tuple[str, ...]:
     return publication_key(row)[:-1]
 
 
+def order_rows_by_enumeration(
+    rows: Iterable[Mapping[str, Any]],
+    identity_of: Callable[[Mapping[str, Any]], Any],
+    enumeration: Iterable[Any],
+) -> list:
+    """Return rows in ROI enumeration order, then extraction-arm order.
+
+    Parallel backends finish ROIs in scheduling order, and a resume adds reused
+    rows next to fresh ones. Publication order must not depend on either, so
+    every backend publishes the order a serial run produces. ``enumeration``
+    yields, per enumerated ROI, the identities its rows carry; ``identity_of``
+    maps a row to that identity. Unknown rows keep their relative order at the
+    end, where the publication identity check refuses them.
+    """
+    rank: dict[Any, int] = {}
+    for index, identities in enumerate(enumeration):
+        for identity in identities:
+            rank.setdefault(identity, index)
+    arm_rank = {arm: index for index, arm in enumerate(CT_EXTRACTION_ARMS)}
+    indexed = list(enumerate(rows))
+
+    def order(item):
+        position, row = item
+        arm = row.get("extraction_arm")
+        return (rank.get(identity_of(row), len(rank)),
+                arm_rank.get(arm if isinstance(arm, str) else None, len(arm_rank)), position)
+
+    return [row for _, row in sorted(indexed, key=order)]
+
+
 def expected_publication_keys(base_rows: Iterable[Mapping[str, Any]]) -> set[tuple[str, ...]]:
     out: set[tuple[str, ...]] = set()
     for row in base_rows:

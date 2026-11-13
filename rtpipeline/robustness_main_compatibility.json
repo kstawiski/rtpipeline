@@ -1,7 +1,7 @@
 {
   "main_revision": "072b146",
   "main_sources_sha256": "1ee55b453e7adf984131166c543e9c7e933d28813f27e8215978e7a58eb0d5b6",
-  "compatible_sources_sha256": "c703698aed93df06bf0a48d6671771098193a67d9c732ec3ea4a941c49c91f9f",
+  "compatible_sources_sha256": "6828a7aaf7b7395ad58acbd270bc516a081159b36db90989020c005548784de6",
   "course_classes": [
     "dicom_ct_rtstruct"
   ]
