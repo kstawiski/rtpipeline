@@ -1786,6 +1786,8 @@ def process_radiomics_batch(
         _invalidate_radiomics_outputs(Path(output_path))
         return None
 
+    # The full inventory fixes publication order; resume filtering below must not.
+    enumerated_tasks = list(tasks)
     try:
         expected_keys = set().union(*(_task_expected_keys(task) for task in tasks))
         expected_count = sum(len(_task_expected_keys(task)) for task in tasks)
@@ -2367,7 +2369,7 @@ def process_radiomics_batch(
     rows.extend(failure_rows)
     from .radiomics_ct_contract import order_rows_by_enumeration
     rows = order_rows_by_enumeration(
-        rows, _roi_instance_key, (_task_expected_keys(task) for task in tasks_list)
+        rows, _roi_instance_key, (_task_expected_keys(task) for task in enumerated_tasks)
     )
 
     required_publication_keys = expected_keys

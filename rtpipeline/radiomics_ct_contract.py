@@ -2246,7 +2246,9 @@ def order_rows_by_enumeration(
 
     Parallel backends finish ROIs in scheduling order, and a resume adds reused
     rows next to fresh ones. Publication order must not depend on either, so
-    every backend publishes the order a serial run produces. ``enumeration``
+    the parallel backends publish ROI enumeration order, then arm order, which
+    is the order they produce when tasks finish in submission order. The serial
+    backend keeps its own fixed order. ``enumeration``
     yields, per enumerated ROI, the identities its rows carry; ``identity_of``
     maps a row to that identity. Unknown rows keep their relative order at the
     end, where the publication identity check refuses them.

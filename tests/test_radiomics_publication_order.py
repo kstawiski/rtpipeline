@@ -1,8 +1,8 @@
 """Radiomics publication order must not depend on worker scheduling or resume.
 
 Parallel backends finish ROIs in whatever order the scheduler allows, and a
-resume mixes reused and fresh rows. The published table is the order a serial
-run produces: ROI enumeration order, then extraction-arm order.
+resume mixes reused and fresh rows. The parallel backends publish ROI
+enumeration order, then extraction-arm order, whatever the arrival order.
 """
 from __future__ import annotations
 
@@ -125,3 +125,30 @@ def test_native_publication_is_independent_of_completion_order(tmp_path, monkeyp
     # Arms of one ROI stay adjacent and in contract order.
     arms = forward["extraction_arm"].tolist()
     assert arms == [PRIMARY_ARM, SENSITIVITY_ARM] * 5
+
+
+def test_conda_rows_reused_from_a_checkpoint_publish_in_enumeration_order(tmp_path, monkeypatch):
+    # Resume filtering removes completed tasks from the work list; the reused
+    # rows must still take their enumerated places, not checkpoint-file order.
+    import rtpipeline.radiomics_conda as rc
+    from rtpipeline.acquisition_scale import describe_planning_ct
+    from rtpipeline.radiomics_conda import RadiomicsCheckpoint, process_radiomics_batch
+    from test_radiomics_conda_resilience import _feature_record
+
+    monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)
+    names = ("CTV", "BODY", "BLADDER")
+    checkpoint_path = tmp_path / "metadata" / "radiomics_ct_checkpoint.parquet"
+    output_path = tmp_path / "radiomics_ct.xlsx"
+    checkpoint = RadiomicsCheckpoint(checkpoint_path, buffer_size=1)
+    for name in reversed(names):
+        checkpoint.add_result(_feature_record(name))
+    checkpoint.flush()
+    tasks = [{"image_path": "i", "mask_path": "m", "roi_name": name, "cleanup": False,
+              "metadata": {"segmentation_source": "Manual", "roi_original_name": name}}
+             for name in names]
+    result = process_radiomics_batch(
+        tasks, str(output_path), sequential=True, max_workers=1,
+        checkpoint_path=checkpoint_path, enable_heartbeat=False,
+        acquisition_descriptor=describe_planning_ct(tmp_path / "missing-ct"))
+    assert result is not None
+    assert pd.read_excel(output_path)["roi_name"].tolist() == list(names)
