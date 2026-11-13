@@ -282,14 +282,8 @@ def canonical_table(frame: pd.DataFrame, ids) -> pd.DataFrame:
         if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))
     frame = frame.reindex(columns=sorted(frame.columns))
-    # pandas 3's string dtype preserves missing values through astype(str).
-    # Tagged scalar keys distinguish missing values from literal "nan" and
-    # avoid delimiter collisions, while comparisons retain the original data.
-    def key(value):
-        return ("missing", "") if pd.isna(value) else (type(value).__name__, str(value))
-    order = sorted(range(len(frame)), key=lambda i: tuple(
-        key(value) for value in frame.iloc[i]))
-    return frame.iloc[order].reset_index(drop=True)
+    from table_canonicalization import canonical_row_order
+    return canonical_row_order(frame)
 
 
 @pytest.mark.parametrize("dtype", [object, "str", "string"])
@@ -301,6 +295,9 @@ def test_canonical_table_preserves_missing_and_literal_strings(dtype):
     pd.testing.assert_frame_equal(observed, expected, check_exact=True)
     assert observed["text"].isna().sum() == 1
     assert (observed["text"] == "nan").sum() == 1
+    from test_robustness_equivalence import _in_row_order
+    pd.testing.assert_frame_equal(_in_row_order(frame.iloc[[4, 2, 1, 0, 3]]),
+                                  _in_row_order(frame), check_exact=True)
 
 
 def _course_outputs(run: dict, courses) -> dict:

@@ -267,8 +267,8 @@ def _with_cov_in_table_order(base_outputs: dict, workbook: str, sheet: str,
 
 
 def _in_row_order(frame: pd.DataFrame) -> pd.DataFrame:
-    order = frame.astype(str).agg("\x1f".join, axis=1).sort_values(kind="stable").index
-    return frame.loc[order].reset_index(drop=True)
+    from table_canonicalization import canonical_row_order
+    return canonical_row_order(frame)
 
 
 def _check_supplemental_inventory(base: dict, current: dict) -> dict:

@@ -431,7 +431,7 @@ def _concurrent_csv_worker(args):
 
 
 def test_b1_csv_concurrent_writers_no_corruption(tmp_path):
-    import multiprocessing as mp
+    from rtpipeline.multiprocessing_utils import get_context
 
     n_series = 40
     for i in range(n_series):
@@ -452,7 +452,7 @@ def test_b1_csv_concurrent_writers_no_corruption(tmp_path):
             encoding="utf-8",
         )
 
-    ctx = mp.get_context("spawn")
+    ctx = get_context("spawn")
     with ctx.Manager() as mgr:
         barrier = mgr.Barrier(6)
         with ctx.Pool(6) as pool:
