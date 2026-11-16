@@ -915,8 +915,6 @@ class ScopedRTStruct:
         if len(series_uids) != 1:
             raise ValueError('RTSTRUCT_SCOPE_REQUIRES_ONE_CT_SERIES')
         rtstruct_roi_entries(dataset)
-        if ambiguous_roi_names(dataset):
-            raise ROIIdentityError('RTSTRUCT_DUPLICATE_ROI_NAME: RTSTRUCT_AMBIGUOUS_ROI_NAME')
         self.scopes = resolve_roi_scopes(dataset, series_data)
         self.by_name = {}
         for result in self.scopes.values():

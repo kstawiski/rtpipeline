@@ -38,3 +38,9 @@ Existing label-based anchor and Dice-reference globs are resolved through the
 manifest, so they continue to select the same masks after filename changes. A
 folder containing undeclared files is preserved as a mixed destination and must
 be resolved explicitly before it can be replaced.
+
+The scoped reader preserves exact stored names, including leading whitespace.
+Consumers whose inventories strip whitespace check ambiguity before normalizing.
+Label globs retain their original selection even when a broad prefix also matches
+new filenames. A literal or numbered reference that denotes a different stored
+ROI label is refused as ambiguous.

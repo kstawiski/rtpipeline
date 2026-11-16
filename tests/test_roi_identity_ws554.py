@@ -155,10 +155,12 @@ def test_duplicate_roi_numbers_are_refused(source):
     with pytest.raises(ValueError,match='RTSTRUCT_DUPLICATE_ROI_NUMBER'):
         rtstruct_roi_mask(builder(source),'Organ')
 
-def test_scoped_reader_rejects_stripped_name_collision(source):
+def test_scoped_reader_preserves_distinct_stored_names_by_number(source):
     names(source[1],['Organ',' Organ'])
-    with pytest.raises(ValueError,match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
-        create_scoped_rtstruct(source[0],source[1])
+    reader=create_scoped_rtstruct(source[0],source[1])
+    for number,expected in enumerate(source[3:],1):
+        assert np.array_equal(reader.get_roi_mask_by_number(number),expected)
+    assert np.array_equal(reader.get_roi_mask_by_name(' Organ'),source[4])
 
 def test_qc_cropping_is_bound_to_the_second_roi_number(source,tmp_path):
     from rtpipeline.quality_control import DICOMValidator
@@ -256,3 +258,27 @@ def test_quarantine_preserves_foreign_files_inside_a_branded_export(source,tmp_p
     quarantine_stale_original_exports(root)
     assert foreign.read_bytes()==b'foreign-synthetic'
     assert all((root/entry['mask']).exists() for entry in manifest['structures'])
+
+def _numbered_manifest_layout(source,root):
+    manifest=export(source,root)
+    old=[root/entry['mask'] for entry in manifest['structures']]
+    data=[path.read_bytes() for path in old]
+    target=[path.parent/f'roi-{i}__{entry["roi_name"]}.nii.gz' for i,(path,entry) in enumerate(zip(old,manifest['structures']),1)]
+    for entry,path,content in zip(manifest['structures'],target,data):
+        path.write_bytes(content);entry['mask']=str(path.relative_to(root))
+    for path in set(old)-set(target):path.unlink()
+    (target[0].parent/'metadata.json').write_text(json.dumps(manifest))
+    return target
+
+def test_numbered_file_and_roi_label_reference_collision_is_refused(source,tmp_path):
+    from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
+    names(source[1],['Organ','roi-1__Organ'])
+    paths=_numbered_manifest_layout(source,tmp_path/'Segmentation_Original')
+    with pytest.raises(ValueError,match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
+        _resolve_reference_paths(str(paths[0]))
+
+def test_broad_label_glob_is_not_broadened_by_number_prefix(source,tmp_path):
+    from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
+    names(source[1],['rectum','liver'])
+    root=tmp_path/'Segmentation_Original';paths=_numbered_manifest_layout(source,root)
+    assert _resolve_reference_paths(str(root/'ct/r*.nii.gz'))==[paths[0]]

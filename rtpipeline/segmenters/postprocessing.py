@@ -107,26 +107,32 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
     else:
         path = Path(reference_mask_path)
         paths = [path] if path.exists() else []
-    # Original exports now include the ROI number in their filename. Preserve
-    # configured label globs by matching the manifest's stored ROI name and
-    # following its number-bound mask path, rather than guessing a new stem.
+    # Label globs must keep their meaning after a number prefix is added to
+    # filenames. Never union a physical filename match with a different ROI
+    # whose stored label happens to spell that filename.
     if 'Segmentation_Original' in Path(pattern).parts:
         from ..organize import _sanitize_name
         from ..original_segmentation import require_current_original_export
 
         requested = Path(pattern)
+        label_paths = []
         for manifest_path in sorted(glob(str(requested.parent / 'metadata.json'))):
             manifest_path = Path(manifest_path)
             metadata = json.loads(manifest_path.read_text())
             matched = [entry for entry in metadata.get('structures', [])
                        if isinstance(entry, dict) and isinstance(entry.get('roi_name'), str)
                        and fnmatchcase(_sanitize_name(entry['roi_name'], 'ROI') + '.nii.gz', requested.name)]
-            if not matched:
-                continue
-            require_current_original_export(manifest_path.parent)
-            if not wildcard and len(matched) > 1:
-                raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME: original mask reference')
-            paths.extend(manifest_path.parent.parent / entry['mask'] for entry in matched)
+            if matched:
+                require_current_original_export(manifest_path.parent)
+                label_paths.extend(manifest_path.parent.parent / entry['mask'] for entry in matched)
+        if label_paths:
+            numbered_pattern = 'roi-' in requested.name and '__' in requested.name
+            if ((not wildcard and len(set(label_paths)) > 1)
+                    or (paths and set(paths) != set(label_paths) and (not wildcard or numbered_pattern))):
+                raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME: physical and label mask reference')
+            # Ordinary configured globs denote ROI labels, including broad
+            # prefixes such as r*. A new roi- prefix must not broaden them.
+            paths = label_paths
     paths = sorted(set(paths))
     for path in paths:
         require_current_original_mask(path)
