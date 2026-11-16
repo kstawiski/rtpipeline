@@ -4465,21 +4465,13 @@ def _compute_dvh_for_course(
 
     df = pd.DataFrame(clean_results)
     _insert_course_publication_key(df, course_dir)
-    # Publish text as Arrow-backed strings in both pandas 2 and 3. The explicit
-    # dtype keeps Parquet large_string fields independent of inference defaults;
-    # numeric, boolean, mixed-object and all-null columns retain their types.
-    with pd.option_context("future.infer_string", True, "mode.string_storage", "pyarrow"):
-        for column in df:
-            if pd.api.types.infer_dtype(df[column], skipna=True) == "string":
-                df[column] = pd.array(df[column], dtype="str")
-    # Pin workbook packaging and plain headers to the production pandas 3
-    # layout; pandas 2 otherwise adds its own bold/bordered header style.
+    # Preserve the producer's inferred dtypes, including pandas' version-specific
+    # string representation: coercion changes the Parquet schema and metadata.
+    # Retain pandas' producer layout and deterministic workbook timestamps.
     from datetime import datetime
     with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:
         writer.book.set_properties({"created": datetime(1980, 1, 1)})
-        sheet = writer.book.add_worksheet("Sheet1")
-        sheet.write_row(0, 0, list(df.columns))
-        df.to_excel(writer, sheet_name="Sheet1", index=False, header=False, startrow=1)
+        df.to_excel(writer, sheet_name="Sheet1", index=False)
     try:
         df.to_parquet(out_xlsx.with_suffix(".parquet"), index=False)
     except Exception as exc:
