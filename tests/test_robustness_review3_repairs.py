@@ -289,6 +289,7 @@ def test_new_6_deduplicate_rtstruct_and_voxel_inventory(tmp_path, monkeypatch, s
     assert str(path) in [b["source_path"] for b in payload["voxel_source_bindings"]]
 
 
+@pytest.mark.requires_radiomics_env
 def test_new_7_positive_custom_certificate_real_staleness(tmp_path, monkeypatch, main_producer):
     from course_contract_test_utils import write_minimal_course_contract
     from rtpipeline import custom_structures_rtstruct as custom
@@ -431,6 +432,7 @@ rule radiomics_robustness_course:
     return output
 
 
+@pytest.mark.requires_snakemake
 def test_new_8_aggregate_gate_snakemake_dry_run(tmp_path):
     _new_8_aggregate_gate_dry_run(tmp_path)
 

@@ -372,6 +372,7 @@ def test_custom_model_definition_supplies_expected_inventory_without_manifest(
     ) == {"TumorModel": ["SharedROI", "SecondROI"]}
 
 
+@pytest.mark.requires_radiomics_env
 def test_same_named_roi_remains_distinct_across_all_ct_sources(
     tmp_path, monkeypatch
 ):
@@ -1314,6 +1315,7 @@ class _FakeExtractor:
         }
 
 
+@pytest.mark.requires_radiomics_env
 def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
     tmp_path, monkeypatch
 ):
@@ -1381,6 +1383,7 @@ def test_direct_invalid_resume_is_rebuilt_with_every_current_roi_arm(
     }
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("large_roi", [False, True])
 @pytest.mark.parametrize("change", ["unchanged", "source_bytes", "code", "effective_settings", "native_minimum", "missing_fingerprint", "fingerprint_error", "during_masks", "during_extraction", "rasterizer_missing", "rasterizer_opencv", "rasterizer_rt_utils", "rasterizer_provider"])
 def test_direct_measured_resume_binds_current_source_and_execution(
@@ -1508,6 +1511,7 @@ def test_direct_measured_resume_binds_current_source_and_execution(
         assert set(after.effective_parameter_hash).isdisjoint(set(before.effective_parameter_hash))
 
 
+@pytest.mark.requires_radiomics_env
 def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeypatch):
     import rtpipeline.radiomics_parallel as parallel
 
@@ -1572,6 +1576,7 @@ def test_parallel_resume_missing_autorts_roi_forces_full_rerun(tmp_path, monkeyp
     ) == {("Manual", "PTV"), ("AutoRTS_total", "urinary_bladder")}
 
 
+@pytest.mark.requires_radiomics_env
 def test_direct_stale_failed_resume_is_rebuilt(tmp_path, monkeypatch):
     course = tmp_path / "P1" / "C1"
     dirs = build_course_dirs(course)
@@ -1869,6 +1874,7 @@ def _success_record(task):
     return parallel._status_records(task, "success", "test success")
 
 
+@pytest.mark.requires_radiomics_env
 def test_parallel_auto_roi_failure_is_recorded_without_failing_course(tmp_path, monkeypatch):
     course, parallel = _parallel_course_with_fake_roi_results(
         tmp_path,
@@ -1959,6 +1965,7 @@ def test_parallel_required_roi_failure_still_fails_course(tmp_path, monkeypatch,
         parallel.parallel_radiomics_for_course(config, course, max_workers=1)
 
 
+@pytest.mark.requires_radiomics_env
 def test_all_best_effort_failures_are_degraded_and_not_empty_success(tmp_path, monkeypatch):
     course, parallel = _parallel_course_with_fake_roi_results(
         tmp_path,
@@ -1982,6 +1989,7 @@ def test_all_best_effort_failures_are_degraded_and_not_empty_success(tmp_path, m
     assert set(result["extraction_status"].fillna("success")) == {"success", "failed"}
 
 
+@pytest.mark.requires_radiomics_env
 def test_parallel_required_below_minimum_status_is_recorded_without_course_failure(
     tmp_path, monkeypatch
 ):
@@ -2022,6 +2030,7 @@ def test_parallel_required_below_minimum_status_is_recorded_without_course_failu
     assert int(manual["voxel_count"]) == 3
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_required_below_minimum_status_is_nonfatal_and_published(
     tmp_path, monkeypatch
 ):

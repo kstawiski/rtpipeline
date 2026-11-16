@@ -437,6 +437,7 @@ def _config(tmp_path: Path, *, resume: bool = False) -> PipelineConfig:
     )
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
     tmp_path: Path,
@@ -493,6 +494,7 @@ def test_default_parallel_backend_publishes_contracted_full_series_descriptor(
     assert seen_ct_dirs == [selected, selected]
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_native_backend_attaches_descriptor_once_after_feature_extraction(
     tmp_path: Path,

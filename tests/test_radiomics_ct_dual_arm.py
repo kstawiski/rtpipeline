@@ -573,6 +573,7 @@ def test_validation_rejects_count_identity_mismatch(monkeypatch):
         contract.validate_ct_publication(pd.DataFrame(rows))
 
 
+@pytest.mark.requires_radiomics_env
 def test_completion_sentinel_binds_full_identity_and_current_hashes(tmp_path, monkeypatch):
     course = tmp_path / "P1" / "C1"
     rows = _dual_arm_rows(monkeypatch)

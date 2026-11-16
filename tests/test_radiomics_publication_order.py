@@ -115,6 +115,7 @@ def _publish(tmp_path, monkeypatch, *, reverse: bool, name: str):
     return frame
 
 
+@pytest.mark.requires_radiomics_env
 def test_native_publication_is_independent_of_completion_order(tmp_path, monkeypatch):
     forward = _publish(tmp_path, monkeypatch, reverse=False, name="forward")
     backward = _publish(tmp_path, monkeypatch, reverse=True, name="backward")

@@ -167,6 +167,7 @@ def _workflow(tmp_path: Path, *, record_failure: bool) -> SimpleNamespace:
     )
 
 
+@pytest.mark.requires_radiomics_env
 def test_recorded_exclusions_permit_aggregation_with_denominator_provenance(
     tmp_path: Path,
 ) -> None:
@@ -214,6 +215,7 @@ def test_recorded_exclusions_permit_aggregation_with_denominator_provenance(
     assert set(frame["patient_id"]) == {"P1"}
 
 
+@pytest.mark.requires_radiomics_env
 def test_unrecorded_course_failure_still_blocks_aggregation(tmp_path: Path) -> None:
     workflow = _workflow(tmp_path, record_failure=False)
 
@@ -224,6 +226,7 @@ def test_unrecorded_course_failure_still_blocks_aggregation(tmp_path: Path) -> N
     assert not canonical.exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_stale_failed_record_does_not_authorize_aggregation(tmp_path: Path) -> None:
     workflow = _workflow(tmp_path, record_failure=True)
     record = (
@@ -240,6 +243,7 @@ def test_stale_failed_record_does_not_authorize_aggregation(tmp_path: Path) -> N
         runpy.run_path(str(AGGREGATE_RESULTS), init_globals={"snakemake": workflow})
 
 
+@pytest.mark.requires_radiomics_env
 def test_unrecorded_rerun_does_not_destroy_valid_prior_aggregate(
     tmp_path: Path,
 ) -> None:

@@ -174,6 +174,7 @@ def test_new_attempt_cannot_reuse_an_unmatched_receipt(tmp_path, monkeypatch):
     assert not rr.robustness_source_dispositions_path(cohort.course_dir("P3")).exists()
 
 
+@pytest.mark.requires_snakemake
 @pytest.mark.parametrize("branch", [0, 1], ids=["container-rule", "local-rule"])
 @pytest.mark.parametrize("tamper", [False, True], ids=["valid", "stale-source"])
 @pytest.mark.parametrize("target_present", [False, True], ids=["no-target", "selection-gap"])

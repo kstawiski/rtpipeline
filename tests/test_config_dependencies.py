@@ -240,6 +240,7 @@ def test_mr_rows_reuse_the_manifest_configured_hash(monkeypatch):
     )
 
 
+@pytest.mark.requires_radiomics_env
 def test_row_hashes_must_agree_with_dag_parameter_manifest(tmp_path, monkeypatch):
     helpers = runpy.run_path(str(Path(__file__).with_name("test_radiomics_ct_dual_arm.py")))
     common_identity = helpers["_common_identity"]

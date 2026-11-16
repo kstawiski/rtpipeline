@@ -447,6 +447,7 @@ def _normal_aggregation_course(course_dir: Path, patient_id: str) -> None:
     _write_course_inputs(course_dir, radiomics_sentinel="ok\n")
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("campaign_mode", [False, True])
 def test_aggregation_counts_course_without_planning_ct_as_not_applicable(
     tmp_path, campaign_mode
@@ -676,6 +677,7 @@ def test_robustness_for_failed_or_disabled_radiomics_keeps_todays_behaviour(
     assert not calls and not receipt.exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_aggregation_refuses_mixed_or_forged_not_applicable_closures(tmp_path):
     workflow, outputs = _aggregate_snakemake(tmp_path, radiomics_enabled=True)
     output_dir = Path(workflow.params.output_dir)
@@ -697,6 +699,7 @@ def test_aggregation_refuses_mixed_or_forged_not_applicable_closures(tmp_path):
     assert not any(path.exists() for path in outputs.values())
 
 
+@pytest.mark.requires_radiomics_env
 def test_aggregation_rejects_not_applicable_radiomics_on_a_planning_ct_course(tmp_path):
     workflow, outputs = _aggregate_snakemake(tmp_path, radiomics_enabled=True)
     output_dir = Path(workflow.params.output_dir)

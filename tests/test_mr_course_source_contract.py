@@ -775,12 +775,13 @@ def test_published_row_outside_the_current_inventory_fails_closed(tmp_path, batc
 # --------------------------------------------------------------------------
 # the real batch contract accepts what this helper builds
 # --------------------------------------------------------------------------
+@pytest.mark.requires_radiomics_env
 def test_real_batch_publishes_mr_measurements_and_dispositions(tmp_path, monkeypatch):
     """Run the real ``process_radiomics_batch`` with only the extractor mocked.
 
     The mock above reproduces the batch contract; this proves the tasks the MR
     helper builds satisfy the real identity, checkpoint and publication gates,
-    without a conda subprocess or PyRadiomics.
+    with the real runtime-identity probe and a mocked feature extractor.
     """
     monkeypatch.setenv("RTPIPELINE_RADIOMICS_BATCH", "0")
     monkeypatch.setattr(rc, "check_radiomics_env", lambda *a, **k: True)

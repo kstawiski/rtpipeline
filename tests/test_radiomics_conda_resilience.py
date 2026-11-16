@@ -301,6 +301,7 @@ def test_mr_duplicate_roi_name_across_series_not_collapsed(tmp_path, monkeypatch
     assert series == ["1.2.A", "1.2.B"], f"both MR series' liver must survive resume; got {series}"
 
 
+@pytest.mark.requires_radiomics_env
 def test_ct_totalseg_nifti_fallback_writes_tagged_workbook(tmp_path, monkeypatch):
     """No generated RS file: CT radiomics should recover directly from TS NIfTI masks."""
     course = tmp_path / "P1" / "2024-12"

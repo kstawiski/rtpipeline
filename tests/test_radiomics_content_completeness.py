@@ -88,6 +88,7 @@ def _publish(course: Path, rows: list[dict[str, object]]) -> Path:
     )
 
 
+@pytest.mark.requires_radiomics_env
 def test_completion_sentinel_rejects_feature_mutation_and_accepts_restoration(
     tmp_path: Path,
 ) -> None:
@@ -109,6 +110,7 @@ def test_completion_sentinel_rejects_feature_mutation_and_accepts_restoration(
     assert restored_payload == original_payload
 
 
+@pytest.mark.requires_radiomics_env
 def test_input_closure_binds_only_governed_radiomics_inputs(tmp_path: Path) -> None:
     course = _course_with_inputs(tmp_path)
     _publish(course, _rows())
@@ -199,6 +201,7 @@ def test_configured_schema_rejects_globally_absent_feature(
         _publish(_course_with_inputs(tmp_path), rows)
 
 
+@pytest.mark.requires_radiomics_env
 def test_v2_sentinel_refuses_output_inferred_feature_schema(
     tmp_path: Path,
 ) -> None:
@@ -218,6 +221,7 @@ def test_v2_sentinel_refuses_output_inferred_feature_schema(
         contract.write_completion_sentinel(course)
 
 
+@pytest.mark.requires_radiomics_env
 def test_optional_incomplete_vector_is_recorded_and_not_analysis_eligible(
     tmp_path: Path,
 ) -> None:
@@ -251,6 +255,7 @@ def test_optional_incomplete_vector_is_recorded_and_not_analysis_eligible(
     assert payload["feature_completeness"]["analysis_eligible_row_count"] == 2
 
 
+@pytest.mark.requires_radiomics_env
 def test_extractor_declared_undefined_feature_remains_analysis_eligible(
     tmp_path: Path,
 ) -> None:
@@ -281,6 +286,7 @@ def test_unapproved_undefined_label_cannot_hide_incomplete_vector(
         _publish(_course_with_inputs(tmp_path), rows)
 
 
+@pytest.mark.requires_radiomics_env
 def test_optional_incomplete_vector_is_recorded_in_roi_ledger(
     tmp_path: Path,
 ) -> None:
@@ -328,6 +334,7 @@ def test_optional_incomplete_vector_is_recorded_in_roi_ledger(
     assert ledger["course"][0]["technical_exclusion"] is True
 
 
+@pytest.mark.requires_radiomics_env
 def test_conda_ledger_records_optional_incomplete_vector(
     tmp_path: Path,
 ) -> None:
@@ -357,6 +364,7 @@ def test_conda_ledger_records_optional_incomplete_vector(
     assert ledger["course"][0]["technical_exclusion"] is True
 
 
+@pytest.mark.requires_radiomics_env
 def test_nonapplicable_intensity_family_does_not_create_false_incompleteness(
     tmp_path: Path,
 ) -> None:
