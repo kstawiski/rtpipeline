@@ -8,8 +8,8 @@ No changes since 3.0.2.
 
 Cite this release by version and by the DOI archived for the `v3.0.2` tag (see
 [citing](citing.md)). Pipeline behaviour is identical to 3.0.1, including the
-clinical contour mask placement described below. Run `organize` again on
-projects processed with 3.0.0 or earlier.
+placement of clinical contour masks by physical voxel coordinates (see 3.0.1).
+Run `organize` again on projects processed with 3.0.0 or earlier.
 
 - `uv.lock` records the package version, so `uv sync --locked` succeeds on a
   release checkout.
