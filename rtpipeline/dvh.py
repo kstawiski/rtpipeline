@@ -4465,8 +4465,11 @@ def _compute_dvh_for_course(
 
     df = pd.DataFrame(clean_results)
     _insert_course_publication_key(df, course_dir)
-    # Preserve the producer's inferred dtypes, including pandas' version-specific
-    # string representation: coercion changes the Parquet schema and metadata.
+    # Keep the validated large-string schema on pandas 2 and 3.
+    with pd.option_context("future.infer_string", True, "mode.string_storage", "pyarrow"):
+        for column in df:
+            if pd.api.types.infer_dtype(df[column], skipna=True) == "string":
+                df[column] = pd.array(df[column], dtype="str")
     # Retain pandas' producer layout and deterministic workbook timestamps.
     from datetime import datetime
     with pd.ExcelWriter(out_xlsx, engine="xlsxwriter") as writer:

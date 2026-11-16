@@ -182,8 +182,20 @@ def test_unreadable_deciding_source_fails_closed(tmp_path, monkeypatch):
         measure(root)
 
 
-def test_measurement_bytes_match_unmodified_producer(tmp_path):
-    """Run the pinned pre-change producer against exactly the same input bytes."""
+@pytest.fixture
+def producer_string_inference():
+    """Both producers use the validated pandas 3 text-inference policy.
+
+    pandas 2 defaults to object strings; the current producer explicitly uses
+    the validated Arrow string policy. Apply that same runtime policy to the
+    unmodified producer before constructing either DataFrame.
+    """
+    with pd.option_context("future.infer_string", True, "mode.string_storage", "pyarrow"):
+        yield
+
+
+def test_measurement_bytes_match_unmodified_producer(tmp_path, producer_string_inference):
+    """Run the pinned producer with the same inputs, packages and inference policy."""
     import subprocess
     import types
     import zipfile
