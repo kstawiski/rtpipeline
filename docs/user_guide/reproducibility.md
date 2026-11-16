@@ -212,14 +212,14 @@ For maximum reproducibility, use the Docker image with a specific version tag an
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:3.0.2
+docker pull kstawiski/rtpipeline:3.0.3
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.2
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.3
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.2 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.3 (SHA256: abc123...)."
 
 Also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. When structures come from RTsegmentator, keep each course's `Segmentation_CustomModels/rtseg_<model>/manifest.json` and report the RTsegmentator version, task names and model references it records.
 
@@ -232,7 +232,7 @@ Also record whether radiomics and robustness were executed through the default d
 ```markdown
 **Dose-Volume Histogram Analysis**
 
-DVH metrics were extracted using RTpipeline (version 3.0.2; DOI: [release DOI]) [1].
+DVH metrics were extracted using RTpipeline (version 3.0.3; DOI: [release DOI]) [1].
 DICOM RTSTRUCT, RTDOSE, and RTPLAN files were exported from [TPS name/version]
 and processed using the following standardized protocol:
 
@@ -261,7 +261,7 @@ The complete preprocessing configuration is available as Supplementary File S2.
 ```markdown
 **Radiomic Feature Extraction and Stability Assessment**
 
-CT radiomic features were extracted using RTpipeline (version 3.0.2; DOI: [release DOI]) [1] with
+CT radiomic features were extracted using RTpipeline (version 3.0.3; DOI: [release DOI]) [1] with
 PyRadiomics (version 3.0.1) [2] following Image Biomarker Standardisation
 Initiative (IBSI) recommendations [3].
 
@@ -348,7 +348,7 @@ The RTpipeline configuration bundle is available at [repository or archive URL].
 [2], run through RTsegmentator version [X.Y.Z] [3] (task `[task name]`). RTsegmentator
 maps each prediction onto the acquired CT grid and releases an RTSTRUCT only after
 checking its image references, physical bounds and a contour-to-mask round trip
-(Dice ≥ 0.95). RTpipeline (version 3.0.2) [1] imported each result only after
+(Dice ≥ 0.95). RTpipeline (version 3.0.3) [1] imported each result only after
 verifying every packaged file against the result manifest's SHA-256 checksums and
 confirming that the RTSTRUCT referenced the course's planning CT series. Automatic
 contours were [reviewed by / not edited by] [role] before analysis. [N] courses had
@@ -483,7 +483,7 @@ Supplementary Data.
 ```markdown
 **Code Availability**
 
-All data preprocessing was performed using RTpipeline version 3.0.2
+All data preprocessing was performed using RTpipeline version 3.0.3
 (https://github.com/kstawiski/rtpipeline; archived release DOI: [release DOI]).
 The complete configuration bundle, including structure mapping dictionaries and
 radiomics parameters, is available at [repository or archive URL]. Analysis
