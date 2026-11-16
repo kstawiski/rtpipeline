@@ -277,8 +277,10 @@ def test_numbered_file_and_roi_label_reference_collision_is_refused(source,tmp_p
     with pytest.raises(ValueError,match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
         _resolve_reference_paths(str(paths[0]))
 
-def test_broad_label_glob_is_not_broadened_by_number_prefix(source,tmp_path):
+@pytest.mark.parametrize("pattern,index", [("r*.nii.gz",0),("roi*.nii.gz",None)])
+def test_broad_label_glob_is_not_broadened_by_number_prefix(source,tmp_path,pattern,index):
     from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
     names(source[1],['rectum','liver'])
     root=tmp_path/'Segmentation_Original';paths=_numbered_manifest_layout(source,root)
-    assert _resolve_reference_paths(str(root/'ct/r*.nii.gz'))==[paths[0]]
+    expected=[] if index is None else [paths[index]]
+    assert _resolve_reference_paths(str(root/'ct'/pattern))==expected

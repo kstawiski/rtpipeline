@@ -116,7 +116,9 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
 
         requested = Path(pattern)
         label_paths = []
-        for manifest_path in sorted(glob(str(requested.parent / 'metadata.json'))):
+        manifest_paths = sorted(glob(str(requested.parent / 'metadata.json')))
+        numbered_pattern = 'roi-' in requested.name and '__' in requested.name
+        for manifest_path in manifest_paths:
             manifest_path = Path(manifest_path)
             metadata = json.loads(manifest_path.read_text())
             matched = [entry for entry in metadata.get('structures', [])
@@ -126,13 +128,16 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
                 require_current_original_export(manifest_path.parent)
                 label_paths.extend(manifest_path.parent.parent / entry['mask'] for entry in matched)
         if label_paths:
-            numbered_pattern = 'roi-' in requested.name and '__' in requested.name
             if ((not wildcard and len(set(label_paths)) > 1)
                     or (paths and set(paths) != set(label_paths) and (not wildcard or numbered_pattern))):
                 raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME: physical and label mask reference')
             # Ordinary configured globs denote ROI labels, including broad
             # prefixes such as r*. A new roi- prefix must not broaden them.
             paths = label_paths
+        elif manifest_paths and wildcard and not numbered_pattern:
+            # A label pattern with no matching labels must stay empty even
+            # when it happens to match the new physical filename prefix.
+            paths = []
     paths = sorted(set(paths))
     for path in paths:
         require_current_original_mask(path)
