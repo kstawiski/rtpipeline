@@ -478,12 +478,19 @@ class DICOMValidator:
                     from .rtstruct_geometry import rtstruct_roi_mask
                     mask = rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
                 except Exception:
-                    # Skip ROIs that fail to load
-                    continue
+                    mask = None
                 if mask is None:
+                    info["structures"].append({
+                        "source": source, "roi_name": roi_name, "roi_number": roi_number,
+                        "status": "SKIP", "reason_code": "ROI_MASK_READ_FAILED",
+                    })
                     continue
                 # Optimization: skip empty masks early (avoids boundary checking)
                 if not np.any(mask):
+                    info["structures"].append({
+                        "source": source, "roi_name": roi_name, "roi_number": roi_number,
+                        "status": "SKIP", "reason_code": "ROI_MASK_EMPTY",
+                    })
                     continue
                 if not mask_is_cropped(mask):
                     continue
@@ -514,15 +521,18 @@ class DICOMValidator:
         _evaluate(self.rs_path, "manual")
         _evaluate(self.rs_auto_path, "auto")
 
-        if info["structures"]:
+        cropped_structures = [entry for entry in info["structures"] if "cropped_sides" in entry]
+        if cropped_structures:
             # Escalate only when there is evidence of in-plane truncation (true FOV crop),
             # ignoring couch-related helper ROIs.
             unexpected = [
                 entry
-                for entry in info["structures"]
+                for entry in cropped_structures
                 if entry.get("inplane_cropped") and not entry.get("ignore_for_status")
             ]
             info["status"] = "WARNING" if unexpected else "INFO"
+        elif info["structures"]:
+            info["status"] = "SKIP"
         return info
 
     def _calculate_overall_status(self, checks: Dict[str, Any]) -> str:

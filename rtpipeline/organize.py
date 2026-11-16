@@ -4556,6 +4556,12 @@ def _export_original_segmentation_from_paths(
     if nifti_sidecar_path is not None:
         manifest['source_nifti_sidecar'] = str(nifti_sidecar_path)
 
+    def record_skip(roi_number, roi_name, reason_code):
+        manifest.setdefault("skipped_structures", []).append({
+            "roi_number": roi_number, "roi_name": roi_name,
+            "reason_code": reason_code,
+        })
+
     for roi_number, roi_name in roi_entries:
         try:
             from .rtstruct_geometry import rtstruct_roi_mask
@@ -4563,9 +4569,11 @@ def _export_original_segmentation_from_paths(
         except Exception:
             mask = None
         if mask is None:
+            record_skip(roi_number, roi_name, "ROI_MASK_READ_FAILED")
             continue
         mask_bool = np.asarray(mask).astype(bool)
         if not np.any(mask_bool):
+            record_skip(roi_number, roi_name, "ROI_MASK_EMPTY")
             continue
         from .rtstruct_geometry import rtstruct_mask_to_image
 
@@ -4586,6 +4594,7 @@ def _export_original_segmentation_from_paths(
             sitk.WriteImage(sitk_mask, str(out_path), useCompression=True)
         except Exception as exc:
             logger.debug("Failed to write manual segmentation mask %s: %s", out_path, exc)
+            record_skip(roi_number, roi_name, "ROI_MASK_WRITE_FAILED")
             continue
         manifest["structures"].append(
             {
@@ -4597,7 +4606,7 @@ def _export_original_segmentation_from_paths(
             }
         )
 
-    if manifest["structures"]:
+    if manifest["structures"] or manifest.get("skipped_structures"):
         manifest_written = True
         try:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -4617,7 +4626,7 @@ def _export_original_segmentation_from_paths(
                 provenance_path.unlink(missing_ok=True)
         else:
             provenance_path.unlink(missing_ok=True)
-        return manifest
+        return manifest if manifest["structures"] else None
     (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).unlink(missing_ok=True)
     return None
 

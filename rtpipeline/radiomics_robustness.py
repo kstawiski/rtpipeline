@@ -1642,9 +1642,9 @@ def write_robustness_failure_dispositions(
     """Publish a failure disposition sidecar for a run that died technically.
 
     The producer invalidates the previous sidecar before doing anything that
-    can fail, so when ``robustness_for_course`` raises, no sidecar describes
-    the failed attempt and no completion receipt may cite one. This helper
-    closes that gap for campaign-mode course closure: it binds the sources
+    can fail. Identity refusals persist source errors before raising; other
+    technical failures may leave no sidecar. This helper supports campaign-mode
+    course closure: it binds the sources
     as they stand, records zero measurement rows under the
     ``failed_extraction`` outcome, and returns the sidecar path for the
     completion receipt. It performs no measurement and fabricates none.
@@ -1677,6 +1677,31 @@ def write_robustness_failure_dispositions(
         course_dir, configuration=effective_robustness_configuration(rob_config, output_name=output_name),
         custom_structures_config=custom_structures_config, best_effort=True, evaluated_voxels=True,
     )
+    # Campaign closure replaces the producer's failure sidecar. Re-establish
+    # every ambiguous declaration from the bound source bytes, so closure
+    # cannot erase the identity refusals that caused the course to fail.
+    import pydicom
+    from .rtstruct_geometry import ambiguous_roi_names
+    for binding in enumeration["source_bindings"]:
+        try:
+            dataset = pydicom.dcmread(binding["source_path"], stop_before_pixels=True)
+            ambiguous = ambiguous_roi_names(dataset)
+        except Exception as exc:
+            enumeration["source_errors"].append({
+                **{field: binding[field] for field in ROBUSTNESS_SOURCE_BINDING_FIELDS},
+                "error_type": type(exc).__name__, "reason": str(exc)[:500],
+            })
+            continue
+        detail = f"RTSTRUCT_AMBIGUOUS_ROI_NAME: {sorted(ambiguous)!r} in {binding['source_path']}"
+        for declarations in ambiguous.values():
+            for number, name in declarations:
+                enumeration["source_errors"].append({
+                    **{field: binding[field] for field in ROBUSTNESS_SOURCE_BINDING_FIELDS},
+                    "roi_name": name, "roi_number": str(number), "status": "failed",
+                    "failure_kind": "ambiguous_roi_identity",
+                    "structural_code": "RTSTRUCT_AMBIGUOUS_ROI_NAME",
+                    "error_type": "RadiomicsCourseExtractionError", "reason": detail,
+                })
 
     return _write_robustness_source_dispositions(
         course_dir,
@@ -5586,6 +5611,37 @@ def robustness_for_course(
             else:
                 source_disposition_rows.append(outcome)
 
+    def _read_bound_rtstruct_masks(binding, *args, **kwargs):
+        """Persist declaration-level identity errors before refusing the course.
+
+        Refusals belong to the failed sidecar's source_errors, never the
+        tolerated-failure list or the terminal non-measurement rows. Their
+        ROI numbers preserve declarations even when their names are equal.
+        """
+        from .radiomics import RadiomicsCourseExtractionError
+
+        try:
+            return _rtstruct_masks(*args, **kwargs)
+        except RadiomicsCourseExtractionError as exc:
+            refusals = [row for row in kwargs["failure_outcomes"]
+                        if row.get("structural_code") == "RTSTRUCT_AMBIGUOUS_ROI_NAME"]
+            if refusals:
+                if binding is None:
+                    raise RuntimeError("Cannot persist unbound RTSTRUCT identity refusals") from exc
+                errors = [{**row, **{field: binding[field] for field in ROBUSTNESS_SOURCE_BINDING_FIELDS},
+                           "error_type": type(exc).__name__} for row in refusals]
+                _write_robustness_source_dispositions(
+                    course_dir, run_identifier=robustness_run_identifier,
+                    rows=source_disposition_rows, source_bindings=rtstruct_source_bindings,
+                    effective_configuration=effective_robustness_configuration(
+                        rob_config, output_name=output_path.name),
+                    code_identity=run_code_identity, output_path=output_path,
+                    measured_output=None, nonmeasured_outcome=ROBUSTNESS_FAILED_OUTCOME,
+                    voxel_source_bindings=voxel_source_bindings,
+                    source_errors=[*source_enumeration["source_errors"], *errors],
+                )
+            raise
+
     def _matches_robustness_pattern(roi_name: str, source: str) -> bool:
         return robustness_selection_matches(
             roi_name, rob_config.perturbation.apply_to_structures,
@@ -5853,7 +5909,8 @@ def robustness_for_course(
                 target_inventory=target_inventory, segmentation_source=source,
                 custom_provenance=custom_structure_provenance,
             )
-            source_masks = _rtstruct_masks(
+            source_masks = _read_bound_rtstruct_masks(
+                source_binding,
                 ct_dir,
                 rtstruct_path,
                 failure_outcomes=source_sink,
@@ -5902,7 +5959,8 @@ def robustness_for_course(
         if rs_custom.exists():
             custom_sink: List[Dict[str, Any]] = []
             custom_binding = _bind_rtstruct_source("Custom", rs_custom)
-            custom_masks = _rtstruct_masks(
+            custom_masks = _read_bound_rtstruct_masks(
+                custom_binding,
                 ct_dir,
                 rs_custom,
                 failure_outcomes=custom_sink,
@@ -5940,7 +5998,8 @@ def robustness_for_course(
                 model_sink: List[Dict[str, Any]] = []
                 source_label = f"CustomModel:{model_name}"
                 model_binding = _bind_rtstruct_source(source_label, rs_model)
-                model_masks = _rtstruct_masks(
+                model_masks = _read_bound_rtstruct_masks(
+                    model_binding,
                     ct_dir,
                     rs_model,
                     failure_outcomes=model_sink,

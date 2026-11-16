@@ -243,15 +243,8 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
             counts = {name: sum(other == name for _, other in entries) for _, name in entries}
             for roi_number, roi in entries:
                 try:
-                    if hasattr(rt, 'get_mask_for_roi'):
-                        m3d = rt.get_mask_for_roi(roi)
-                    elif hasattr(rt, 'get_roi_mask'):
-                        m3d = rt.get_roi_mask(roi)
-                    elif hasattr(rt, 'get_roi_mask_by_name'):
-                        from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
-                    else:
-                        m3d = None
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                 except Exception:
                     m3d = None
                 if m3d is None:
@@ -284,15 +277,8 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
             counts = {name: sum(other == name for _, other in entries) for _, name in entries}
             for roi_number, roi in entries:
                 try:
-                    if hasattr(rt, 'get_mask_for_roi'):
-                        m3d = rt.get_mask_for_roi(roi)
-                    elif hasattr(rt, 'get_roi_mask'):
-                        m3d = rt.get_roi_mask(roi)
-                    elif hasattr(rt, 'get_roi_mask_by_name'):
-                        from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
-                    else:
-                        m3d = None
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                 except Exception:
                     m3d = None
                 if m3d is None:
@@ -328,15 +314,8 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                 if roi in seen:
                     continue
                 try:
-                    if hasattr(rt, 'get_mask_for_roi'):
-                        m3d = rt.get_mask_for_roi(roi)
-                    elif hasattr(rt, 'get_roi_mask'):
-                        m3d = rt.get_roi_mask(roi)
-                    elif hasattr(rt, 'get_roi_mask_by_name'):
-                        from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
-                    else:
-                        m3d = None
+                    from .rtstruct_geometry import rtstruct_roi_mask
+                    m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                 except Exception:
                     m3d = None
                 if m3d is None:
