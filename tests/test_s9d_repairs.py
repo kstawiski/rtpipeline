@@ -143,6 +143,12 @@ def test_n4_production_resume_validates_existing_model_rtstruct(tmp_path, monkey
             masks = target_dir
     else:
         base = 'CT_series'
+        # The all-series producer classifies contrast phase; keep the real
+        # classifier and an operator's model cache out of this resume check.
+        weights = tmp_path / 'weights'
+        weights.mkdir()
+        monkeypatch.setenv('TOTALSEG_WEIGHTS_PATH', str(weights))
+        monkeypatch.setattr(seg, '_detect_contrast_phase_safe', lambda _config, _image: 'native')
         monkeypatch.setattr(seg, '_ensure_ct_nifti', lambda *a, **k: next((course / 'NIFTI').glob('*.nii.gz')))
         # The all-series producer resolves its own output root.
         monkeypatch.setattr(seg, '_strip_nifti_base', lambda *_: base)

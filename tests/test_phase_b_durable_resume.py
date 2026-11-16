@@ -826,7 +826,14 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
         sources_right = {item['path']: item['sha256'] for item in right['code_identity']['sources']}
         assert sources_left.keys() - sources_right.keys() == {'extraction_progress.py', 'durable_progress.py'}
         assert not sources_right.keys() - sources_left.keys()
-        assert left['code_identity']['pipeline_version'] == right['code_identity']['pipeline_version']
+        # Each side reports its own declared package version (a release label).
+        import rtpipeline
+        base_init = subprocess.check_output(
+            ['git', 'show', evidence['base'] + ':rtpipeline/__init__.py'],
+            cwd=Path(__file__).resolve().parents[1], text=True)
+        base_version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', base_init).group(1)
+        assert left['code_identity']['pipeline_version'] == rtpipeline.__version__
+        assert right['code_identity']['pipeline_version'] == base_version
         code_changes = {path: {'candidate_sha256': sources_left[path], 'base_sha256': sources_right.get(path)}
             for path in sources_left if sources_left[path] != sources_right.get(path)}
         disposition_hashes[name.split('/metadata/')[0]] = (hashlib.sha256(expected).hexdigest(), hashlib.sha256(actual).hexdigest())
