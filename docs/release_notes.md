@@ -35,34 +35,50 @@ automatically.
   were mirrored, so a mirrored mask lies partly outside the anatomy it outlines.
 - 3.0.1 maps every mask onto the planning-CT NIfTI by physical voxel
   coordinates. Only an exact permutation or flip of axes is accepted, and a
-  grid that is not equivalent is refused rather than resampled. Each export
-  records the schema `rtpipeline-original-segmentation-v2` and the geometry
-  status `exact_physical_mapping`.
-- Every consumer refuses an export without that status, and `organize`
-  re-exports it, so masks written by earlier versions cannot be used.
-- Only the exported `Segmentation_Original` masks, and the custom-model anchor
-  and Dice-reference masks taken from them, were affected. DVH, radiomics and
-  robustness built their masks from the RTSTRUCT against the CT read from the
-  DICOM series and were not affected. Repeat any analysis outside RTpipeline
-  that read `Segmentation_Original` masks produced by 3.0.0 or earlier.
+  grid that is not equivalent is refused rather than resampled. Each
+  successful export records the schema `rtpipeline-original-segmentation-v2`
+  and the geometry status `exact_physical_mapping`. A refused grid leaves a
+  record with the status `MASK_GRID_NOT_EQUIVALENT` and no masks.
+- Every consumer refuses a mask without the `exact_physical_mapping` status,
+  and `organize` re-exports legacy exports, so masks written by earlier
+  versions cannot be used.
+- The clinical DVH, radiomics and robustness paths read contours from the
+  RTSTRUCT itself and never read the exported masks, so their results for
+  clinical structures were not affected. Custom models were affected where
+  they used an exported clinical mask as the anchor that selects which
+  predicted component is kept, as the box prompt for MedSAM, or as a Dice
+  reference. Their structures, and the DVH, radiomics and robustness results
+  computed from them, can differ. After re-exporting the clinical masks,
+  regenerate those custom-model outputs and the analyses that depend on them,
+  and repeat any analysis outside RTpipeline that read `Segmentation_Original`
+  masks produced by 3.0.0 or earlier.
 
 ### Other changes
 
-- RTSTRUCT rasterization uses one pinned OpenCV provider (4.8.1), and outputs
-  record the rasterizer identity they were built with.
+- RTSTRUCT rasterization for radiomics uses one pinned OpenCV provider
+  (headless 4.8.1) in the radiomics environment; the main environment keeps its
+  own OpenCV pin. Outputs record the rasterizer identity they were built with.
 - A durable progress journal and verified result cache let DVH, radiomics and
   robustness resume after an interruption without repeating completed work or
   reusing a result whose inputs changed.
-- D2cc is exported on every DVH path, sub-centigray doses are preserved, and
+- D2cc is exported on every DVH path. A collapsed DVH keeps its unbinned mean
+  and maximum dose and integral dose; dose quantiles keep histogram resolution.
   DVH contour dispositions and outside-grid structures are published
   explicitly. The published DVH table schema is pinned across pandas versions.
+- Equal prescriptions without treatment records no longer establish that plans
+  are revisions of one another. Such plans keep their plan membership without
+  a course dose grid unless revision evidence or strict plan equivalence links
+  them. An explicit concurrent-component declaration can authorize a physical
+  sum of dose grids, while course fraction totals and summed reference-point
+  doses stay withheld.
 - Treatment-scope rules 1.1.0 are available, with governed robustness target
   selection, structure exclusions and gap accounting.
 - A multi-plan composite course dose can be published for descriptive DVH.
 - Planning-CT conversion, conversion provenance and cache reuse are validated
-  more strictly, and radiomics rows are published in ROI enumeration order on
-  every backend.
-- Tests use synthetic course keys only, and a guard refuses real ones.
+  more strictly, and the parallel CT radiomics backends publish rows in ROI
+  enumeration order, including rows reused from a checkpoint.
+- Tests use synthetic course keys, and a CI check flags likely patient course
+  keys in tracked text.
 
 ## 3.0.0 — 2026-10-25
 
