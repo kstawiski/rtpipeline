@@ -346,6 +346,20 @@ def test_ambiguous_or_incomplete_declaration_keeps_legacy(tmp_path, monkeypatch,
     assert any(reason in message for message in actual.warnings)
 
 
+@pytest.mark.parametrize("day", ["2026-02-30", "2026-W45-1", "2026-1-02", "", None, 20261102])
+def test_invalid_declaration_date_has_supported_python_independent_diagnostic(tmp_path, monkeypatch, legacy, day):
+    fixture = course(tmp_path / "dicom")
+    path = declare(tmp_path, monkeypatch, fixture["uids"])
+    payload = json.loads(path.read_text())
+    payload["declarations"][0]["declared_on"] = day
+    path.write_text(json.dumps(payload))
+    actual = classify(fixture)
+    expected = legacy._classify_doses(fixture["plans"], fixture["doses"])
+    assert actual.classification == expected.classification
+    assert actual.selected_doses == expected.selected_doses
+    assert any("declared_on must be YYYY-MM-DD" in message for message in actual.warnings)
+
+
 def test_declaration_always_holds_scalar_but_retains_plan_reference_doses(tmp_path, monkeypatch):
     fixture = course(tmp_path / "dicom")
     declare(tmp_path, monkeypatch, fixture["uids"])

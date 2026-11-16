@@ -3517,8 +3517,11 @@ def _declared_concurrent_doses(
         if not isinstance(declaration.get("basis"), str) or not declaration["basis"].strip():
             raise ValueError("declaration basis is missing")
         day = declaration.get("declared_on")
-        if not isinstance(day, str) or datetime.date.fromisoformat(day).isoformat() != day:
-            raise ValueError("declared_on must be YYYY-MM-DD")
+        try:
+            if not isinstance(day, str) or datetime.date.fromisoformat(day).isoformat() != day:
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("declared_on must be YYYY-MM-DD") from exc
         if not isinstance(declaration.get("issued_by"), str) or not declaration["issued_by"].strip():
             raise ValueError("declaration issuer (issued_by) is missing")
         if unreadable_plans:
