@@ -29,7 +29,7 @@ dependencies = [
   "xgboost",  # Required for totalseg_get_phase and totalseg_get_modality
   "dicom2nifti>=2.4",
   "nested-lookup",
-  "rt-utils",
+  "rt-utils==1.2.7",
   # Main-runtime RTSTRUCT utilities retain the existing NumPy 2-compatible build.
   # Radiomics uses the separate headless 4.8.1 provider in its NumPy 1.26 helper.
   "opencv-python==5.0.0.93",

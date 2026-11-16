@@ -3197,7 +3197,7 @@ requires-dist = [
     { name = "plotly" },
     { name = "pyarrow" },
     { name = "pydicom", specifier = ">=3.0.2,<4" },
-    { name = "rt-utils" },
+    { name = "rt-utils", specifier = "==1.2.7" },
     { name = "scipy" },
     { name = "simpleitk" },
     { name = "totalsegmentator", specifier = "==2.12.0" },
