@@ -3,26 +3,24 @@ site_description: The Big Data Radiotherapy Pipeline - From raw clinical exports
 site_url: https://kstawiski.github.io/rtpipeline/
 repo_url: https://github.com/kstawiski/rtpipeline
 repo_name: kstawiski/rtpipeline
+copyright: "© 2026 Konrad Stawiski · MIT License · Research tool, not a medical device"
 
 theme:
   name: material
+  font: false
   palette:
-    # Dark mode as default for modern "Precision Dark" aesthetic
-    - scheme: slate
-      primary: custom
-      accent: light-blue
+    - scheme: default
+      primary: teal
+      accent: deep orange
       toggle:
         icon: material/weather-night
-        name: Switch to light mode
-    - scheme: default
-      primary: indigo
-      accent: light-blue
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: deep orange
       toggle:
         icon: material/weather-sunny
-        name: Switch to dark mode
-  font:
-    text: Inter
-    code: JetBrains Mono
+        name: Switch to light mode
   features:
     - navigation.instant
     - navigation.tracking
@@ -83,14 +81,15 @@ plugins:
 exclude_docs: |
   README.md
   **/*.log
+  javascripts/hero-animation.js
 
 extra_css:
+  - stylesheets/radioonkolog.css
   - stylesheets/extra.css
 
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
-  - https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
-  - javascripts/hero-animation.js
+  - javascripts/a11y.js
 
 nav:
   - Home: index.md

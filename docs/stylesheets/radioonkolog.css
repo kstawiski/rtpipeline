@@ -1,0 +1,344 @@
+/* Shared visual system derived from https://radioonkolog.pl
+ * ("Radioonkolog" theme, v1). Intended to be copied verbatim by sibling
+ * project documentation sites (rtPipeline) so both public Pages look alike.
+ * Applies on top of MkDocs Material. No external requests: Open Sans is
+ * served from ../assets/fonts (SIL OFL, see ../assets/fonts/OFL.txt).
+ *
+ * Tokens (exact, from the reference stylesheet):
+ *   --ro-teal-deep #00525C  primary: headings, links, buttons, header accents
+ *   --ro-teal      #058A9B  borders, decor, large text only (4.0:1 on white)
+ *   --ro-coral     #FF888D  focus ring on dark surfaces, decor
+ *   --ro-coral-ink #A3323D  focus ring on light surfaces, alert accents
+ *   --ro-navy      #071C20  footer, dark panels
+ *   --ro-ink       #142226  body text
+ *   --ro-paper     #F5F9F9  tinted blocks, table heads, search field
+ *   --ro-line      #D5E4E4  borders
+ *   --ro-radius    1.15rem  cards / 0.65rem buttons
+ */
+
+/* ---- Local Open Sans (variable weight 300-800, latin + latin-ext) ---- */
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 800;
+  src: url("../assets/fonts/open-sans-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 300 800;
+  src: url("../assets/fonts/open-sans-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2212, U+2215;
+}
+
+:root {
+  --ro-teal-deep: #00525c;
+  --ro-teal: #058a9b;
+  --ro-coral: #ff888d;
+  --ro-coral-ink: #a3323d;
+  --ro-navy: #071c20;
+  --ro-ink: #142226;
+  --ro-paper: #f5f9f9;
+  --ro-line: #d5e4e4;
+  --ro-radius: 1.15rem;
+  --ro-font: "Open Sans", "Open Sans Variable", system-ui, -apple-system,
+    "Segoe UI", Arial, sans-serif;
+  --ro-mono: ui-monospace, "Cascadia Code", "Roboto Mono", Menlo, Consolas,
+    monospace;
+
+  /* Material bridge, light scheme */
+  --md-primary-fg-color: #00525c;
+  --md-primary-bg-color: #ffffff;
+  --md-accent-fg-color: #00525c;
+  --md-typeset-a-color: #00525c;
+  --md-code-font-family: var(--ro-mono);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #071c20;
+  --md-accent-fg-color: #8fd0d6;
+  /* Links need the pale variant on dark surfaces: teal-deep is 1.8:1 here. */
+  --md-typeset-a-color: #8fd0d6;
+}
+
+/* ---- Base type ---- */
+body {
+  font-family: var(--ro-font);
+}
+
+.md-typeset {
+  font-family: var(--ro-font);
+  color: var(--ro-ink);
+  line-height: 1.6;
+}
+
+[data-md-color-scheme="slate"] .md-typeset {
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-family: var(--ro-font);
+  color: var(--ro-teal-deep);
+  letter-spacing: -0.035em;
+  font-weight: 650;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3,
+[data-md-color-scheme="slate"] .md-typeset h4 {
+  color: #cfe8ea;
+}
+
+.md-typeset h1 {
+  font-size: clamp(2rem, 1.4rem + 1.8vw, 3rem);
+  margin: 0.5rem 0 1.4rem;
+}
+
+/* ---- Links (teal, offset underline, thicker on hover) ---- */
+.md-typeset a {
+  color: var(--ro-teal-deep);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
+.md-typeset a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* Dark surfaces take the pale teal: teal-deep is 1.8:1 on slate. */
+[data-md-color-scheme="slate"] .md-typeset a {
+  color: var(--md-typeset-a-color);
+}
+
+/* ---- Visible keyboard focus everywhere (coral-ink light / coral dark) ---- */
+:focus-visible {
+  outline: 3px solid var(--ro-coral-ink);
+  outline-offset: 2px;
+}
+
+[data-md-color-scheme="slate"] :focus-visible,
+.md-footer :focus-visible {
+  outline-color: var(--ro-coral);
+}
+
+/* Material marks keyboard-focused content links/nav with a .focus-visible
+ * class: keep those in the teal accent so the ring matches link identity.
+ * Both pairs pass contrast (teal-deep 8.89:1 light, pale teal 10.28:1 dark). */
+.md-typeset a.focus-visible,
+.md-nav__link.focus-visible {
+  outline-color: var(--ro-teal-deep);
+}
+
+[data-md-color-scheme="slate"] .md-typeset a.focus-visible,
+[data-md-color-scheme="slate"] .md-nav__link.focus-visible {
+  outline-color: var(--md-accent-fg-color);
+}
+
+/* ---- White header with teal identity, hairline below (reference) ---- */
+.md-header {
+  background-color: #ffffff;
+  color: var(--ro-ink);
+  border-bottom: 1px solid var(--ro-line);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: var(--ro-navy);
+  color: #ffffff;
+  border-bottom-color: rgba(5, 138, 155, 0.44);
+}
+
+.md-header__title,
+.md-header__title .md-ellipsis {
+  color: var(--ro-teal-deep);
+  font-weight: 700;
+}
+
+[data-md-color-scheme="slate"] .md-header__title,
+[data-md-color-scheme="slate"] .md-header__title .md-ellipsis {
+  color: #ffffff;
+}
+
+.md-header__button.md-icon {
+  color: var(--ro-teal-deep);
+}
+
+[data-md-color-scheme="slate"] .md-header__button.md-icon {
+  color: #ffffff;
+}
+
+/* ---- Search as a soft pill ---- */
+.md-search__form {
+  background-color: var(--ro-paper);
+  border: 1px solid var(--ro-line);
+  border-radius: 100px;
+}
+
+.md-search__input,
+.md-search__input::placeholder {
+  color: var(--ro-ink);
+  font-family: var(--ro-font);
+}
+
+[data-md-color-scheme="slate"] .md-search__form {
+  background-color: rgba(255, 255, 255, 0.08);
+  border-color: rgba(5, 138, 155, 0.44);
+}
+
+[data-md-color-scheme="slate"] .md-search__input,
+[data-md-color-scheme="slate"] .md-search__input::placeholder {
+  color: #ffffff;
+}
+
+/* ---- Navigation: teal active section, hairline current marker ---- */
+.md-nav__link {
+  font-family: var(--ro-font);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.md-nav__link--active,
+.md-nav__link--active .md-ellipsis {
+  color: var(--ro-teal-deep);
+  font-weight: 700;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__link--active .md-ellipsis {
+  color: var(--md-accent-fg-color);
+}
+
+/* ---- Content cards: paper tint blocks, admonitions, details ---- */
+.md-typeset .admonition {
+  border-radius: 0 var(--ro-radius) var(--ro-radius) 0;
+  font-size: 0.95rem;
+}
+
+.md-typeset .admonition.note,
+.md-typeset .admonition.info {
+  border-left-color: var(--ro-teal-deep);
+}
+
+.md-typeset details {
+  border: 1px solid var(--ro-line);
+  border-radius: 0.8rem;
+}
+
+.md-typeset summary {
+  color: var(--ro-teal-deep);
+  font-weight: 700;
+  min-height: 44px;
+}
+
+[data-md-color-scheme="slate"] .md-typeset summary {
+  color: var(--md-accent-fg-color);
+}
+
+/* ---- Tables: paper head row, hairline grid, scroll on overflow ---- */
+.md-typeset table:not([class]) th {
+  background-color: var(--ro-paper);
+  color: var(--ro-ink);
+  border-color: var(--ro-line);
+  min-width: 5rem;
+}
+
+.md-typeset table:not([class]) td {
+  border-color: var(--ro-line);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: var(--md-default-fg-color);
+}
+
+/* ---- Buttons: filled teal pill, navy hover; secondary white ---- */
+.md-typeset .md-button {
+  border: 1px solid var(--ro-teal-deep);
+  background-color: var(--ro-teal-deep);
+  color: #ffffff;
+  border-radius: 0.65rem;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 650;
+}
+
+.md-typeset .md-button:hover {
+  background-color: var(--ro-navy);
+  border-color: var(--ro-navy);
+  color: #ffffff;
+}
+
+.md-typeset .md-button--secondary {
+  background-color: #ffffff;
+  color: var(--ro-teal-deep);
+}
+
+.md-typeset .md-button--secondary:hover {
+  background-color: var(--ro-paper);
+  color: var(--ro-teal-deep);
+}
+
+/* ---- Code stays highly readable; system mono, no remote fetch ---- */
+.md-typeset code,
+.md-typeset pre code {
+  font-family: var(--ro-mono);
+}
+
+.md-typeset pre {
+  border-radius: 0.5rem;
+}
+
+/* ---- Navy footer, white links, hairline top edge ---- */
+.md-footer {
+  background-color: var(--ro-navy);
+  color: #ffffff;
+}
+
+.md-footer a,
+.md-footer h2,
+.md-footer h3 {
+  color: #ffffff;
+}
+
+.md-footer .md-footer-meta {
+  background-color: rgba(0, 0, 0, 0.25);
+}
+
+/* Stock Material dims the copyright line to 4.49:1; keep line-grey instead. */
+.md-footer .md-copyright {
+  color: var(--ro-line);
+}
+
+/* ---- Touch targets on footer links ---- */
+.md-footer a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ---- Motion sensitivity: honor reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+}

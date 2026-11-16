@@ -44,7 +44,8 @@ def test_synthetic_or_unrelated_numbers_are_not_flagged(tmp_path, line):
 
 
 def test_allowlisted_synthetic_key_is_accepted(tmp_path):
+    key = "900001"
     path = tmp_path / "sample.py"
-    path.write_text('course_dir = tmp_path / "900001" / "2021-07"\n')
+    path.write_text(f'course_dir = tmp_path / "{key}" / "2021-07"\n')
     assert guard.scan([path], set()) == [(str(path), 1)]
-    assert guard.scan([path], {"900001"}) == []
+    assert guard.scan([path], {key}) == []
