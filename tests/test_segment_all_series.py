@@ -61,6 +61,17 @@ def _series_rows(root: Path) -> list[dict]:
 
 def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatch):
     cfg = _config(tmp_path)
+    # Fake inference must not inherit or populate an operator's model cache.
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    monkeypatch.setenv("TOTALSEG_WEIGHTS_PATH", str(weights))
+    phase_calls = []
+
+    def fake_phase(_config, image):
+        phase_calls.append(Path(image))
+        return "native"
+
+    monkeypatch.setattr(segmentation, "_detect_contrast_phase_safe", fake_phase)
     all_series_root = cfg.output_root / "P1" / "all_series"
     manifest_path = build_course_dirs(all_series_root).metadata / "series_manifest.json"
     rows = _series_rows(all_series_root)
@@ -115,6 +126,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
     assert all(summary[image_class]["attempted"] == 1 for image_class in eligible_classes)
     assert all(summary[image_class]["segmented"] == 1 for image_class in eligible_classes)
     assert len(calls) == 7
+    assert len(phase_calls) == 3
     assert all(call["output_type"] == "nifti" for call in calls)
 
     nifti_root_by_class = {
@@ -153,6 +165,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
     calls.clear()
     skipped = segmentation.segment_all_series_for_patient(cfg, "P1")
     assert calls == []
+    assert len(phase_calls) == 3
     assert all(skipped[image_class]["skipped"] == 1 for image_class in eligible_classes)
     persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
     status_by_class = {row["image_class"]: row["status"] for row in persisted["series"]}
@@ -162,6 +175,7 @@ def test_segment_all_series_dispatch_status_and_idempotency(tmp_path, monkeypatc
     calls.clear()
     forced = segmentation.segment_all_series_for_patient(cfg, "P1", force=True)
     assert len(calls) == 7
+    assert len(phase_calls) == 6
     assert all(forced[image_class]["attempted"] == 1 for image_class in eligible_classes)
     persisted = json.loads(manifest_path.read_text(encoding="utf-8"))
     status_by_class = {row["image_class"]: row["status"] for row in persisted["series"]}
