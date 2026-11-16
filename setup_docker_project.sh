@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="3.0.2"
+VERSION="3.0.3"
 
 # Ensure we have an interactive stdin (handles curl | bash)
 if [ ! -t 0 ]; then

@@ -96,6 +96,7 @@ except SyntaxError as error:
     return compiled_text, rulecount, linemap
 
 
+@pytest.mark.requires_snakemake
 def test_current_snakefile_parses_and_compiles_offline() -> None:
     """Verify current Snakefile grammar parses and compiles with compile() only.
 
@@ -116,6 +117,7 @@ def test_current_snakefile_parses_and_compiles_offline() -> None:
     assert isinstance(code_obj, types.CodeType), "compile() must return a valid CodeType"
 
 
+@pytest.mark.requires_snakemake
 def test_ast_aggregate_radiomics_robustness_contract() -> None:
     """Verify AST structure of aggregate_radiomics_robustness rule.
 
@@ -184,6 +186,7 @@ def test_ast_aggregate_radiomics_robustness_contract() -> None:
     assert lambda_args == ["w", "output"], f"Expected lambda args ['w', 'output'], got {lambda_args}"
 
 
+@pytest.mark.requires_snakemake
 def test_ast_radiomics_robustness_course_rules() -> None:
     """Verify AST structure of both radiomics_robustness_course rules (container and local branches)."""
     content = SNAKEFILE_PATH.read_text(encoding="utf-8")
@@ -226,6 +229,7 @@ def test_ast_radiomics_robustness_course_rules() -> None:
         assert isinstance(params_kw["parquet"], ast.Lambda), f"Course rule {idx} parquet must be Lambda"
 
 
+@pytest.mark.requires_snakemake
 def test_no_parsing_skipped_across_grammar() -> None:
     """Verify that all expected rules are parsed and none are silently skipped."""
     content = SNAKEFILE_PATH.read_text(encoding="utf-8")
@@ -259,6 +263,7 @@ def test_no_parsing_skipped_across_grammar() -> None:
     assert set(parsed_rule_names) == expected_rules
 
 
+@pytest.mark.requires_snakemake
 @pytest.mark.parametrize(
     "corrupted_snippet,error_type,error_pattern",
     [

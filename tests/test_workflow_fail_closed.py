@@ -382,6 +382,7 @@ def test_noncampaign_aggregation_accepts_plan_only_course_without_workbook(tmp_p
     assert not (output_dir / "P2" / "C1" / "dvh_metrics.xlsx").exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_enabled_radiomics_output_is_required_but_mr_remains_optional(tmp_path):
     workflow, outputs = _aggregate_snakemake(tmp_path, radiomics_enabled=True)
     output_dir = Path(workflow.params.output_dir)
@@ -397,6 +398,7 @@ def test_enabled_radiomics_output_is_required_but_mr_remains_optional(tmp_path):
     assert pd.read_excel(outputs["radiomics_mr"]).empty
 
 
+@pytest.mark.requires_radiomics_env
 def test_enabled_radiomics_missing_required_ct_output_blocks_publication(tmp_path):
     workflow, outputs = _aggregate_snakemake(tmp_path, radiomics_enabled=True)
     output_dir = Path(workflow.params.output_dir)

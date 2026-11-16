@@ -526,6 +526,7 @@ def _write_rtstruct_with_rois(
     return path
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_radiomics_recovers_from_broken_pool_during_backfill(tmp_path, monkeypatch):
     """Same CRITICAL regression, end-to-end through parallel_radiomics_for_course: a
@@ -1003,6 +1004,7 @@ def test_conda_delegation_failure_is_not_converted_to_nothing_to_do(tmp_path, mo
         function(config, course_root)
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_parallel_status_rows_are_not_written_as_feature_rows(tmp_path, monkeypatch):
     import json

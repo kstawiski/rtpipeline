@@ -78,6 +78,7 @@ def test_consumers_never_rebuild_stale_custom(tmp_path, monkeypatch, backend, ar
     assert not checkpoint.exists()
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize('variant', VARIANTS)
 def test_parallel_resume_checks_rasterizer_before_reuse(tmp_path, monkeypatch, variant, rasterizer_guard_stub):
     # Synthetic features exercise real course publication and resume control flow.

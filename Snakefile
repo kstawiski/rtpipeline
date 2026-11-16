@@ -908,11 +908,17 @@ if COURSE_MANIFEST.exists():
         from rtpipeline.snakemake_delegate import invoke as _organize_invoke, runtime_environment as _organize_env
         from types import SimpleNamespace as _OrganizeParams
         _organize_check = _organize_invoke(python=PYTHON_MAIN, operation="validate-organize",
-            arguments=["--output-dir", str(OUTPUT_DIR), "--mode", "check"],
+            arguments=["--output-dir", str(OUTPUT_DIR), "--mode", "check", "--require-completions"],
             result_dir=LOGS_DIR / "organize-resume", env=_organize_env(
                 _OrganizeParams(root_dir=str(ROOT_DIR), configfile=str(EFFECTIVE_CONFIGFILE), python_bin=PYTHON_MAIN_BIN)))
         if _organize_check["ledger"].get("source_bytes_current") is not True:
             raise ValueError("Organize source byte inventory changed")
+        if _organize_check["invalid_courses"]:
+            raise ValueError("Organize course completion is invalid")
+        _completed_courses = {
+            (entry["patient"], entry["course"])
+            for entry in _organize_check["validated_courses"]
+        }
         _manifest_courses = json.loads(COURSE_MANIFEST.read_text(encoding="utf-8"))["courses"]
         if not isinstance(_manifest_courses, list):
             raise ValueError("Manifest courses must be a list")
@@ -921,12 +927,10 @@ if COURSE_MANIFEST.exists():
             _course = str(_entry["course"] or "").strip()
             if not _patient or not _course:
                 raise ValueError("Manifest course lacks patient/course identity")
-            validate_stage_completion_sentinel(
-                course_sentinel_path(_patient, _course, ".organized"),
-                expected_stage="organize",
-                expected_patient=_patient,
-                expected_course=_course,
-            )
+            # Scientific validation runs in PYTHON_MAIN through the delegate;
+            # the Snakemake interpreter only checks manifest membership.
+            if (_patient, _course) not in _completed_courses:
+                raise ValueError("Manifest course lacks a validated organize completion")
     except (OSError, ValueError, KeyError, TypeError) as _exc:
         # This is the checkpoint's declared output. Removing it defers course
         # input expansion until organize republishes fresh receipts. Merely

@@ -3136,7 +3136,7 @@ wheels = [
 
 [[package]]
 name = "rtpipeline"
-version = "3.0.2"
+version = "3.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "dicom2nifti" },
@@ -3197,7 +3197,7 @@ requires-dist = [
     { name = "plotly" },
     { name = "pyarrow" },
     { name = "pydicom", specifier = ">=3.0.2,<4" },
-    { name = "rt-utils" },
+    { name = "rt-utils", specifier = "==1.2.7" },
     { name = "scipy" },
     { name = "simpleitk" },
     { name = "totalsegmentator", specifier = "==2.12.0" },

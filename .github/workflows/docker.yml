@@ -15,6 +15,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -121,9 +123,20 @@ jobs:
 
       - name: Test image (full suite and container smoke)
         run: |
+          docker run --rm rtpipeline:test git --version
           docker run --rm rtpipeline:test \
             python -c 'import importlib.metadata, pathlib, pyarrow, rtpipeline, sys; assert pathlib.Path(sys.executable).as_posix().startswith("/opt/conda/envs/rtpipeline/"); assert rtpipeline.__version__ == importlib.metadata.version("rtpipeline")'
-          docker run --rm rtpipeline:test \
+          # The image's git (2.25) ignores GIT_CONFIG_* variables, so mark the
+          # read-only checkout safe through a mounted system configuration.
+          printf '[safe]\n\tdirectory = /app\n' > "$RUNNER_TEMP/rtpipeline-test.gitconfig"
+          git_mounts=(-v "$GITHUB_WORKSPACE/.git:/app/.git:ro" -v "$RUNNER_TEMP/rtpipeline-test.gitconfig:/etc/gitconfig:ro")
+          docker run --rm "${git_mounts[@]}" rtpipeline:test git -C /app rev-parse --verify HEAD
+          docker run --rm \
+            "${git_mounts[@]}" \
+            -e MAMBA_ROOT_PREFIX=/opt/conda \
+            -e RTPIPELINE_TEST_SNAKEMAKE=/opt/conda/bin/snakemake \
+            -e RTPIPELINE_RADIOMICS_ENV_PREFIX=/opt/conda/envs/rtpipeline-radiomics \
+            rtpipeline:test \
             /opt/conda/envs/rtpipeline/bin/python -m pytest -q
           docker run --rm rtpipeline:test python docker_test.py
 

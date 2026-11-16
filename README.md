@@ -218,13 +218,13 @@ If you use RTpipeline in your research, cite the software itself:
 @software{rtpipeline_3_0_0,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
-  version = {3.0.2},
+  version = {3.0.3},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
 ```
 
-Add the DOI archived for the `v3.0.2` release. `CITATION.cff` carries the machine-readable metadata, and GitHub's "Cite this repository" formats it. When the bytes you ran differ from the release tag, also report the immutable git commit or container digest.
+Add the DOI archived for the `v3.0.3` release. `CITATION.cff` carries the machine-readable metadata, and GitHub's "Cite this repository" formats it. When the bytes you ran differ from the release tag, also report the immutable git commit or container digest.
 
 Also cite the underlying tools:
 - **TotalSegmentator:** Wasserthal et al., *Radiology: AI* (2023)

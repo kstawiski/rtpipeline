@@ -299,6 +299,7 @@ def test_materialize_returns_false_when_no_slices(tmp_path):
     assert rad._materialize_temp_course_tree(tmp_path / "c", src, rs) is False
 
 
+@pytest.mark.requires_radiomics_env
 def test_all_series_temp_contract_is_consumed_only_by_all_series_dispatch(tmp_path, monkeypatch):
     src = tmp_path / "series"
     src.mkdir()
@@ -387,6 +388,7 @@ def test_all_series_temp_contract_is_consumed_only_by_all_series_dispatch(tmp_pa
         rad.radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)
 
 
+@pytest.mark.requires_radiomics_env
 def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
     tmp_path, monkeypatch
 ):
@@ -447,6 +449,7 @@ def test_parallel_all_series_conda_fallback_preserves_scope_opt_in(
         radpar.parallel_radiomics_for_course(cast(Any, _Cfg(tmp_path)), course)
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatch):
     src = tmp_path / "series"
@@ -727,6 +730,7 @@ def _install(monkeypatch, fake, mode):
         monkeypatch.setattr(radpar, "parallel_radiomics_for_course", fake)
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("mode", ["serial", "parallel"])
 def test_run_radiomics_all_series_e2e(tmp_path, monkeypatch, fake_dispatch, mode):
     calls, fake = fake_dispatch
@@ -803,6 +807,7 @@ def test_missing_manifest_returns_none(tmp_path, monkeypatch, fake_dispatch):
     assert len(calls) == 0
 
 
+@pytest.mark.requires_radiomics_env
 def test_series_without_rtstruct_is_skipped(tmp_path, monkeypatch, fake_dispatch):
     calls, fake = fake_dispatch
     out_root = tmp_path / "out"
@@ -819,6 +824,7 @@ def test_series_without_rtstruct_is_skipped(tmp_path, monkeypatch, fake_dispatch
     assert not (out_root / ".all_series_radiomics").exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_e2e_4dct_phase_fallback_through_real_rtstruct_probe(tmp_path, monkeypatch, fake_dispatch):
     # End-to-end exercise of the REAL _row_has_rtstruct probe (not an injected lambda): an ave-less
     # 4DCT study whose preferred 50% phase was NOT segmented (no on-disk RTSTRUCT) but a 0% phase was.
@@ -863,6 +869,7 @@ def test_no_backend_short_circuits(tmp_path, monkeypatch, fake_dispatch):
     assert not (out_root / ".all_series_radiomics").exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_subset_rerun_preserves_other_patients(tmp_path, monkeypatch, fake_dispatch):
     calls, fake = fake_dispatch
     out_root = tmp_path / "out"
@@ -949,6 +956,7 @@ def test_cli_radiomics_stage_runs_all_series_adapter(tmp_path, monkeypatch):
     assert seen == {"course": True, "patient_ids": ["P1"]}
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("source,expected", [("PTV", "generated"), ("absent_roi", "source_unavailable")])
 @pytest.mark.parametrize("mode", ["serial", "parallel"])
 def test_all_series_builds_custom_before_extraction(tmp_path, monkeypatch, fake_dispatch, source, expected, mode):

@@ -179,6 +179,7 @@ def _course(tmp_path, monkeypatch, *, malformed=False):
     return course, source, dataset, config
 
 
+@pytest.mark.requires_radiomics_env
 def test_custom_model_point_has_persisted_identity_bound_arm_rows(tmp_path, monkeypatch):
     course, source, dataset, config = _course(tmp_path, monkeypatch)
     before = source.read_bytes()
@@ -223,6 +224,7 @@ def test_empty_required_custom_model_invalidates_stale_output(tmp_path, monkeypa
     assert not (course / "radiomics_ct.parquet").exists()
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("source_kind", ["custom_model", "standard"])
 def test_point_disposition_is_not_measurement_or_technical_exclusion(tmp_path, monkeypatch, source_kind):
     course, source, _, config = _course(tmp_path, monkeypatch)
@@ -260,6 +262,7 @@ def test_point_disposition_is_not_measurement_or_technical_exclusion(tmp_path, m
     assert outcome.status == rebuilt.status
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("change", ["source_bytes", "code_revision", "unchanged"])
 def test_nonmeasurement_resume_checks_content_and_rebuilds_ledger(tmp_path, monkeypatch, change):
     course, source, dataset, config = _course(tmp_path, monkeypatch)
@@ -297,6 +300,7 @@ def test_nonmeasurement_resume_checks_content_and_rebuilds_ledger(tmp_path, monk
     assert ledger["course_roi"][0]["reason_code"] == "ROI_NONVOLUMETRIC_POINT"
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("skip,alias", [(False, "PTV"), (False, "ptv"), (True, "PTV")])
 def test_required_alias_inherits_actual_disposition_not_name_presence(tmp_path, monkeypatch, skip, alias):
     course, source, _, config = _course(tmp_path, monkeypatch)
@@ -323,6 +327,7 @@ def test_required_alias_inherits_actual_disposition_not_name_presence(tmp_path, 
     assert summary["COURSE_ROI"]["CT:PlanningTarget"]["excluded_technical"] == 0
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.parametrize("required_source", ["Manual", None])
 def test_alias_resolution_respects_source_scope_and_ambiguity(tmp_path, monkeypatch, required_source):
     course, source, _, config = _course(tmp_path, monkeypatch)
@@ -346,6 +351,7 @@ def test_alias_resolution_respects_source_scope_and_ambiguity(tmp_path, monkeypa
         assert canonical[0]["segmentation_source"] == required_source
 
 
+@pytest.mark.requires_radiomics_env
 @pytest.mark.usefixtures("rasterizer_guard_stub")
 def test_optional_mask_failure_has_one_source_roi_denominator_row(tmp_path, monkeypatch):
     course, source, _, config = _course(tmp_path, monkeypatch)
@@ -388,6 +394,7 @@ def test_source_fingerprint_read_failure_invalidates_stale_output(tmp_path, monk
     assert not (course / "radiomics_ct.parquet").exists()
 
 
+@pytest.mark.requires_radiomics_env
 def test_resume_ledger_failure_invalidates_admitted_table(tmp_path, monkeypatch):
     course, _, _, config = _course(tmp_path, monkeypatch)
     radiomics.radiomics_for_course(config, course)

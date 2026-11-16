@@ -438,10 +438,10 @@ singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 
 #### Option 3: convert the release image with `rtpipeline.def`
 
-`rtpipeline.def` references the version-matched image `kstawiski/rtpipeline:3.0.2`:
+`rtpipeline.def` references the version-matched image `kstawiski/rtpipeline:3.0.3`:
 
 ```bash
-apptainer build rtpipeline-3.0.2.sif rtpipeline.def
+apptainer build rtpipeline-3.0.3.sif rtpipeline.def
 ```
 
 This path does not build or maintain a second dependency stack. The version-matched Docker image is the software source for the resulting SIF.
@@ -619,8 +619,8 @@ singularity exec --nv \
 
 For production, see docker-compose.yml configuration with restart policies, resource limits, and health checks.
 
-The Apptainer definition converts `kstawiski/rtpipeline:3.0.2`, published from this
-repository’s Dockerfile by the `v3.0.2` Docker workflow. It does not build the
+The Apptainer definition converts `kstawiski/rtpipeline:3.0.3`, published from this
+repository’s Dockerfile by the `v3.0.3` Docker workflow. It does not build the
 environments from source. Its mandatory `%post` check runs
 `scripts/check_radiomics_environment.py` with the radiomics interpreter and fails
 the build if that interpreter, rt-utils 1.2.7, or the single headless OpenCV

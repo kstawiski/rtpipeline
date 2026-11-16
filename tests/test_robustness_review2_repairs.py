@@ -294,6 +294,7 @@ def test_new_receipt_replaces_all_record_metadata(tmp_path, monkeypatch, status)
     assert not row["log_path"] and not row["finished_at"] and not row["duration_seconds"]
 
 
+@pytest.mark.requires_snakemake
 def test_migration_quarantines_only_obsolete_across_output_roots_and_dag(tmp_path):
     dependency = tmp_path / "dependency.json"
     from rtpipeline.config_dependencies import stage_dependency_record
@@ -331,6 +332,7 @@ def test_migration_quarantines_only_obsolete_across_output_roots_and_dag(tmp_pat
         assert all(f"run-course-{i}" not in result.stdout + result.stderr for i in range(1, 4))
 
 
+@pytest.mark.requires_snakemake
 def test_aggregate_dag_parameters_bind_campaign_gates(tmp_path):
     compiled, _, _ = parse_snakefile_source(SNAKEFILE_PATH.read_text())
     tree = ast.parse(compiled)

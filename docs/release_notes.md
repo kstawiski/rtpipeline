@@ -2,7 +2,46 @@
 
 ## Unreleased
 
-No changes since 3.0.2.
+No changes since 3.0.3.
+
+## 3.0.3 — 2026-11-16
+
+Cite this release by version and by the DOI archived for the `v3.0.3` tag (see
+[citing](citing.md)). DVH, radiomics and robustness are computed by the same code
+as in 3.0.1 and 3.0.2. This is the first 3.0 release with a published container
+image, `kstawiski/rtpipeline:3.0.3`: the tests that run inside the image failed
+for 3.0.1 and 3.0.2, so neither published one. Run `organize` again on projects
+processed with 3.0.0 or earlier (see 3.0.1).
+
+- The main environment pins rt-utils 1.2.7, the RTSTRUCT rasterizer used for
+  every validated measurement. Without the pin, the container build, and any
+  environment created from `envs/rtpipeline.yaml` or installed with pip, could
+  resolve rt-utils 2.5.0, which rasterizes contours differently: a contour
+  written and read back gained boundary voxels. The image build checks the
+  installed version, and installs from `pyproject.toml` pin it as well. In an
+  existing environment, `python -c "from importlib.metadata import version;
+  print(version('rt-utils'))"` should print 1.2.7; if it does not, reinstall and
+  rerun the affected courses.
+- The workflow validates organize receipts with the main-environment interpreter,
+  through the existing workflow delegate, instead of inside the Snakemake
+  interpreter, so a Snakemake installation without the scientific packages can
+  resume a project. Course expansion also waits when a course that the organize
+  ledger lists as validated no longer passes its contract, progress or receipt
+  check; organize then runs again for that course.
+- An invalid `declared_on` date in a concurrent-dose declaration reports
+  `declared_on must be YYYY-MM-DD` on every supported Python. Python 3.10 used to
+  stop at its own date error first. Dose selection is unchanged.
+- Release testing runs the full suite inside the image, with the repository
+  history mounted read-only and the Snakemake and radiomics runtimes declared. The
+  Python 3.10 suite runs on the locked dependencies; tests that need conda,
+  Snakemake or the radiomics environment report an explicit skip there.
+
+Known issue, fixed in the next release: when an RTSTRUCT holds two ROIs with the
+same name, the `Segmentation_Original` export writes the first ROI's mask for
+both, serial CT radiomics measures only the first, and a custom structure whose
+source name matches several ROIs once case and punctuation are ignored uses the
+first of them. DVH dose values are computed per ROI number and are not affected.
+Structure sets in which every ROI name is distinct are not affected.
 
 ## 3.0.2 — 2026-11-16
 
@@ -13,9 +52,9 @@ Run `organize` again on projects processed with 3.0.0 or earlier.
 
 - `uv.lock` records the package version, so `uv sync --locked` succeeds on a
   release checkout.
-- The local-installer check runs on a macOS runner image that GitHub supports, so
-  the release workflow publishes the container image
-  `kstawiski/rtpipeline:3.0.2`. No container image was published for 3.0.1.
+- The local-installer check runs on a macOS runner image that GitHub supports.
+  The container image still did not publish, because its in-image tests failed
+  (fixed in 3.0.3). No container image was published for 3.0.1 either.
 - The container label, the Apptainer definition, the setup scripts, the installer
   receipt and the documentation examples name 3.0.2.
 
