@@ -87,6 +87,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pigz \
     curl \
     procps \
+    git \
     && rm -rf /var/lib/apt/lists/* && \
     groupadd -r rtpipeline && \
     useradd -r -g rtpipeline -u 1000 -m rtpipeline && \
@@ -123,6 +124,7 @@ RUN mamba install -y -c conda-forge -c bioconda \
     pandas \
     flask \
     psutil \
+    pytest \
     'pydicom>=3.0.2,<4' \
     pyyaml \
     werkzeug \
@@ -160,6 +162,7 @@ COPY --chown=rtpipeline:rtpipeline . /app/
 RUN pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-deps -e . && \
     /opt/conda/envs/rtpipeline/bin/pip install --no-cache-dir psutil pytest && \
+    /opt/conda/envs/rtpipeline/bin/python -c "from importlib.metadata import version; assert version('rt-utils') == '1.2.7', version('rt-utils')" && \
     PYTHONPATH=/app PYTHONNOUSERSITE=1 /opt/conda/envs/rtpipeline/bin/python -c "from rtpipeline.radiomics_rasterizer import opencv_runtime_provenance; p = opencv_runtime_provenance(); assert p['opencv_version'] == '5.0.0' and p['providers'] == {'opencv-python': '5.0.0.93'} and p['error'] is None, p" && \
     PYTHONPATH=/app PYTHONNOUSERSITE=1 /opt/conda/envs/rtpipeline-radiomics/bin/python /app/scripts/check_radiomics_environment.py
 
