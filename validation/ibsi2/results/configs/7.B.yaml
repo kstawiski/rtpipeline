@@ -1,0 +1,31 @@
+setting:
+  resampledPixelSpacing:
+  - 1.0
+  - 1.0
+  - 1.0
+  interpolator: sitkBSpline
+  normalize: false
+  voxelArrayShift: 0
+  binWidth: 25
+  minimumROIDimensions: 2
+  minimumROISize: 64
+  distances:
+  - 1
+  - 2
+  force2D: false
+  force2Ddimension: 0
+  padDistance: 5
+  correctMask: true
+  additionalInfo: true
+  label: 1
+  resegmentRange:
+  - -1000.0
+  - 400.0
+  preCrop: false
+imageType:
+  Wavelet:
+    wavelet: db3
+    start_level: 0
+    level: 2
+featureClass:
+  firstorder: []

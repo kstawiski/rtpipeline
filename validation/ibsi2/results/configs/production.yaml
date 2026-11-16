@@ -1,0 +1,43 @@
+setting:
+  resampledPixelSpacing:
+  - 1.0
+  - 1.0
+  - 1.0
+  interpolator: sitkBSpline
+  normalize: false
+  voxelArrayShift: 0
+  binWidth: 25
+  minimumROIDimensions: 2
+  minimumROISize: 64
+  distances:
+  - 1
+  - 2
+  force2D: false
+  force2Ddimension: 0
+  padDistance: 5
+  geometryTolerance: 1e-6
+  correctMask: true
+  weightingNorm: null
+  additionalInfo: true
+  label: 1
+  preCrop: false
+imageType:
+  Original: {}
+  LoG:
+    sigma:
+    - 1.0
+    - 2.0
+    - 3.0
+    - 5.0
+  Wavelet:
+    wavelet: coif1
+    start_level: 0
+    level: 1
+featureClass:
+  shape: []
+  firstorder: []
+  glcm: []
+  glrlm: []
+  glszm: []
+  gldm: []
+  ngtdm: []

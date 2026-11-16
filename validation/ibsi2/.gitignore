@@ -1,0 +1,4 @@
+# Public source downloads and generated response maps remain local.
+/data/
+/results/maps/
+__pycache__/
