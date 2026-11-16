@@ -2,7 +2,53 @@
 
 ## Unreleased
 
-No changes since 3.0.0.
+No changes since 3.0.1.
+
+## 3.0.1 — 2026-11-16
+
+Cite this release by version and by the DOI archived for the `v3.0.1` tag (see
+[citing](citing.md)). Run `organize` again on projects processed with 3.0.0 or
+earlier: clinical contour masks exported by those versions are refused and
+re-exported automatically.
+
+### Clinical contour masks are placed by physical voxel coordinates
+
+- In 3.0.0 and earlier, the NIfTI masks exported from a course's clinical
+  RTSTRUCT into `Segmentation_Original/` could be mirrored front to back, along
+  the image row axis. The exporter wrote the RTSTRUCT mask in DICOM row order
+  under the header of the dcm2niix planning-CT NIfTI, whose rows dcm2niix stores
+  in the opposite order. The header described the correct grid while the voxels
+  were mirrored, so a mirrored mask lies partly outside the anatomy it outlines.
+- 3.0.1 maps every mask onto the planning-CT NIfTI by physical voxel
+  coordinates. Only an exact permutation or flip of axes is accepted, and a
+  grid that is not equivalent is refused rather than resampled. Each export
+  records the schema `rtpipeline-original-segmentation-v2` and the geometry
+  status `exact_physical_mapping`.
+- Every consumer refuses an export without that status, and `organize`
+  re-exports it, so masks written by earlier versions cannot be used.
+- Only the exported `Segmentation_Original` masks, and the custom-model anchor
+  and Dice-reference masks taken from them, were affected. DVH, radiomics and
+  robustness built their masks from the RTSTRUCT against the CT read from the
+  DICOM series and were not affected. Repeat any analysis outside RTpipeline
+  that read `Segmentation_Original` masks produced by 3.0.0 or earlier.
+
+### Other changes
+
+- RTSTRUCT rasterization uses one pinned OpenCV provider (4.8.1), and outputs
+  record the rasterizer identity they were built with.
+- A durable progress journal and verified result cache let DVH, radiomics and
+  robustness resume after an interruption without repeating completed work or
+  reusing a result whose inputs changed.
+- D2cc is exported on every DVH path, sub-centigray doses are preserved, and
+  DVH contour dispositions and outside-grid structures are published
+  explicitly. The published DVH table schema is pinned across pandas versions.
+- Treatment-scope rules 1.1.0 are available, with governed robustness target
+  selection, structure exclusions and gap accounting.
+- A multi-plan composite course dose can be published for descriptive DVH.
+- Planning-CT conversion, conversion provenance and cache reuse are validated
+  more strictly, and radiomics rows are published in ROI enumeration order on
+  every backend.
+- Tests use synthetic course keys only, and a guard refuses real ones.
 
 ## 3.0.0 — 2026-10-25
 
