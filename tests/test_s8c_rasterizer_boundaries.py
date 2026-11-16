@@ -26,7 +26,10 @@ import test_radiomics_fail_closed as fixtures
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize('variant', VARIANTS)
+@pytest.mark.parametrize('variant', [
+    pytest.param(variant, marks=pytest.mark.requires_radiomics_env)
+    if variant == 'matching' else variant for variant in VARIANTS
+])
 def test_ct_publication_and_sentinel_require_pin(tmp_path, variant, rasterizer_guard_stub):
     fixtures._write_test_ct_publication(tmp_path / 'radiomics_ct.xlsx', [
         {'segmentation_source': 'Manual', 'roi_name': 'PTV', 'original_firstorder_Mean': 7.5}])
@@ -191,6 +194,7 @@ def test_robustness_admission_rejects_unrecorded_rows_first(tmp_path, monkeypatc
     assert 'radiomics_rasterizer.py' in robustness.ROBUSTNESS_DISPOSITION_CODE_SOURCES
 
 
+@pytest.mark.requires_snakemake
 def test_workflow_orders_custom_builder_before_both_consumers():
     import importlib.util
     if importlib.util.find_spec("snakemake") is None:
@@ -202,15 +206,18 @@ def test_workflow_orders_custom_builder_before_both_consumers():
         interpreter = Path(executable).with_name("python")
         script = (
             "import sys; sys.path[:0] = " + repr([str(ROOT), str(ROOT / "tests")]) + "; "
-            "from test_s8c_rasterizer_boundaries import test_workflow_orders_custom_builder_before_both_consumers as check; check()"
+            "import json; from test_robustness_snakefile_parse import parse_snakefile_source; "
+            "print(json.dumps(parse_snakefile_source((__import__('pathlib').Path("
+            + repr(str(ROOT)) + ") / 'Snakefile').read_text())[0]))"
         )
         result = subprocess.run([str(interpreter), "-B", "-c", script],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "LD_LIBRARY_PATH": str(interpreter.parent.parent / "lib")})
         assert result.returncode == 0, result.stdout + result.stderr
-        return
-    from test_robustness_snakefile_parse import parse_snakefile_source
-    compiled, _, _ = parse_snakefile_source((ROOT / 'Snakefile').read_text())
+        compiled = json.loads(result.stdout)
+    else:
+        from test_robustness_snakefile_parse import parse_snakefile_source
+        compiled, _, _ = parse_snakefile_source((ROOT / 'Snakefile').read_text())
     tree = ast.parse(compiled)
     inputs = {}
     for node in ast.walk(tree):
