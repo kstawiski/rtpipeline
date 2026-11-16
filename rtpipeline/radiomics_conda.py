@@ -3233,6 +3233,24 @@ def radiomics_for_course(
             )
         )
     source_specs = _deduplicate_rtstruct_sources(source_specs)
+    # Inventory and publication strip whitespace. Refuse collisions before
+    # selected-name lists or task dictionaries can hide source declarations.
+    from .rtstruct_geometry import ambiguous_roi_names
+    from .stage_completion import _atomic_json
+    for source_label, source_path, _ in source_specs:
+        source_dataset = pydicom.dcmread(str(source_path), stop_before_pixels=True)
+        collisions = ambiguous_roi_names(source_dataset)
+        if collisions:
+            detail = f"RTSTRUCT_AMBIGUOUS_ROI_NAME: {sorted(collisions)!r} in {source_path}"
+            outcomes = [{
+                "segmentation_source": source_label, "source_path": str(source_path),
+                "rtstruct_sop_instance_uid": str(source_dataset.SOPInstanceUID),
+                "roi_number": number, "roi_name": name, "status": "failed",
+                "structural_code": "RTSTRUCT_AMBIGUOUS_ROI_NAME", "reason": detail,
+            } for entries in collisions.values() for number, name in entries]
+            _atomic_json(course_dir / "metadata/radiomics_ct_identity_refusals.json", outcomes)
+            _invalidate_radiomics_outputs(output_path)
+            raise RadiomicsCourseExtractionError(detail)
 
     if not source_specs:
         logger.info(

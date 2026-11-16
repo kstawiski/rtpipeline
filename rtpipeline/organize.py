@@ -4316,12 +4316,12 @@ _ORIGINAL_PROVENANCE_BOUND_KEYS = (
 
 
 def _original_segmentation_provenance(
-    rs_path: Path, primary_nifti: Path
+    rs_path: Path, primary_nifti: Path, sidecar_path: Optional[Path] = None
 ) -> Optional[dict]:
     """Return the content identity used to rasterize original ROI masks."""
     from .radiomics_rasterizer import opencv_runtime_provenance
 
-    sidecar = primary_nifti.parent / f"{_strip_nifti_base(primary_nifti)}.metadata.json"
+    sidecar = sidecar_path or primary_nifti.parent / f"{_strip_nifti_base(primary_nifti)}.metadata.json"
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
     except Exception:
@@ -4353,9 +4353,9 @@ def _original_segmentation_provenance(
     }
 
 
-def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, nifti: Path):
+def _bind_original_builder_to_planning_ct(builder, ct_dir: Path, rs_path: Path, nifti: Path, sidecar_path: Optional[Path] = None):
     """Rasterize the validated conversion stack, retaining source DICOM bytes."""
-    sidecar = nifti.with_name(f"{_strip_nifti_base(nifti)}.metadata.json")
+    sidecar = sidecar_path or nifti.with_name(f"{_strip_nifti_base(nifti)}.metadata.json")
     metadata = json.loads(sidecar.read_text(encoding="utf-8"))
     conversion = metadata.get("nifti_conversion")
     if not isinstance(conversion, dict):
@@ -4471,22 +4471,28 @@ def _export_original_segmentation_from_paths(
     segmentation_original_dir: Path,
     log_root: Path,
     overwrite: bool,
+    nifti_sidecar_path: Optional[Path] = None,
 ) -> Optional[dict]:
     seg_root = segmentation_original_dir
-    from .original_segmentation import quarantine_stale_original_exports, quarantine_original_export
+    from .original_segmentation import (quarantine_stale_original_exports, quarantine_original_export,
+                                        is_rtpipeline_original_export)
     quarantine_stale_original_exports(seg_root)
     if not rs_path or not rs_path.exists() or not primary_nifti or not primary_nifti.exists():
         return None
     base_name = _strip_nifti_base(primary_nifti)
     target_root = seg_root / base_name
+    if (target_root.exists() and any(target_root.iterdir())
+            and not is_rtpipeline_original_export(target_root)):
+        raise ValueError(f'ORIGINAL_EXPORT_NOT_OWNED: {target_root}')
     # Each producer owns this root (all-series uses a separate root per CT).
     # Even a byte-current old stem is superseded by the selected NIfTI stem.
     for sibling in sorted(seg_root.iterdir()) if seg_root.exists() else []:
-        if sibling.is_dir() and sibling != target_root:
+        if (sibling.is_dir() and sibling != target_root
+                and is_rtpipeline_original_export(sibling)):
             quarantine_original_export(sibling, "superseded NIfTI export stem")
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
-    provenance = _original_segmentation_provenance(rs_path, primary_nifti)
+    provenance = _original_segmentation_provenance(rs_path, primary_nifti, nifti_sidecar_path)
     if manifest_path.exists() and not overwrite:
         try:
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -4528,15 +4534,17 @@ def _export_original_segmentation_from_paths(
             rt_struct_path=str(rs_path),
         )
         builder = _bind_original_builder_to_planning_ct(
-            builder, dicom_ct_dir, rs_path, primary_nifti,
+            builder, dicom_ct_dir, rs_path, primary_nifti, nifti_sidecar_path,
         )
     except Exception as exc:
         logger.warning("Failed to load RTSTRUCT for segmentation export (%s): %s", rs_path, exc)
         return None
 
-    used_names: dict[str, int] = {}
+    from .rtstruct_geometry import rtstruct_roi_entries
+    roi_entries = rtstruct_roi_entries(builder)
     manifest = {
         "schema": ORIGINAL_SEGMENTATION_SCHEMA,
+        "producer": "rtpipeline",
         "geometry_status": "exact_physical_mapping",
         "opencv_runtime": provenance["opencv_runtime"],
         "model": "manual",
@@ -4545,10 +4553,13 @@ def _export_original_segmentation_from_paths(
         "structures": [],
     }
 
-    for roi_name in builder.get_roi_names():
+    if nifti_sidecar_path is not None:
+        manifest['source_nifti_sidecar'] = str(nifti_sidecar_path)
+
+    for roi_number, roi_name in roi_entries:
         try:
             from .rtstruct_geometry import rtstruct_roi_mask
-            mask = rtstruct_roi_mask(builder, roi_name)
+            mask = rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
         except Exception:
             mask = None
         if mask is None:
@@ -4569,11 +4580,7 @@ def _export_original_segmentation_from_paths(
                 json.dumps(provenance, indent=2), encoding="utf-8")
             logger.warning("original_segmentation event=geometry_rejected: %s", exc)
             return None
-        safe = _sanitize_name(roi_name, "ROI")
-        idx = used_names.get(safe, 0)
-        used_names[safe] = idx + 1
-        if idx:
-            safe = f"{safe}_{idx+1}"
+        safe = f'roi-{roi_number}__{_sanitize_name(roi_name, "ROI")[:180]}'
         out_path = target_root / f"{safe}.nii.gz"
         try:
             sitk.WriteImage(sitk_mask, str(out_path), useCompression=True)
@@ -4583,6 +4590,7 @@ def _export_original_segmentation_from_paths(
         manifest["structures"].append(
             {
                 "roi_name": roi_name,
+                "roi_number": roi_number,
                 "mask": str(out_path.relative_to(seg_root)),
                 "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
                 "size_bytes": out_path.stat().st_size,

@@ -37,6 +37,7 @@ class FixSummary:
     failed: List[str]
     output_path: Path
     opencv_runtime: dict = field(default_factory=opencv_runtime_provenance)
+    identity_error: Optional[str] = None
 
 
 def _rt_utils_roi_mask(rtstruct, roi_name: str) -> np.ndarray:
@@ -52,6 +53,8 @@ def _rt_utils_roi_mask(rtstruct, roi_name: str) -> np.ndarray:
     is called as it is.
     """
     from rt_utils import ds_helper, image_helper
+    from .rtstruct_geometry import rtstruct_roi_number
+    rtstruct_roi_number(rtstruct, roi_name)
 
     from .rtstruct_geometry import rtutils_requires_geometry_adapter, rtstruct_roi_mask
 
@@ -121,6 +124,9 @@ class _ROIRebuilder:
         self._init_roi_maps()
 
     def _init_roi_maps(self) -> None:
+        from .rtstruct_geometry import ambiguous_roi_names, ROIIdentityError
+        if ambiguous_roi_names(self.ds):
+            raise ROIIdentityError('RTSTRUCT_AMBIGUOUS_ROI_NAME')
         for roi in getattr(self.ds, "StructureSetROISequence", []) or []:
             name = str(getattr(roi, "ROIName", "") or "").strip()
             number = int(getattr(roi, "ROINumber", 0) or 0)
@@ -334,7 +340,14 @@ def fix_rtstruct_rois(
         logger.warning("Failed to load RTSTRUCT %s for ROI fix: %s", rtstruct_path, exc)
         return None
 
-    rebuilder = _ROIRebuilder(rtstruct, minimum_points=minimum_points)
+    from .rtstruct_geometry import ROIIdentityError
+    try:
+        rebuilder = _ROIRebuilder(rtstruct, minimum_points=minimum_points)
+    except ROIIdentityError as exc:
+        logger.error('ROI repair refused for %s: %s', rtstruct_path, exc)
+        return FixSummary(False, [], list(rtstruct.get_roi_names()),
+                          Path(output_path) if output_path else rtstruct_path,
+                          identity_error=str(exc))
     roi_names = rtstruct.get_roi_names()
     if not roi_names:
         logger.debug("No ROIs found in %s", rtstruct_path)

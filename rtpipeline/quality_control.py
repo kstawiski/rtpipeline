@@ -472,11 +472,11 @@ class DICOMValidator:
                 return
 
             # Process ROIs with early exit optimizations
-            roi_names = builder.get_roi_names()
-            for roi_name in roi_names:
+            from .rtstruct_geometry import rtstruct_roi_entries
+            for roi_number, roi_name in rtstruct_roi_entries(builder):
                 try:
                     from .rtstruct_geometry import rtstruct_roi_mask
-                    mask = rtstruct_roi_mask(builder, roi_name)
+                    mask = rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
                 except Exception:
                     # Skip ROIs that fail to load
                     continue
@@ -497,6 +497,7 @@ class DICOMValidator:
                 entry: Dict[str, Any] = {
                     "source": source,
                     "roi_name": roi_name,
+                    "roi_number": roi_number,
                     "cropped_sides": cropped_sides,
                     "inplane_cropped": bool(inplane_cropped),
                     "ignore_for_status": bool(ignore_for_status),

@@ -35,8 +35,10 @@ def bind_export(root, paths):
             'schema': organize.ORIGINAL_SEGMENTATION_SCHEMA,
             'geometry_status': 'exact_physical_mapping',
             'source_rtstruct': str(rs), 'source_nifti': str(nifti),
-            'structures': [{'mask': f'{p.parent.name}/{p.name}', 'sha256': digest(p),
-                            'size_bytes': p.stat().st_size} for p in paths if p.parent == parent]}))
+            'structures': [{'mask': f'{p.parent.name}/{p.name}', 'roi_number': number,
+                            'roi_name': p.name.removesuffix('.nii.gz'), 'sha256': digest(p),
+                            'size_bytes': p.stat().st_size}
+                           for number, p in enumerate((p for p in paths if p.parent == parent), start=1)]}))
         (parent / 'provenance.json').write_text(json.dumps(provenance))
 
 
@@ -147,13 +149,18 @@ def test_f1_f3_producer_quarantines_siblings_before_reuse(tmp_path, monkeypatch)
     old = parent.parent / 'CT_old'
     old.mkdir()
     (old / mask.name).write_bytes(b'stale')
+    (old / 'metadata.json').write_text(json.dumps({
+        'model': 'manual', 'source_rtstruct': str(tmp_path/'RS.dcm'),
+        'source_nifti': str(tmp_path/'CT_old.nii.gz'),
+        'structures': [{'roi_name': 'GTV-1vis-1', 'mask': f'CT_old/{mask.name}'}],
+    }))
     organize._export_original_segmentation_from_paths(rs_path=tmp_path/'RS.dcm',
         primary_nifti=tmp_path/'CT_new.nii.gz', dicom_ct_dir=tmp_path/'DICOM',
         segmentation_original_dir=parent.parent, log_root=tmp_path, overwrite=False)
     _validate_stage_specific_outcome(tmp_path, stage_definition('segmentation'), 'ok', [])
     assert not old.exists()
     assert not parent.exists()  # A valid old stem is superseded too.
-    assert _resolve_reference_paths(str(parent.parent/'CT_*/GTV-1*-*.nii.gz')) == [parent.parent/'CT_new/GTV-1vis-1.nii.gz']
+    assert _resolve_reference_paths(str(parent.parent/'CT_*/GTV-1*-*.nii.gz')) == [parent.parent/'CT_new/roi-1__GTV-1vis-1.nii.gz']
     assert not _resolve_reference_paths(str(parent.parent/'CT_old/*.nii.gz'))
     records = list((tmp_path/'Segmentation_Quarantine').rglob('record.json'))
     assert records

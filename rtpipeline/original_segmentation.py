@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 
-ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v2"
-ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v2"
+ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v3"
+ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v3"
 
 
 def _load_manifest(directory: Path) -> dict:
@@ -39,9 +39,15 @@ def _declared_export_masks(directory: Path, metadata: dict) -> dict[Path, dict]:
     if not isinstance(structures, list) or not structures:
         raise ValueError("export declares no masks")
     declared: dict[Path, dict] = {}
+    roi_numbers = set()
     for item in structures:
         if not isinstance(item, dict):
             raise ValueError("invalid manifest")
+        number = item.get("roi_number")
+        if (not isinstance(number, int) or isinstance(number, bool)
+                or number in roi_numbers or not isinstance(item.get("roi_name"), str)):
+            raise ValueError("invalid or repeated ROI number in export manifest")
+        roi_numbers.add(number)
         relative = item.get("mask")
         if not isinstance(relative, str) or not relative:
             raise ValueError("invalid manifest mask path")
@@ -71,6 +77,7 @@ def require_current_original_mask(path: Path) -> None:
             raise ValueError(str(metadata.get("geometry_status") or "physical-space export required"))
         if metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA:
             raise ValueError("physical-space export required")
+        _declared_export_masks(path.parent, metadata)
         relative = path.relative_to(path.parent.parent).as_posix()
         structures = metadata.get("structures")
         if not isinstance(structures, list):
@@ -93,7 +100,7 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
     source_rs = Path(metadata["source_rtstruct"])
     # Prefer course-relative copies during atomic localizer repair.
     contract_path = original.parent / "metadata/case_metadata.json"
-    if contract_path.exists():
+    if contract_path.exists() and not metadata.get("source_nifti_sidecar"):
         contract = json.loads(contract_path.read_text())["course_contract"]
         current = contract["planning_ct"]["nifti_provenance"]
         source_rs = original.parent / contract["authoritative_rtstruct"]["path"]
@@ -102,7 +109,8 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
             source_nifti = original.parent / nifti_path
     else:
         stem = source_nifti.name.removesuffix('.gz').removesuffix('.nii')
-        current = json.loads(source_nifti.with_name(stem + '.metadata.json').read_text())
+        sidecar = Path(metadata.get('source_nifti_sidecar') or source_nifti.with_name(stem + '.metadata.json'))
+        current = json.loads(sidecar.read_text())
     expected = {
         "planning_ct_series_instance_uid": current["series_instance_uid"],
         "source_ct_sop_hash": current["sop_hash"],
@@ -113,7 +121,8 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
     if not all(expected.values()) or any(provenance.get(k) != v for k, v in expected.items()):
         raise ValueError("source inputs changed")
     stem = source_nifti.name.removesuffix('.gz').removesuffix('.nii')
-    publication = json.loads(source_nifti.with_name(stem + '.metadata.json').read_text())
+    publication_path = Path(metadata.get('source_nifti_sidecar') or source_nifti.with_name(stem + '.metadata.json'))
+    publication = json.loads(publication_path.read_text())
     for source_key, export_key in (
         ("nifti_generated_at", "source_nifti_generated_at"),
         ("nifti_conversion", "source_nifti_conversion"),
@@ -190,10 +199,75 @@ def original_export_entries(root: Path) -> list[Path]:
     return sorted(directories | loose_files)
 
 
+def is_rtpipeline_original_export(directory: Path) -> bool:
+    """Identify owned exports without inferring ownership from their folder.
+
+    Versioned RTpipeline manifests identify their producer. The unversioned
+    2.3.99 writer has only an exact historical signature: four manifest keys,
+    two keys per structure, its NIfTI stem and its complete declared file set.
+    Unfamiliar, mixed, malformed and unmanifested directories stay untouched.
+    """
+    directory = Path(directory)
+    if not directory.is_dir() or directory.is_symlink():
+        return False
+    try:
+        metadata = _load_manifest(directory)
+        if metadata.get('schema') in {
+            'rtpipeline-original-segmentation-v1', 'rtpipeline-original-segmentation-v2',
+            ORIGINAL_SEGMENTATION_SCHEMA,
+        }:
+            structures = metadata.get('structures')
+            if not isinstance(structures, list):
+                return False
+            declared = {'metadata.json', 'provenance.json'}
+            for item in structures:
+                if not isinstance(item, dict) or not isinstance(item.get('mask'), str):
+                    return False
+                relative = Path(item['mask'])
+                if (relative.is_absolute() or '..' in relative.parts
+                        or len(relative.parts) != 2 or relative.parts[0] != directory.name):
+                    return False
+                declared.add(relative.name)
+            actual = list(directory.iterdir())
+            return all(item.name in declared and item.is_file() and not item.is_symlink()
+                       for item in actual)
+        if set(metadata) != {'model', 'source_rtstruct', 'source_nifti', 'structures'}:
+            return False
+        if metadata['model'] != 'manual':
+            return False
+        if not all(isinstance(metadata[key], str) and metadata[key]
+                   for key in ('source_rtstruct', 'source_nifti')):
+            return False
+        nifti = Path(metadata['source_nifti'])
+        if not nifti.name.endswith(('.nii', '.nii.gz')):
+            return False
+        if directory.name != nifti.name.removesuffix('.gz').removesuffix('.nii'):
+            return False
+        structures = metadata['structures']
+        if not isinstance(structures, list) or not structures:
+            return False
+        declared = set()
+        for item in structures:
+            if (not isinstance(item, dict) or set(item) != {'roi_name', 'mask'}
+                    or not isinstance(item['roi_name'], str) or not isinstance(item['mask'], str)):
+                return False
+            relative = Path(item['mask'])
+            if (relative.is_absolute() or '..' in relative.parts
+                    or len(relative.parts) != 2 or relative.parts[0] != directory.name
+                    or not relative.name.endswith(('.nii', '.nii.gz'))):
+                return False
+            declared.add(relative.name)
+        actual = {item.name for item in directory.iterdir() if item.name != 'metadata.json'}
+        return actual == declared and all((directory / name).is_file() and
+                                          not (directory / name).is_symlink() for name in actual)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def quarantine_stale_original_exports(root: Path) -> None:
     """Producer boundary: retain current exports and current rejection records."""
     for entry in original_export_entries(Path(root)):
-        if not entry.exists():
+        if not entry.exists() or not is_rtpipeline_original_export(entry):
             continue
         try:
             if not entry.is_dir():

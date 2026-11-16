@@ -238,7 +238,10 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
     if RTStructBuilder is not None and rs_manual.exists():
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_manual))
-            for roi in rt.get_roi_names():
+            from .rtstruct_geometry import rtstruct_roi_entries
+            entries = rtstruct_roi_entries(rt)
+            counts = {name: sum(other == name for _, other in entries) for _, name in entries}
+            for roi_number, roi in entries:
                 try:
                     if hasattr(rt, 'get_mask_for_roi'):
                         m3d = rt.get_mask_for_roi(roi)
@@ -246,7 +249,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
                         from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi)
+                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                     else:
                         m3d = None
                 except Exception:
@@ -267,7 +270,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         continue
                     slmap[z] = _rgba_mask_b64(m, color)
                 if slmap:
-                    overlays_manual[roi] = slmap
+                    overlays_manual[f'{roi} [ROI {roi_number}]' if counts[roi] > 1 else roi] = slmap
         except Exception:
             pass
     # Auto overlays
@@ -276,7 +279,10 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
     if RTStructBuilder is not None and rs_auto.exists():
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_auto))
-            for roi in rt.get_roi_names():
+            from .rtstruct_geometry import rtstruct_roi_entries
+            entries = rtstruct_roi_entries(rt)
+            counts = {name: sum(other == name for _, other in entries) for _, name in entries}
+            for roi_number, roi in entries:
                 try:
                     if hasattr(rt, 'get_mask_for_roi'):
                         m3d = rt.get_mask_for_roi(roi)
@@ -284,7 +290,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
                         from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi)
+                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                     else:
                         m3d = None
                 except Exception:
@@ -305,7 +311,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         continue
                     slmap[z] = _rgba_mask_b64(m, color)
                 if slmap:
-                    overlays_auto[roi] = slmap
+                    overlays_auto[f'{roi} [ROI {roi_number}]' if counts[roi] > 1 else roi] = slmap
         except Exception:
             pass
 
@@ -315,7 +321,10 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
         seen = set(overlays_manual.keys()) | set(overlays_auto.keys())
         try:
             rt = RTStructBuilder.create_from(dicom_series_path=str(ct_dir), rt_struct_path=str(rs_custom))
-            for roi in rt.get_roi_names():
+            from .rtstruct_geometry import rtstruct_roi_entries
+            entries = rtstruct_roi_entries(rt)
+            counts = {name: sum(other == name for _, other in entries) for _, name in entries}
+            for roi_number, roi in entries:
                 if roi in seen:
                     continue
                 try:
@@ -325,7 +334,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         m3d = rt.get_roi_mask(roi)
                     elif hasattr(rt, 'get_roi_mask_by_name'):
                         from .rtstruct_geometry import rtstruct_roi_mask
-                        m3d = rtstruct_roi_mask(rt, roi)
+                        m3d = rtstruct_roi_mask(rt, roi, roi_number=roi_number)
                     else:
                         m3d = None
                 except Exception:
@@ -346,7 +355,7 @@ def generate_axial_review(course_dir: Path) -> Optional[Path]:
                         continue
                     slmap[z] = _rgba_mask_b64(m, color)
                 if slmap:
-                    overlays_custom[roi] = slmap
+                    overlays_custom[f'{roi} [ROI {roi_number}]' if counts[roi] > 1 else roi] = slmap
         except Exception:
             pass
 

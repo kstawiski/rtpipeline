@@ -635,20 +635,83 @@ def rtstruct_contours_to_mask(series_data, contours, *, retain=True):
     return mask if retain else any_foreground
 
 
-def rtstruct_roi_mask(builder, name):
-    """Read an rt-utils ROI with correct DICOM dimensions and pixel spacing."""
+class ROIIdentityError(ValueError):
+    """A name or number does not identify exactly one source ROI."""
+
+
+def rtstruct_roi_entries(builder):
+    """Return declared (number, stored name) pairs, rejecting reused numbers."""
+    sequence = getattr(getattr(builder, 'ds', builder), 'StructureSetROISequence', None)
+    if sequence is None:
+        raise ROIIdentityError('RTSTRUCT_ROI_IDENTITY_UNAVAILABLE')
+    entries, seen = [], set()
+    for roi in sequence:
+        try:
+            number = int(roi.ROINumber)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ROIIdentityError('RTSTRUCT_INVALID_ROI_NUMBER') from exc
+        if number in seen:
+            raise ROIIdentityError(f'RTSTRUCT_DUPLICATE_ROI_NUMBER: {number}')
+        seen.add(number)
+        entries.append((number, str(getattr(roi, 'ROIName', ''))))
+    return entries
+
+
+def ambiguous_roi_names(dataset):
+    """Declarations colliding under the stripped-name inventory convention."""
+    groups = {}
+    for number, name in rtstruct_roi_entries(dataset):
+        groups.setdefault(name.strip(), []).append((number, name))
+    return {name: entries for name, entries in groups.items() if len(entries) > 1}
+
+
+def rtstruct_roi_number(builder, name):
+    """Resolve an exact display name only when it names one declaration."""
+    matches = [number for number, stored in rtstruct_roi_entries(builder) if stored == name]
+    if len(matches) > 1:
+        raise ROIIdentityError(f'RTSTRUCT_AMBIGUOUS_ROI_NAME: {name!r}; ROI numbers {matches}')
+    if not matches:
+        error = getattr(type(builder), 'ROIException', ROIIdentityError)
+        raise error(f"ROI of name `{name}` does not exist in RTStruct")
+    return matches[0]
+
+
+def rtstruct_roi_mask(builder, name=None, *, roi_number=None):
+    """Rasterize the requested ROI number using the unchanged rt-utils fill.
+
+    The name-only compatibility API accepts a single exact declaration. A
+    supplied number is authoritative; a supplied name must agree with it.
+    """
+    # Compatible external readers without a DICOM dataset can only expose a
+    # name API. Production RTSTRUCT readers always carry the source dataset.
+    if not hasattr(getattr(builder, 'ds', None), 'StructureSetROISequence'):
+        if roi_number is not None:
+            raise ROIIdentityError('RTSTRUCT_ROI_IDENTITY_UNAVAILABLE')
+        return builder.get_roi_mask_by_name(name)
+    entries = dict(rtstruct_roi_entries(builder))
+    number = rtstruct_roi_number(builder, name) if roi_number is None else int(roi_number)
+    if number not in entries:
+        raise ROIIdentityError(f'RTSTRUCT_ROI_NUMBER_NOT_FOUND: {number}')
+    if name is not None and entries[number] != name:
+        raise ROIIdentityError(f'ROI_NAME_NUMBER_MISMATCH: {name!r}, ROI {number}')
+    by_number = getattr(builder, 'get_roi_mask_by_number', None)
+    if by_number is not None and roi_number is not None:
+        return by_number(number)
     slices = getattr(builder, 'series_data', None)
     method = getattr(getattr(builder, 'get_roi_mask_by_name', None), '__func__', None)
     raw_reader = (getattr(method, '__module__', None), getattr(method, '__qualname__', None)) == (
         'rt_utils.rtstruct', 'RTStruct.get_roi_mask_by_name')
-    if raw_reader and slices and rtutils_requires_geometry_adapter(slices):
-        from rt_utils import ds_helper
-
-        for roi in builder.ds.StructureSetROISequence:
-            if roi.ROIName == name:
-                contours = ds_helper.get_contour_sequence_by_roi_number(builder.ds, roi.ROINumber)
-                return rtstruct_contours_to_mask(slices, contours)
-    return builder.get_roi_mask_by_name(name)
+    if raw_reader:
+        from rt_utils import ds_helper, image_helper
+        contours = ds_helper.get_contour_sequence_by_roi_number(builder.ds, number)
+        if slices and rtutils_requires_geometry_adapter(slices):
+            return rtstruct_contours_to_mask(slices, contours)
+        return image_helper.create_series_mask_from_contour_sequence(slices, contours)
+    # A compatible/replaced name reader is safe only after uniqueness is
+    # established, including when the caller supplied a number.
+    stored = entries[number]
+    rtstruct_roi_number(builder, stored)
+    return builder.get_roi_mask_by_name(stored)
 
 
 def _resolve_roi_scopes_strict(dataset, ct_images) -> dict[int, ScopeResult]:
@@ -851,6 +914,9 @@ class ScopedRTStruct:
         series_uids = {str(image.SeriesInstanceUID) for image in series_data}
         if len(series_uids) != 1:
             raise ValueError('RTSTRUCT_SCOPE_REQUIRES_ONE_CT_SERIES')
+        rtstruct_roi_entries(dataset)
+        if ambiguous_roi_names(dataset):
+            raise ROIIdentityError('RTSTRUCT_DUPLICATE_ROI_NAME: RTSTRUCT_AMBIGUOUS_ROI_NAME')
         self.scopes = resolve_roi_scopes(dataset, series_data)
         self.by_name = {}
         for result in self.scopes.values():
@@ -905,11 +971,14 @@ class ScopedRTStruct:
     def get_roi_names(self):
         return list(self.by_name)
 
-    def get_roi_mask_by_name(self, name):
-        result = self.by_name[name]
+    def get_roi_mask_by_number(self, number):
+        result = self.scopes[int(number)]
         if result.code:
             raise ROIContourDisposition(result)
-        return rtstruct_roi_mask(self.builder, name)
+        return rtstruct_roi_mask(self.builder, roi_number=number)
+
+    def get_roi_mask_by_name(self, name):
+        return self.get_roi_mask_by_number(rtstruct_roi_number(self, name))
 
 
 def create_scoped_rtstruct(ct_dir: Path, rs_path: Path):

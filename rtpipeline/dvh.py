@@ -3126,6 +3126,9 @@ def _legacy_create_custom_structures_rtstruct(
             rt_struct_path=str(base_rs)
         )
 
+        from .rtstruct_geometry import ambiguous_roi_names
+        if ambiguous_roi_names(rtstruct.ds):
+            raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME')
         existing_names = set()
         available_masks: Dict[str, np.ndarray] = {}
 
@@ -3202,6 +3205,8 @@ def _legacy_create_custom_structures_rtstruct(
 
         def _harvest_masks(builder: "RTStructBuilder", label: str, add_missing: bool = False) -> None:
             nonlocal existing_names, available_masks
+            if ambiguous_roi_names(builder.ds):
+                raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME')
             for roi_name in builder.get_roi_names():
                 try:
                     from .rtstruct_geometry import rtstruct_roi_mask
@@ -4033,7 +4038,7 @@ def _compute_dvh_for_course(
         if builder_obj is not None:
             try:
                 from .rtstruct_geometry import rtstruct_roi_mask
-                mask = rtstruct_roi_mask(builder_obj, roi_name)
+                mask = rtstruct_roi_mask(builder_obj, roi_name, roi_number=roi_number)
                 cropped = mask_is_cropped(mask)
             except Exception:
                 cropped = False

@@ -96,14 +96,38 @@ def centroid_distance_cm(
 
 
 def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
+    import json
+    from fnmatch import fnmatchcase
     from ..original_segmentation import require_current_original_mask
 
     pattern = str(reference_mask_path)
-    if any(ch in pattern for ch in "*?[]"):
+    wildcard = any(ch in pattern for ch in "*?[]")
+    if wildcard:
         paths = [Path(p) for p in sorted(glob(pattern))]
     else:
         path = Path(reference_mask_path)
         paths = [path] if path.exists() else []
+    # Original exports now include the ROI number in their filename. Preserve
+    # configured label globs by matching the manifest's stored ROI name and
+    # following its number-bound mask path, rather than guessing a new stem.
+    if 'Segmentation_Original' in Path(pattern).parts:
+        from ..organize import _sanitize_name
+        from ..original_segmentation import require_current_original_export
+
+        requested = Path(pattern)
+        for manifest_path in sorted(glob(str(requested.parent / 'metadata.json'))):
+            manifest_path = Path(manifest_path)
+            metadata = json.loads(manifest_path.read_text())
+            matched = [entry for entry in metadata.get('structures', [])
+                       if isinstance(entry, dict) and isinstance(entry.get('roi_name'), str)
+                       and fnmatchcase(_sanitize_name(entry['roi_name'], 'ROI') + '.nii.gz', requested.name)]
+            if not matched:
+                continue
+            require_current_original_export(manifest_path.parent)
+            if not wildcard and len(matched) > 1:
+                raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME: original mask reference')
+            paths.extend(manifest_path.parent.parent / entry['mask'] for entry in matched)
+    paths = sorted(set(paths))
     for path in paths:
         require_current_original_mask(path)
     return paths

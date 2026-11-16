@@ -263,16 +263,17 @@ class CustomStructureProcessor:
             Processed mask or None if source structures not available
         """
         # Build lookup table with normalized keys for resilient matching
-        normalization_map: Dict[str, str] = {}
+        normalization_map: Dict[str, set[str]] = {}
         for key in available_masks.keys():
             for alias in self._alias_candidates(key):
                 normalized = self._normalize_name(alias)
-                if normalized and normalized not in normalization_map:
-                    normalization_map[normalized] = key
+                if normalized:
+                    normalization_map.setdefault(normalized, set()).add(key)
 
         missing_sources: list[str] = []
         source_masks: list[np.ndarray] = []
         found_mappings: Dict[str, str] = {}  # requested name -> actual name
+        ambiguous_sources: Dict[str, list[str]] = {}
 
         for source_name in config.source_structures:
             actual_key = None
@@ -282,7 +283,11 @@ class CustomStructureProcessor:
                 actual_key = source_name
             # Try normalized match
             elif self._normalize_name(source_name) in normalization_map:
-                actual_key = normalization_map[self._normalize_name(source_name)]
+                candidates = normalization_map[self._normalize_name(source_name)]
+                if len(candidates) == 1:
+                    actual_key = next(iter(candidates))
+                else:
+                    ambiguous_sources[source_name] = sorted(candidates)
 
             if actual_key is None or actual_key not in available_masks:
                 missing_sources.append(source_name)
@@ -318,6 +323,15 @@ class CustomStructureProcessor:
             "unavailable_sources": list(dict.fromkeys(missing_sources)),
             "realized_name": None,
         }
+
+        if ambiguous_sources:
+            outcome.update(status="ambiguous_source", reason_code="CUSTOM_SOURCE_AMBIGUOUS_NAME",
+                           ambiguous_sources=ambiguous_sources)
+            self.partial_structures.pop(config.name, None)
+            self.structure_outcomes[config.name] = outcome
+            logger.warning("Custom structure %s refused ambiguous source names: %s",
+                           config.name, ambiguous_sources)
+            return None
 
         if not source_masks:
             logger.warning(

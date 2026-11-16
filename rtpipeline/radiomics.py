@@ -1047,15 +1047,10 @@ def _rt_utils_indexed_roi_mask(rt: Any, name: str, *, retain: bool) -> Any:
     """
     from rt_utils import ds_helper, image_helper
 
-    for structure_roi in rt.ds.StructureSetROISequence:
-        if structure_roi.ROIName == name:
-            contour_sequence = ds_helper.get_contour_sequence_by_roi_number(
-                rt.ds, structure_roi.ROINumber
-            )
-            return _rt_utils_indexed_series_mask(
-                rt.series_data, contour_sequence, retain=retain
-            )
-    raise type(rt).ROIException(f"ROI of name `{name}` does not exist in RTStruct")
+    from .rtstruct_geometry import rtstruct_roi_number
+    number = rtstruct_roi_number(rt, name)
+    contour_sequence = ds_helper.get_contour_sequence_by_roi_number(rt.ds, number)
+    return _rt_utils_indexed_series_mask(rt.series_data, contour_sequence, retain=retain)
 
 
 def _rt_utils_indexed_series_mask(series_data: Any, contour_sequence: Any, *, retain: bool) -> Any:
@@ -1274,6 +1269,23 @@ def _rtstruct_masks(
         logger.warning("Best-effort radiomics ROI %s was not extracted: %s", name, detail)
     if best_effort and failure_outcomes is None:
         raise ValueError("best-effort RTSTRUCT extraction requires a failure_outcomes sink")
+
+    if Path(rs_path).is_file():
+        from .rtstruct_geometry import ambiguous_roi_names
+        source_dataset = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
+        ambiguous = ambiguous_roi_names(source_dataset)
+        if ambiguous:
+            detail = f"RTSTRUCT_AMBIGUOUS_ROI_NAME: {sorted(ambiguous)!r} in {rs_path}"
+            if failure_outcomes is not None:
+                for declarations in ambiguous.values():
+                    for number, stored_name in declarations:
+                        failure_outcomes.append({
+                            "roi_name": stored_name, "roi_number": str(number),
+                            "status": "failed", "failure_kind": "ambiguous_roi_identity",
+                            "structural_code": "RTSTRUCT_AMBIGUOUS_ROI_NAME",
+                            "reason": detail, "source_path": str(rs_path),
+                        })
+            raise RadiomicsCourseExtractionError(detail)
 
     # Inspect the source before invoking rt-utils. In particular, a declared ROI
     # without ContourSequence is an inventory observation, not an AttributeError
@@ -1862,7 +1874,13 @@ def radiomics_for_course(
                 )
                 if reason not in REASON_CODES and reason not in TAXONOMY_CODES:
                     reason = "failed_radiomics_extraction"
-                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason, disposition="excluded", segmentation_source=source)
+                identity_detail = ({
+                    "roi_number": failure.get("roi_number"),
+                    "source_path": failure.get("source_path"),
+                    "detail": failure.get("reason"),
+                } if failure.get("structural_code") == "RTSTRUCT_AMBIGUOUS_ROI_NAME" else {})
+                roi_ledger.record_roi(ledger_course_id, ledger_patient_id, name, reason_code=reason,
+                                      disposition="excluded", segmentation_source=source, **identity_detail)
         present_names = {str(row.get("roi_name", "")) for row in roi_ledger.roi_rows}
         for assessment in custom_applicability:
             roi_ledger.expect_course_roi(ledger_course_id, assessment.roi_name)
@@ -2209,6 +2227,7 @@ def radiomics_for_course(
             source_counts.setdefault(source, {"attempted": 0, "extracted": 0, "failed": 0})["failed"] += len(extraction_failures)
             source_counts[source]["attempted"] += len(extraction_failures)
         except Exception as exc:
+            roi_failures.extend({**failure, 'source': source} for failure in source_failures)
             _invalidate_radiomics_outputs(out_path)
             _finalize_ct_ledger(extracted=False, technical=True)
             if isinstance(exc, RadiomicsCourseExtractionError):

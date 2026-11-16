@@ -1915,6 +1915,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Lightweight subcommand dispatch to preserve backward compatibility
+    if argv and argv[0] == "re-export-original":
+        from .reexport_original import main as reexport_main
+        return reexport_main(argv[1:])
     if argv and argv[0] == "scope":
         from .treatment_scope import main as scope_main
 
