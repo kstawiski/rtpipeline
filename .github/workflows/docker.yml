@@ -126,11 +126,13 @@ jobs:
           docker run --rm rtpipeline:test git --version
           docker run --rm rtpipeline:test \
             python -c 'import importlib.metadata, pathlib, pyarrow, rtpipeline, sys; assert pathlib.Path(sys.executable).as_posix().startswith("/opt/conda/envs/rtpipeline/"); assert rtpipeline.__version__ == importlib.metadata.version("rtpipeline")'
+          # The image's git (2.25) ignores GIT_CONFIG_* variables, so mark the
+          # read-only checkout safe through a mounted system configuration.
+          printf '[safe]\n\tdirectory = /app\n' > "$RUNNER_TEMP/rtpipeline-test.gitconfig"
+          git_mounts=(-v "$GITHUB_WORKSPACE/.git:/app/.git:ro" -v "$RUNNER_TEMP/rtpipeline-test.gitconfig:/etc/gitconfig:ro")
+          docker run --rm "${git_mounts[@]}" rtpipeline:test git -C /app rev-parse --verify HEAD
           docker run --rm \
-            -v "$GITHUB_WORKSPACE/.git:/app/.git:ro" \
-            -e GIT_CONFIG_COUNT=1 \
-            -e GIT_CONFIG_KEY_0=safe.directory \
-            -e GIT_CONFIG_VALUE_0=/app \
+            "${git_mounts[@]}" \
             -e MAMBA_ROOT_PREFIX=/opt/conda \
             -e RTPIPELINE_TEST_SNAKEMAKE=/opt/conda/bin/snakemake \
             -e RTPIPELINE_RADIOMICS_ENV_PREFIX=/opt/conda/envs/rtpipeline-radiomics \
