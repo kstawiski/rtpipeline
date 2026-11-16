@@ -34,7 +34,7 @@ ICON_WARN="${YELLOW}⚠${NC}"
 ICON_INFO="${BLUE}ℹ${NC}"
 ICON_Q="${CYAN}?${NC}"
 # Script variables
-VERSION="3.0.0"
+VERSION="3.0.2"
 QUICK_MODE=false
 QUICK_DICOM_DIR=""
 DRY_RUN=false

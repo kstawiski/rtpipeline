@@ -2,14 +2,28 @@
 
 ## Unreleased
 
-No changes since 3.0.1.
+No changes since 3.0.2.
+
+## 3.0.2 — 2026-11-16
+
+Cite this release by version and by the DOI archived for the `v3.0.2` tag (see
+[citing](citing.md)). Pipeline behaviour is identical to 3.0.1, including the
+clinical contour mask placement described below. Run `organize` again on
+projects processed with 3.0.0 or earlier.
+
+- `uv.lock` records the package version, so `uv sync --locked` succeeds on a
+  release checkout.
+- The local-installer check runs on a macOS runner image that GitHub supports, so
+  the release workflow publishes the container image
+  `kstawiski/rtpipeline:3.0.2`. No container image was published for 3.0.1.
+- The container label, the Apptainer definition, the setup scripts, the installer
+  receipt and the documentation examples name 3.0.2.
 
 ## 3.0.1 — 2026-11-16
 
-Cite this release by version and by the DOI archived for the `v3.0.1` tag (see
-[citing](citing.md)). Run `organize` again on projects processed with 3.0.0 or
-earlier: clinical contour masks exported by those versions are refused and
-re-exported automatically.
+Run `organize` again on projects processed with 3.0.0 or earlier: clinical
+contour masks exported by those versions are refused and re-exported
+automatically.
 
 ### Clinical contour masks are placed by physical voxel coordinates
 

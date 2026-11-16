@@ -18,8 +18,8 @@
     Validated radiomics reliability packets; imaging stays local
 </div>
 
-!!! info "RTpipeline 3.0.1"
-    Release 3.0.1 places exported clinical contour masks on the planning CT by physical voxel coordinates; masks exported by 3.0.0 and earlier could be mirrored front to back and are re-exported automatically. It also adds interruption-safe resume for DVH, radiomics and robustness. Release 3.0.0 added manifest-bound course organization, receipt-bound radiomics robustness, fail-closed radiomics extraction, distributed aggregate reliability packets and [RTsegmentator](features/rtsegmentator.md) as a segmentation source. See the [release notes](release_notes.md) and [how to cite](citing.md).
+!!! info "RTpipeline 3.0.2"
+    Release 3.0.2 is the current release. Release 3.0.1 placed exported clinical contour masks on the planning CT by physical voxel coordinates; masks exported by 3.0.0 and earlier could be mirrored front to back and are re-exported automatically. It also added interruption-safe resume for DVH, radiomics and robustness. Release 3.0.0 added manifest-bound course organization, receipt-bound radiomics robustness, fail-closed radiomics extraction, distributed aggregate reliability packets and [RTsegmentator](features/rtsegmentator.md) as a segmentation source. See the [release notes](release_notes.md) and [how to cite](citing.md).
 
 ---
 
