@@ -104,23 +104,21 @@ def _declared_export_masks(directory: Path, metadata: dict) -> dict[Path, dict]:
 
 
 def _validate_roi_identity(metadata, source_rs):
-    """Legacy names need uniqueness in both inventories, including omitted ROIs."""
+    """Bind numbers to stored names; verify legacy names across both inventories."""
     entries = metadata.get("structures", [])
-    legacy = [entry for entry in entries if entry.get("roi_number") is None]
-    if not legacy:
-        return
     import pydicom
     from .rtstruct_geometry import rtstruct_roi_entries
     try:
         source = rtstruct_roi_entries(pydicom.dcmread(source_rs, stop_before_pixels=True))
     except (OSError, ValueError, pydicom.errors.InvalidDicomError) as exc:
-        raise ValueError("RTSTRUCT_ROI_IDENTITY_UNAVAILABLE: legacy export source") from exc
+        raise ValueError("RTSTRUCT_ROI_IDENTITY_UNAVAILABLE: export source") from exc
     _, source_collisions = original_roi_filenames(source)
     _, manifest_collisions = original_roi_filenames(
         [(entry.get("roi_number"), entry["roi_name"]) for entry in entries])
     source_names = [name for _, name in source]
     for index, entry in enumerate(entries):
         if entry.get("roi_number") is not None:
+            if (entry["roi_number"], entry["roi_name"]) not in source: raise ValueError("ROI_NAME_NUMBER_MISMATCH: export source")
             continue
         name = entry["roi_name"]
         matches = [i for i, stored in enumerate(source_names) if stored == name]
@@ -260,71 +258,6 @@ def original_export_entries(root: Path) -> list[Path]:
     directories = {p.parent for p in root.rglob('*') if p.is_file() and p.parent != root}
     loose_files = {p for p in root.iterdir() if p.is_file()}
     return sorted(directories | loose_files)
-
-
-def is_rtpipeline_original_export(directory: Path) -> bool:
-    """Identify owned exports without inferring ownership from their folder.
-
-    Versioned RTpipeline manifests identify their producer. The unversioned
-    2.3.99 writer has only an exact historical signature: four manifest keys,
-    two keys per structure, its NIfTI stem and its complete declared file set.
-    Unfamiliar, mixed, malformed and unmanifested directories stay untouched.
-    """
-    directory = Path(directory)
-    if not directory.is_dir() or directory.is_symlink():
-        return False
-    try:
-        metadata = _load_manifest(directory)
-        if metadata.get('schema') in {
-            'rtpipeline-original-segmentation-v1', 'rtpipeline-original-segmentation-v2',
-            NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA,
-        }:
-            structures = metadata.get('structures')
-            if not isinstance(structures, list):
-                return False
-            declared = {'metadata.json', 'provenance.json'}
-            for item in structures:
-                if not isinstance(item, dict) or not isinstance(item.get('mask'), str):
-                    return False
-                relative = Path(item['mask'])
-                if (relative.is_absolute() or '..' in relative.parts
-                        or len(relative.parts) != 2 or relative.parts[0] != directory.name):
-                    return False
-                declared.add(relative.name)
-            actual = list(directory.iterdir())
-            return all(item.name in declared and item.is_file() and not item.is_symlink()
-                       for item in actual)
-        if set(metadata) != {'model', 'source_rtstruct', 'source_nifti', 'structures'}:
-            return False
-        if metadata['model'] != 'manual':
-            return False
-        if not all(isinstance(metadata[key], str) and metadata[key]
-                   for key in ('source_rtstruct', 'source_nifti')):
-            return False
-        nifti = Path(metadata['source_nifti'])
-        if not nifti.name.endswith(('.nii', '.nii.gz')):
-            return False
-        if directory.name != nifti.name.removesuffix('.gz').removesuffix('.nii'):
-            return False
-        structures = metadata['structures']
-        if not isinstance(structures, list) or not structures:
-            return False
-        declared = set()
-        for item in structures:
-            if (not isinstance(item, dict) or set(item) != {'roi_name', 'mask'}
-                    or not isinstance(item['roi_name'], str) or not isinstance(item['mask'], str)):
-                return False
-            relative = Path(item['mask'])
-            if (relative.is_absolute() or '..' in relative.parts
-                    or len(relative.parts) != 2 or relative.parts[0] != directory.name
-                    or not relative.name.endswith(('.nii', '.nii.gz'))):
-                return False
-            declared.add(relative.name)
-        actual = {item.name for item in directory.iterdir() if item.name != 'metadata.json'}
-        return actual == declared and all((directory / name).is_file() and
-                                          not (directory / name).is_symlink() for name in actual)
-    except (OSError, ValueError, TypeError, KeyError):
-        return False
 
 
 def quarantine_stale_original_exports(root: Path) -> None:

@@ -220,15 +220,20 @@ def test_standalone_wrong_grid_is_refused_before_touching_output(source,tmp_path
     assert main(['re-export-original','--rtstruct',str(source[1]),'--ct-series',str(source[0]),'--reference-nifti',str(source[2]),'--output-root',str(root)])==2
     assert not root.exists()
 
-def test_configured_label_globs_resolve_number_prefixed_exports(source,tmp_path):
+def test_configured_label_globs_resolve_colliding_producer_exports(source, tmp_path):
     from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
-    names(source[1],['GTV-1vis-1','Other'])
-    root=tmp_path/'Segmentation_Original';manifest=export(source,root)
-    first=manifest['structures'][0];previous=root/first['mask'];numbered=previous.parent/'roi-1__GTV-1vis-1.nii.gz'
-    if numbered!=previous:previous.rename(numbered)
-    first['mask']=str(numbered.relative_to(root))
-    (numbered.parent/'metadata.json').write_text(json.dumps(manifest))
-    assert _resolve_reference_paths(str(root/'ct/GTV-1vis-*.nii.gz'))==[numbered]
+    names(source[1], ['GTV-1vis-1', 'GTV-1vis-1'])
+    root = tmp_path / 'Segmentation_Original'
+    manifest = export(source, root)
+    expected = [root / f'ct/GTV-1vis-1__roi-{number}.nii.gz' for number in (1, 2)]
+    assert [root / entry['mask'] for entry in manifest['structures']] == expected
+    with pytest.raises(ValueError, match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
+        _resolve_reference_paths(root / 'ct/GTV-1vis-1.nii.gz')
+    assert _resolve_reference_paths(root / 'ct/GTV-1vis-*.nii.gz') == expected
+    assert _resolve_reference_paths(root / 'ct/*__roi-*.nii.gz') == expected
+    for path in expected:
+        assert _resolve_reference_paths(path) == [path]
+
 
 def test_stage_validation_records_foreign_exports_as_stale(tmp_path):
     from rtpipeline.stage_completion import _stale_original_exports,_validate_stage_specific_outcome,stage_definition
@@ -242,7 +247,8 @@ def test_stage_validation_records_foreign_exports_as_stale(tmp_path):
 
 @pytest.mark.requires_radiomics_env
 @pytest.mark.skipif(int(np.__version__.split(".")[0]) >= 2, reason="requires the native NumPy 1.x radiomics interpreter")
-def test_conda_preflight_records_stripped_name_ambiguity_before_extraction(source,tmp_path):
+@pytest.mark.parametrize('missing_sop_uid', [False, True])
+def test_conda_preflight_records_stripped_name_ambiguity_before_extraction(source,tmp_path,missing_sop_uid,monkeypatch):
     from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
     require_radiomics_rasterizer()
     from course_contract_test_utils import write_minimal_course_contract
@@ -254,10 +260,23 @@ def test_conda_preflight_records_stripped_name_ambiguity_before_extraction(sourc
     sidecar=source[2].with_name('ct.metadata.json');meta=json.loads(sidecar.read_text());meta.update(_ct_provenance(source[0]));sidecar.write_text(json.dumps(meta))
     payload=json.loads(contract_path.read_text());payload['course_contract']['planning_ct']['nifti_provenance'].update(meta);contract_path.write_text(json.dumps(payload))
     config=PipelineConfig(dicom_root=source[0],output_root=tmp_path,logs_root=tmp_path/'logs')
+    if missing_sop_uid:
+        # Authoritative sources require a SOP UID at the course-contract boundary.
+        # A CustomModel source reaches this preflight through its output inventory.
+        model=tmp_path/'Segmentation_CustomModels/no_sop';model.mkdir(parents=True)
+        dataset=pydicom.dcmread(source[1]);del dataset.SOPInstanceUID;dataset.save_as(model/'rtstruct.dcm')
+        names(source[1],['First','Second'])
+        monkeypatch.setattr(radiomics_conda,'validate_custom_model_output_inventory',lambda *_:{'no_sop':['Organ']})
+        monkeypatch.setattr(radiomics_conda,'list_custom_model_outputs',lambda *_:[('no_sop',model)])
     with pytest.raises(rm.RadiomicsCourseExtractionError,match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
         radiomics_conda.radiomics_for_course(tmp_path,config,max_workers=1)
-    outcomes=json.loads((tmp_path/'metadata/radiomics_ct_identity_refusals.json').read_text())
-    assert {row['roi_number'] for row in outcomes}=={1,2}
+    ledger=json.loads((tmp_path/'metadata/radiomics_ct_roi_ledger.json').read_text())
+    assert {row['roi_number'] for row in ledger['course_roi']}=={'1','2'}
+    assert ledger['course'][0]['reason_code']=='RTSTRUCT_AMBIGUOUS_ROI_NAME'
+    assert ledger['course'][0]['technical_exclusion'] is False
+    if missing_sop_uid:
+        assert all(row['rtstruct_sop_instance_uid']=='' for row in ledger['course_roi'])
+    assert not (tmp_path/'metadata/radiomics_ct_identity_refusals.json').exists()
     assert not (tmp_path/'radiomics_ct.parquet').exists()
 
 def test_quarantine_preserves_unlisted_bytes_outside_active_exports(source,tmp_path):
@@ -270,28 +289,143 @@ def test_quarantine_preserves_unlisted_bytes_outside_active_exports(source,tmp_p
                for path in (root.parent / 'Segmentation_Quarantine').rglob('foreign-producer.nii.gz'))
     assert not any((root/entry['mask']).exists() for entry in manifest['structures'])
 
-def _numbered_manifest_layout(source,root):
-    manifest=export(source,root)
-    old=[root/entry['mask'] for entry in manifest['structures']]
-    data=[path.read_bytes() for path in old]
-    target=[path.parent/f'roi-{i}__{entry["roi_name"]}.nii.gz' for i,(path,entry) in enumerate(zip(old,manifest['structures']),1)]
-    for entry,path,content in zip(manifest['structures'],target,data):
-        path.write_bytes(content);entry['mask']=str(path.relative_to(root))
-    for path in set(old)-set(target):path.unlink()
-    (target[0].parent/'metadata.json').write_text(json.dumps(manifest))
-    return target
 
-def test_numbered_file_and_roi_label_reference_collision_is_refused(source,tmp_path):
+def test_numbered_file_and_roi_label_reference_collision_is_refused(source, tmp_path):
     from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
-    names(source[1],['Organ','roi-1__Organ'])
-    paths=_numbered_manifest_layout(source,tmp_path/'Segmentation_Original')
-    with pytest.raises(ValueError,match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
-        _resolve_reference_paths(str(paths[0]))
+    reader = builder(source)
+    reader.add_roi(mask=source[3] | source[4], name='Organ__roi-1')
+    reader.save(str(source[1]))
+    root = tmp_path / 'Segmentation_Original'
+    manifest = export(source, root)
+    assert [entry['mask'] for entry in manifest['structures']] == [
+        'ct/Organ__roi-1.nii.gz', 'ct/Organ__roi-2.nii.gz', 'ct/Organ__roi-1__roi-3.nii.gz']
+    with pytest.raises(ValueError, match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
+        _resolve_reference_paths(root / manifest['structures'][0]['mask'])
 
-@pytest.mark.parametrize("pattern,index", [("r*.nii.gz",0),("roi*.nii.gz",None)])
-def test_broad_label_glob_is_not_broadened_by_number_prefix(source,tmp_path,pattern,index):
+
+@pytest.mark.parametrize('pattern', ['r*.nii.gz', '*roi*.nii.gz', 'roi*.nii.gz'])
+def test_broad_label_glob_keeps_label_selection_with_number_suffix(source, tmp_path, pattern):
     from rtpipeline.segmenters.postprocessing import _resolve_reference_paths
-    names(source[1],['rectum','liver'])
-    root=tmp_path/'Segmentation_Original';paths=_numbered_manifest_layout(source,root)
-    expected=[] if index is None else [paths[index]]
-    assert _resolve_reference_paths(str(root/'ct'/pattern))==expected
+    names(source[1], ['rectum', 'rectum'])
+    root = tmp_path / 'Segmentation_Original'
+    manifest = export(source, root)
+    expected = [root / entry['mask'] for entry in manifest['structures']] if pattern == 'r*.nii.gz' else []
+    assert _resolve_reference_paths(root / 'ct' / pattern) == expected
+
+
+def test_standalone_non_dicom_source_returns_refusal_json(source, tmp_path, capsys):
+    from rtpipeline.cli import main
+    source[1].write_bytes(b'non-DICOM synthetic source')
+    output = tmp_path / 'out'
+    assert main(['re-export-original', '--rtstruct', str(source[1]), '--ct-series', str(source[0]),
+                 '--reference-nifti', str(source[2]), '--output-root', str(output)]) == 2
+    assert json.loads(capsys.readouterr().out)['status'] == 'refused'
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('field,value', [('roi_name', 'Foreign'), ('roi_number', 3)])
+def test_numbered_export_checks_source_number_name_binding(source, tmp_path, field, value):
+    from rtpipeline.original_segmentation import require_current_original_export, require_current_original_mask
+    root = tmp_path / 'Segmentation_Original'
+    manifest = export(source, root)
+    manifest['structures'][0][field] = value
+    (root / 'ct/metadata.json').write_text(json.dumps(manifest))
+    for consumer, path in [(require_current_original_export, root / 'ct'),
+                           (require_current_original_mask, root / manifest['structures'][0]['mask'])]:
+        with pytest.raises(ValueError, match='ROI_NAME_NUMBER_MISMATCH'):
+            consumer(path)
+
+
+def _configure_identity_course(source, course):
+    from course_contract_test_utils import write_minimal_course_contract
+    from rtpipeline.course_contract import _ct_provenance
+    from rtpipeline.config import PipelineConfig
+    contract_path = write_minimal_course_contract(
+        course, authoritative_rtstruct=source[1], planning_ct_nifti=source[2])
+    sidecar = source[2].with_name('ct.metadata.json')
+    meta = json.loads(sidecar.read_text())
+    meta.update(_ct_provenance(source[0]))
+    sidecar.write_text(json.dumps(meta))
+    payload = json.loads(contract_path.read_text())
+    payload['course_contract']['planning_ct']['nifti_provenance'].update(meta)
+    contract_path.write_text(json.dumps(payload))
+    config = PipelineConfig(source[0], course, course / 'logs', max_workers_override=1)
+    params = course / 'radiomics.yaml'
+    params.write_text('imageType:\n  Original: {}\nfeatureClass:\n  firstorder: [Mean]\n  shape: [VoxelVolume]\nsetting:\n  minimumROIDimensions: 2\n')
+    config.radiomics_params_file = params
+    config.radiomics_min_voxels = 1
+    return config
+
+
+@pytest.mark.parametrize('backend', ['direct', 'conda'])
+@pytest.mark.requires_radiomics_env
+@pytest.mark.skipif(int(np.__version__.split('.')[0]) >= 2, reason='requires the native NumPy 1.x radiomics interpreter')
+def test_course_identity_refusal_withholds_unambiguous_roi_then_clears_on_success(source, tmp_path, backend):
+    from rtpipeline import radiomics_conda
+    from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
+    require_radiomics_rasterizer()
+    reader = builder(source)
+    reader.add_roi(mask=source[3] | source[4], name='PTV')
+    reader.save(str(source[1]))
+    config = _configure_identity_course(source, tmp_path)
+    obsolete = tmp_path / 'metadata/radiomics_ct_identity_refusals.json'
+    obsolete.write_text('[{"stale": true}]')
+    output = tmp_path / 'radiomics_ct.parquet'
+    output.write_bytes(b'stale synthetic publication')
+    call = (lambda: rm.radiomics_for_course(config, tmp_path)) if backend == 'direct' else (
+        lambda: radiomics_conda.radiomics_for_course(tmp_path, config, max_workers=1))
+    with pytest.raises(rm.RadiomicsCourseExtractionError, match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
+        call()
+    assert not output.exists() and not output.with_suffix('.xlsx').exists()
+    assert not obsolete.exists()
+    for ledger_name in ['radiomics_ct_roi_ledger.json', 'radiomics_roi_ledger.json']:
+        ledger = json.loads((tmp_path / 'metadata' / ledger_name).read_text())
+        outcome = ledger['course'][0]
+        assert outcome['reason_code'] == 'RTSTRUCT_AMBIGUOUS_ROI_NAME'
+        assert outcome['identity_refusal'] is True and outcome['technical_exclusion'] is False
+        refusals = ledger['course_roi']
+        assert [(row['roi_number'], row['roi_name']) for row in refusals] == [('1', 'Organ'), ('2', 'Organ')]
+        assert all(row['reason_code'] == 'RTSTRUCT_AMBIGUOUS_ROI_NAME' for row in refusals)
+        assert all(row['segmentation_source'] == 'Manual' and row['source_path'] == str(source[1]) for row in refusals)
+    counts = json.loads((tmp_path / 'metadata/radiomics_ct_denominators.json').read_text())['COURSE_ROI']['CT:Organ']
+    assert counts['excluded_identity'] == 2 and counts['excluded_technical'] == 0
+    # A prior backend version may have kept this refusal outside the ledger.
+    obsolete.write_text(json.dumps(refusals))
+    # Correct the same source and rerun the same course through the same entrypoint.
+    names(source[1], ['First', 'Second', 'PTV'])
+    assert call() is not None
+    assert not obsolete.exists()
+    publication = rm.read_authoritative_ct_publication(output)
+    assert set(publication.roi_original_name) == {'First', 'Second', 'PTV'}
+    assert set(publication.extraction_status) == {'success'}
+    outcome = json.loads((tmp_path / 'metadata/radiomics_ct_roi_ledger.json').read_text())['course'][0]
+    assert outcome['extracted'] is True and not outcome.get('identity_refusal', False)
+
+
+@pytest.mark.parametrize('read_error', ['invalid_dicom', 'os_error'])
+@pytest.mark.requires_radiomics_env
+@pytest.mark.skipif(int(np.__version__.split('.')[0]) >= 2, reason='requires the native NumPy 1.x radiomics interpreter')
+def test_conda_preflight_preserves_governed_unreadable_source_outcome(source, tmp_path, monkeypatch, read_error):
+    from rtpipeline import radiomics_conda
+    from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
+    require_radiomics_rasterizer()
+    names(source[1], ['First', 'Second'])
+    config = _configure_identity_course(source, tmp_path)
+    model = tmp_path / 'Segmentation_CustomModels/broken'
+    model.mkdir(parents=True)
+    broken = model / 'rtstruct.dcm'
+    broken.write_bytes(b'unreadable synthetic custom model source')
+    monkeypatch.setattr(radiomics_conda, 'validate_custom_model_output_inventory', lambda *_: {'broken': ['PTV']})
+    monkeypatch.setattr(radiomics_conda, 'list_custom_model_outputs', lambda *_: [('broken', model)])
+    if read_error == 'os_error':
+        original_read = pydicom.dcmread
+        def fail_broken(path, *args, **kwargs):
+            if Path(path) == broken:
+                raise OSError('synthetic source read error')
+            return original_read(path, *args, **kwargs)
+        monkeypatch.setattr(pydicom, 'dcmread', fail_broken)
+    output = tmp_path / 'radiomics_ct.parquet'
+    output.write_bytes(b'stale synthetic publication')
+    with pytest.raises(rm.RadiomicsCourseExtractionError, match='Failed to construct RTSTRUCT reader for CustomModel:broken'):
+        radiomics_conda.radiomics_for_course(tmp_path, config, max_workers=1)
+    assert not output.exists()

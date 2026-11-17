@@ -7,6 +7,8 @@ import json
 import logging
 from pathlib import Path
 
+from pydicom.errors import InvalidDicomError
+
 
 def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
                       output_root: Path, overwrite: bool = False) -> dict:
@@ -87,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         result = reexport_original(rtstruct=args.rtstruct, ct_series=args.ct_series,
                                    reference_nifti=args.reference_nifti, output_root=args.output_root,
                                    overwrite=args.overwrite)
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError, InvalidDicomError) as exc:
         logging.getLogger(__name__).error('Original ROI re-export refused: %s', exc)
         print(json.dumps({'status': 'refused', 'reason': str(exc)}))
         return 2

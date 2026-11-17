@@ -12,35 +12,46 @@ rtpipeline re-export-original \
 ```
 
 The command verifies that the RTSTRUCT references the supplied CT series and
-that the reference NIfTI has the same physical grid. It writes
-`Segmentation_Original/<reference-stem>/metadata.json`, the masks, and current
-provenance under the output root. Each mask filename begins with its ROI number;
-the manifest preserves both the stored name and number. Duplicate names can be
-exported separately because contours are selected by number.
+that the reference NIfTI has the same physical grid. It writes the masks,
+`metadata.json` and `provenance.json` in
+`Segmentation_Original/<reference-stem>/` under the output root.
+
+Collision-free ROI names keep their released filenames and name-only `v2`
+manifest entries. Only colliding groups receive filenames of the form
+`<stem>__roi-<number>.nii.gz`; their `v3` manifest entries retain the stored ROI
+name and number. This includes names that collide after filename sanitization,
+case folding or removal of surrounding whitespace. Contours are selected by ROI
+number, so duplicate names can be exported separately.
 
 An older input NIfTI sidecar is left unchanged. Reference provenance derived from
 the explicit CT series and NIfTI is stored under `metadata/original_reexport/` in
 the output root. Sealed `.age` inputs require separately supplied readable
 plaintext paths; this command performs no decryption.
 
-Current owned exports can be reused; `--overwrite` rebuilds them. Stale exports
-identified by an RTpipeline schema or its exact historical 2.3.99 manifest
-signature are retained in `Segmentation_Quarantine`. Other producers' directories
-and loose files are left in place. An unfamiliar destination with the requested
-reference stem causes an explicit refusal instead of replacement.
+Current exports can be reused; `--overwrite` rebuilds them and quarantines the
+export it supersedes. At the producer boundary, unverifiable entries are moved
+from `Segmentation_Original` into
+`Segmentation_Quarantine`. This includes stale or unmanifested exports, foreign
+producers' directories, loose files, an unfamiliar destination with the requested
+reference stem, and mixed directories containing undeclared files. Each move
+keeps the entry's bytes and writes a `record.json` receipt with its original path,
+reason and time.
 
-DVH and original export use ROI numbers. Name-keyed radiomics, robustness and
-custom-source consumers refuse ambiguous identities rather than choosing a
-same-name contour. An exact custom-source name retains precedence over normalized
-aliases; an alias matching several sources records `CUSTOM_SOURCE_AMBIGUOUS_NAME`.
+One output root retains one reference stem. Running the command with a different
+`--reference-nifti` stem in the same output root supersedes the earlier stem:
+the earlier export is quarantined, even if it was current. Use separate output
+roots to retain exports for separate reference stems in active directories.
 
-Existing label-based anchor and Dice-reference globs are resolved through the
-manifest, so they continue to select the same masks after filename changes. A
-folder containing undeclared files is preserved as a mixed destination and must
-be resolved explicitly before it can be replaced.
+DVH and original export use ROI numbers. Name-keyed radiomics and robustness
+refuse the whole course when a source contains an ambiguous ROI name, including
+otherwise unambiguous ROIs in that course. The refusal records the colliding ROI
+numbers and source as `RTSTRUCT_AMBIGUOUS_ROI_NAME`. An exact custom-source name
+retains precedence over normalized aliases; an alias matching several sources
+records `CUSTOM_SOURCE_AMBIGUOUS_NAME`.
 
+Configured label-based anchor and Dice-reference globs resolve through the
+manifest. A wildcard label selects the complete matching set of numbered masks;
+a literal label matching several declarations is refused. A physical filename
+reference that also denotes a different stored ROI label is refused as ambiguous.
 The scoped reader preserves exact stored names, including leading whitespace.
 Consumers whose inventories strip whitespace check ambiguity before normalizing.
-Label globs retain their original selection even when a broad prefix also matches
-new filenames. A literal or numbered reference that denotes a different stored
-ROI label is refused as ambiguous.

@@ -284,6 +284,8 @@ class DenominatorLedger:
             reason = str(row.get("reason_code", ""))
             if reason == "extracted" or row.get("disposition") == "extracted":
                 counts["extracted"] += 1
+            elif reason == "RTSTRUCT_AMBIGUOUS_ROI_NAME":
+                counts["excluded_identity"] = counts.get("excluded_identity", 0) + 1
             elif reason in NONVOLUMETRIC_CODES:
                 counts["nonmeasurement"] = counts.get("nonmeasurement", 0) + 1
             elif reason in {"CONFIGURED_SKIP", "CONFIGURED_SOURCE_SCOPE_SKIP"}:
@@ -335,6 +337,8 @@ def write_modality_ledger(directory: Path, ledger: DenominatorLedger, modality: 
     # and a row repeated verbatim still collapses. The field name is part of the
     # key so two different fields holding the same value stay distinguishable.
     source_identity_fields = (
+        "roi_number",
+        "source_path",
         "series_uid",
         "nifti_path",
         "source_content_sha256",
@@ -389,7 +393,11 @@ def write_modality_ledger(directory: Path, ledger: DenominatorLedger, modality: 
         }
         for state in states_any:
             merged[state] = any(bool(row.get(state)) for row in rows)
+        identity_refusal = any(row.get("reason_code") == "RTSTRUCT_AMBIGUOUS_ROI_NAME" for row in rows)
+        if identity_refusal:
+            merged["identity_refusal"] = True
         merged["reason_code"] = (
+            "RTSTRUCT_AMBIGUOUS_ROI_NAME" if identity_refusal and not merged["extracted"] else
             "extracted" if merged["extracted"] else
             "indeterminate_applicability" if merged["indeterminate"] else
             "failed_radiomics_extraction"

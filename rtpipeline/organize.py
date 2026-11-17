@@ -4563,21 +4563,24 @@ def _export_original_segmentation_from_paths(
     omission_path = log_root / "metadata" / "original_segmentation_omissions" / f"{base_name}.json"
     omission_path.unlink(missing_ok=True)
 
+    def write_omissions():
+        omission_path.parent.mkdir(parents=True, exist_ok=True)
+        omission_path.write_text(json.dumps({
+            "source_rtstruct_sha256": provenance["source_rtstruct_sha256"],
+            "skipped_structures": omissions,
+        }, indent=2), encoding="utf-8")
+
     def record_skip(roi_number, roi_name, reason_code):
         row = {
             "roi_number": roi_number, "roi_name": roi_name,
             "reason_code": reason_code,
         }
+        omissions.append(row)
         if colliding:
             manifest.setdefault("skipped_structures", []).append(row)
         else:
             # Preserve released manifest bytes while retaining each omission.
-            omissions.append(row)
-            omission_path.parent.mkdir(parents=True, exist_ok=True)
-            omission_path.write_text(json.dumps({
-                "source_rtstruct_sha256": provenance["source_rtstruct_sha256"],
-                "skipped_structures": omissions,
-            }, indent=2), encoding="utf-8")
+            write_omissions()
 
     for index, (roi_number, roi_name) in enumerate(roi_entries):
         try:
@@ -4625,7 +4628,7 @@ def _export_original_segmentation_from_paths(
             }
         )
 
-    if manifest["structures"] or manifest.get("skipped_structures"):
+    if manifest["structures"]:
         manifest_written = True
         try:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -4645,7 +4648,9 @@ def _export_original_segmentation_from_paths(
                 provenance_path.unlink(missing_ok=True)
         else:
             provenance_path.unlink(missing_ok=True)
-        return manifest if manifest["structures"] else None
+        return manifest
+    if omissions and colliding:
+        write_omissions()
     (target_root / _ORIGINAL_SEGMENTATION_PROVENANCE).unlink(missing_ok=True)
     return None
 

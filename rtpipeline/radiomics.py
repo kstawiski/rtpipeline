@@ -1669,6 +1669,7 @@ def radiomics_for_course(
 ) -> RadiomicsCourseOutcome:
     """Run pyradiomics on CT course with manual RS, RS_auto, and custom structures if present."""
 
+    (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
         output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
@@ -1785,7 +1786,7 @@ def radiomics_for_course(
         if requirement.requiredness != Requiredness.INVENTORY_ONLY
     }
 
-    def _finalize_ct_ledger(*, extracted: bool, technical: bool = False, indeterminate: bool = False) -> None:
+    def _finalize_ct_ledger(*, extracted: bool, technical: bool = False, indeterminate: bool = False, identity_refusal: bool = False) -> None:
         technical = technical or any(
             text_or(row, RADIOMICS_FEATURE_COMPLETENESS_COLUMN)
             == "incomplete"
@@ -1935,10 +1936,12 @@ def radiomics_for_course(
             adequate_coverage=bool(rows) and not all_nonvolumetric,
             insufficient_coverage=not bool(rows),
             valid_derivation=any(item.reason_code == "extracted" for item in custom_applicability),
-            technical_exclusion=technical,
+            technical_exclusion=technical and not identity_refusal,
+            **({"identity_refusal": True} if identity_refusal else {}),
             indeterminate=indeterminate,
             extracted=extracted,
             reason_code=(
+                "RTSTRUCT_AMBIGUOUS_ROI_NAME" if identity_refusal else
                 "extracted" if extracted else
                 "nonvolumetric_nonmeasurement" if all_nonvolumetric else
                 "indeterminate_applicability" if indeterminate else
@@ -2232,7 +2235,11 @@ def radiomics_for_course(
         except Exception as exc:
             roi_failures.extend({**failure, 'source': source} for failure in source_failures)
             _invalidate_radiomics_outputs(out_path)
-            _finalize_ct_ledger(extracted=False, technical=True)
+            identity_refusal = any(
+                row.get("structural_code") == "RTSTRUCT_AMBIGUOUS_ROI_NAME"
+                for row in source_failures
+            )
+            _finalize_ct_ledger(extracted=False, technical=not identity_refusal, identity_refusal=identity_refusal)
             if isinstance(exc, RadiomicsCourseExtractionError):
                 raise
             raise RadiomicsCourseExtractionError(

@@ -634,7 +634,7 @@ def robustness_selection_matches(
     return selected and not _robustness_exclusion_matches(roi_name, exclude_structures)
 
 
-# The extraction run itself failed technically (exception inside
+# The extraction run was refused or failed (exception inside
 # robustness_for_course) after the previous sidecar was invalidated. This is
 # a terminal run outcome, not a measurement: it certifies that the run
 # attempted and failed, so the course can be closed with evidence instead of
@@ -1612,6 +1612,9 @@ def _write_robustness_source_dispositions(
     if outcome == ROBUSTNESS_FAILED_OUTCOME:
         payload["source_errors"] = list(source_errors or [])
         payload["source_errors_sha256"] = _content_sha256(payload["source_errors"])
+        if any(row.get("structural_code") == "RTSTRUCT_AMBIGUOUS_ROI_NAME" for row in payload["source_errors"]):
+            payload.update(reason_code="RTSTRUCT_AMBIGUOUS_ROI_NAME",
+                           failure_kind="ambiguous_roi_identity", identity_refusal=True, technical_exclusion=False)
     inventory_path = path.with_name("radiomics_robustness_target_inventory.json")
     inventory_payload = {
         "robustness_run_identifier": str(run_identifier),

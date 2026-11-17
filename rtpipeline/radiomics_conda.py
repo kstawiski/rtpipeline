@@ -116,6 +116,7 @@ _NON_TECHNICAL_LEDGER_REASONS = frozenset({
     "not_computed_valid_empty_scope",
     "CONFIGURED_SKIP",
     "CONFIGURED_SOURCE_SCOPE_SKIP",
+    "RTSTRUCT_AMBIGUOUS_ROI_NAME",
 }) | NONVOLUMETRIC_CODES
 
 
@@ -313,6 +314,7 @@ def _write_conda_roi_ledger(
         insufficient_coverage=not bool(rows),
         valid_derivation=False,
         technical_exclusion=technical_exclusion,
+        **({"identity_refusal": True} if course_reason == "RTSTRUCT_AMBIGUOUS_ROI_NAME" else {}),
         indeterminate=False,
         extracted=extracted,
         reason_code=course_reason,
@@ -2967,6 +2969,7 @@ def radiomics_for_course(
     Returns:
         Path to the radiomics Excel file if successful, None otherwise
     """
+    (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
         return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
@@ -3236,19 +3239,28 @@ def radiomics_for_course(
     # Inventory and publication strip whitespace. Refuse collisions before
     # selected-name lists or task dictionaries can hide source declarations.
     from .rtstruct_geometry import ambiguous_roi_names
-    from .stage_completion import _atomic_json
     for source_label, source_path, _ in source_specs:
-        source_dataset = pydicom.dcmread(str(source_path), stop_before_pixels=True)
+        try:
+            source_dataset = pydicom.dcmread(str(source_path), stop_before_pixels=True)
+        except (OSError, pydicom.errors.InvalidDicomError):
+            source_dataset = None  # Preserve the reader's governed unreadable-source outcome.
         collisions = ambiguous_roi_names(source_dataset)
         if collisions:
             detail = f"RTSTRUCT_AMBIGUOUS_ROI_NAME: {sorted(collisions)!r} in {source_path}"
             outcomes = [{
                 "segmentation_source": source_label, "source_path": str(source_path),
-                "rtstruct_sop_instance_uid": str(source_dataset.SOPInstanceUID),
+                "rtstruct_sop_instance_uid": str(getattr(source_dataset, "SOPInstanceUID", "")),
                 "roi_number": number, "roi_name": name, "status": "failed",
                 "structural_code": "RTSTRUCT_AMBIGUOUS_ROI_NAME", "reason": detail,
             } for entries in collisions.values() for number, name in entries]
-            _atomic_json(course_dir / "metadata/radiomics_ct_identity_refusals.json", outcomes)
+            _write_conda_roi_ledger(
+                course_dir, (), [{**row, "extraction_status": "failed",
+                                  "roi_structural_code": row["structural_code"],
+                                  "extraction_status_detail": row["reason"]} for row in outcomes],
+                extracted=False, missing_reason="RTSTRUCT_AMBIGUOUS_ROI_NAME",
+                identity_fields=("segmentation_source", "source_path", "rtstruct_sop_instance_uid", "roi_number"),
+                derive_course_states=True,
+            )
             _invalidate_radiomics_outputs(output_path)
             raise RadiomicsCourseExtractionError(detail)
 

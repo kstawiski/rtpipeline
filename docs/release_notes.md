@@ -2,7 +2,22 @@
 
 ## Unreleased
 
-No changes since 3.0.3.
+Draft for 3.0.4; the package version remains 3.0.3 until release.
+
+- Original-structure exports, DVH and review displays bind contours to ROI
+  numbers. Collision-free `Segmentation_Original` exports retain their released
+  filenames and remain current after upgrade. Only colliding groups receive
+  `<stem>__roi-<number>.nii.gz` filenames. See
+  [original-structure re-export](original_segmentation_reexport.md) for explicit
+  source export and quarantine behaviour.
+- QC, RS_custom, radiomics and robustness publications made by 3.0.x are
+  recomputed after upgrade because their code identities change. Rerun the
+  affected stages; current collision-free original exports can be reused.
+- Radiomics and robustness refuse the entire course if any source has an
+  ambiguous ROI name. Otherwise unambiguous ROIs in that course also receive no
+  measurement rows. The CT ROI ledger and robustness failure disposition record
+  `RTSTRUCT_AMBIGUOUS_ROI_NAME` with the colliding ROI numbers and source, as an
+  identity refusal rather than a technical failure.
 
 ## 3.0.3 — 2026-11-16
 

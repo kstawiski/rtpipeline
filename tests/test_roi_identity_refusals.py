@@ -40,7 +40,10 @@ def test_robustness_identity_refusal_is_durable(source, tmp_path, values, runner
     from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
 
     require_radiomics_rasterizer()
-    names(source[1], ["Organ", "Other"])
+    reader = builder(source)
+    reader.add_roi(mask=source[3] | source[4], name="PTV")
+    reader.save(str(source[1]))
+    names(source[1], ["Organ", "Other", "PTV"])
     contract = write_minimal_course_contract(
         tmp_path, authoritative_rtstruct=source[1], planning_ct_nifti=source[2])
     sidecar = source[2].with_name("ct.metadata.json")
@@ -59,8 +62,9 @@ def test_robustness_identity_refusal_is_durable(source, tmp_path, values, runner
     # must be refused durably even when no current measurement can be made.
     from rtpipeline import radiomics
     radiomics.radiomics_for_course(cfg, tmp_path)
-    names(source[1], values)
-    rob = rb.RobustnessConfig(perturbation=rb.PerturbationConfig(apply_to_structures=["Organ"]))
+    assert "PTV" in set(radiomics.read_authoritative_ct_publication(tmp_path / "radiomics_ct.parquet").roi_original_name)
+    names(source[1], [*values, "PTV"])
+    rob = rb.RobustnessConfig(perturbation=rb.PerturbationConfig(apply_to_structures=["Organ", "PTV"]))
     disposition = rb.robustness_source_dispositions_path(tmp_path)
     disposition.write_text('{"stale": true}')
     output = tmp_path / "radiomics_robustness_ct.parquet"
@@ -75,7 +79,9 @@ def test_robustness_identity_refusal_is_durable(source, tmp_path, values, runner
             tmp_path, rob_config=rob, output_name=output.name)
     refusal = json.loads(disposition.read_text())
     assert refusal["measurement_outcome"] == rb.ROBUSTNESS_FAILED_OUTCOME
-    assert refusal["measured_output"] is None
+    assert refusal["measured_output"] is None and refusal["row_count"] == 0
+    assert refusal["reason_code"] == "RTSTRUCT_AMBIGUOUS_ROI_NAME"
+    assert refusal["identity_refusal"] is True and refusal["technical_exclusion"] is False
     rows = refusal["source_errors"]
     assert [(row["roi_number"], row["roi_name"]) for row in rows] == list(zip(["1", "2"], values))
     assert all(row["structural_code"] == "RTSTRUCT_AMBIGUOUS_ROI_NAME" for row in rows)
@@ -95,16 +101,22 @@ def test_export_records_each_omitted_declaration(source, tmp_path, mode, reason,
     first_bytes = (root / before["structures"][0]["mask"]).read_bytes()
     _omit(source, mode, all_rois=all_rois)
     result = export(source, root)
-    manifest = json.loads((root / "ct/metadata.json").read_text())
     expected = [1, 2] if all_rois else [2]
-    assert manifest["skipped_structures"] == [
+    expected_skips = [
         {"roi_number": number, "roi_name": "Organ", "reason_code": reason}
         for number in expected]
     if all_rois:
-        assert manifest["structures"] == []
         assert result is None
-        assert not list((root / "ct").glob("*.nii*"))
+        assert not list((root / "ct").iterdir())
+        omissions = json.loads((tmp_path / "metadata/original_segmentation_omissions/ct.json").read_text())
+        assert omissions["skipped_structures"] == expected_skips
+        import hashlib
+        assert omissions["source_rtstruct_sha256"] == hashlib.sha256(source[1].read_bytes()).hexdigest()
+        from rtpipeline.stage_completion import _stale_original_exports, stage_definition
+        assert _stale_original_exports(tmp_path, stage_definition('organize')) == []
     else:
+        manifest = json.loads((root / "ct/metadata.json").read_text())
+        assert manifest["skipped_structures"] == expected_skips
         assert [row["roi_number"] for row in manifest["structures"]] == [1]
         assert (root / manifest["structures"][0]["mask"]).read_bytes() == first_bytes
         from rtpipeline.original_segmentation import require_current_original_export

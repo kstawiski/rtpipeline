@@ -107,7 +107,7 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
     else:
         path = Path(reference_mask_path)
         paths = [path] if path.exists() else []
-    # Label globs must keep their meaning after a number prefix is added to
+    # Label globs must keep their meaning after a number suffix is added to
     # filenames. Never union a physical filename match with a different ROI
     # whose stored label happens to spell that filename.
     if 'Segmentation_Original' in Path(pattern).parts:
@@ -117,7 +117,7 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
         requested = Path(pattern)
         label_paths = []
         manifest_paths = sorted(glob(str(requested.parent / 'metadata.json')))
-        numbered_pattern = ('roi-' in requested.name and '__' in requested.name) or '__roi-' in requested.name
+        numbered_pattern = '__roi-' in requested.name
         for manifest_path in manifest_paths:
             manifest_path = Path(manifest_path)
             metadata = json.loads(manifest_path.read_text())
@@ -132,11 +132,11 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
                     or (paths and set(paths) != set(label_paths) and (not wildcard or numbered_pattern))):
                 raise ValueError('RTSTRUCT_AMBIGUOUS_ROI_NAME: physical and label mask reference')
             # Ordinary configured globs denote ROI labels, including broad
-            # prefixes such as r*. A new roi- prefix must not broaden them.
+            # prefixes such as r*. Number suffixes must not broaden them.
             paths = label_paths
         elif manifest_paths and wildcard and not numbered_pattern:
             # A label pattern with no matching labels must stay empty even
-            # when it happens to match the new physical filename prefix.
+            # when it happens to match a physical filename suffix.
             paths = []
     paths = sorted(set(paths))
     for path in paths:
