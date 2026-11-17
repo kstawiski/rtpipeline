@@ -1,23 +1,42 @@
 # Release notes
 
-## Unreleased
+## 3.0.4 — 2026-11-17
 
-Draft for 3.0.4; the package version remains 3.0.3 until release.
+Cite this release by version and by the DOI archived for the `v3.0.4` tag (see
+[citing](citing.md)). This release fixes the duplicate-ROI-name issue listed
+under 3.0.3: contours are selected by ROI number wherever ROI identity matters.
+Structure sets in which every ROI name is distinct give the same exported masks
+and the same DVH, radiomics and robustness values as in 3.0.3.
 
-- Original-structure exports, DVH and review displays bind contours to ROI
-  numbers. Collision-free `Segmentation_Original` exports retain their released
-  filenames and remain current after upgrade. Only colliding groups receive
-  `<stem>__roi-<number>.nii.gz` filenames. See
-  [original-structure re-export](original_segmentation_reexport.md) for explicit
-  source export and quarantine behaviour.
-- QC, RS_custom, radiomics and robustness publications made by 3.0.x are
-  recomputed after upgrade because their code identities change. Rerun the
-  affected stages; current collision-free original exports can be reused.
-- Radiomics and robustness refuse the entire course if any source has an
-  ambiguous ROI name. Otherwise unambiguous ROIs in that course also receive no
-  measurement rows. The CT ROI ledger and robustness failure disposition record
-  `RTSTRUCT_AMBIGUOUS_ROI_NAME` with the colliding ROI numbers and source, as an
-  identity refusal rather than a technical failure.
+- When two ROIs in one structure set share a name, `Segmentation_Original`
+  exports each from its own contours, and each DVH row takes its cropping flag
+  from its own ROI. 3.0.3 and earlier exported the first ROI's mask for both.
+  Names that differ only in case or surrounding whitespace, or that become the
+  same file name once sanitized, also count as colliding.
+- Collision-free `Segmentation_Original` exports keep their released file names
+  and stay current after upgrade. Only ROIs in a colliding group get file names
+  of the form `<stem>__roi-<number>.nii.gz`, and the manifest records their ROI
+  numbers. Custom-model anchors, Dice references, QC and `re-export-original`
+  find masks through the manifest.
+- Radiomics and robustness are keyed by ROI name, so they refuse a course in
+  which any source holds an ambiguous ROI name and write no measurement rows for
+  that course, including its unambiguous ROIs. Serial CT radiomics in 3.0.3
+  measured only the first ROI of a duplicated name. The CT ROI ledger and the
+  robustness failure disposition record the refusal as
+  `RTSTRUCT_AMBIGUOUS_ROI_NAME`, with the colliding ROI numbers and source, and
+  count it as an identity refusal, not a technical failure. Once the colliding
+  ROIs are renamed in the source structure set, the next run measures the course.
+- A custom structure is no longer built from the first of several source ROIs
+  whose names match once case and punctuation are ignored. The structure is
+  withheld and the refusal is recorded as `CUSTOM_SOURCE_AMBIGUOUS_NAME`. An
+  exact name match still takes precedence.
+- The new command `rtpipeline re-export-original` rebuilds
+  `Segmentation_Original` from explicit RTSTRUCT, CT series and reference NIfTI
+  paths, for legacy trees that source discovery cannot rebuild (see
+  [original-structure re-export](original_segmentation_reexport.md)).
+- After upgrade, the workflow recomputes QC, RS_custom, radiomics and robustness
+  outputs made by earlier 3.0 releases, because the code that produces them has
+  changed. Collision-free original exports are reused.
 
 ## 3.0.3 — 2026-11-16
 
@@ -51,7 +70,7 @@ processed with 3.0.0 or earlier (see 3.0.1).
   Python 3.10 suite runs on the locked dependencies; tests that need conda,
   Snakemake or the radiomics environment report an explicit skip there.
 
-Known issue, fixed in the next release: when an RTSTRUCT holds two ROIs with the
+Known issue, fixed in 3.0.4: when an RTSTRUCT holds two ROIs with the
 same name, the `Segmentation_Original` export writes the first ROI's mask for
 both, serial CT radiomics measures only the first, and a custom structure whose
 source name matches several ROIs once case and punctuation are ignored uses the

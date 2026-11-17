@@ -1,7 +1,8 @@
 # Re-export original clinical structures
 
-Use explicit plaintext sources when an organized legacy tree cannot be rebuilt by
-source discovery:
+`rtpipeline re-export-original` rebuilds the `Segmentation_Original` export of
+one structure set from explicit plaintext sources. Use it when an organized
+legacy tree cannot be rebuilt by source discovery:
 
 ```sh
 rtpipeline re-export-original \
@@ -11,47 +12,53 @@ rtpipeline re-export-original \
   --output-root /exports/rebuilt
 ```
 
-The command verifies that the RTSTRUCT references the supplied CT series and
-that the reference NIfTI has the same physical grid. It writes the masks,
-`metadata.json` and `provenance.json` in
-`Segmentation_Original/<reference-stem>/` under the output root.
+The command checks that the RTSTRUCT references the supplied CT series and that
+the reference NIfTI has the same physical grid. It then writes the masks,
+`metadata.json` and `provenance.json` to `Segmentation_Original/<reference-stem>/`
+under the output root. Reference provenance derived from the CT series and the
+NIfTI goes to `metadata/original_reexport/` under the output root; an older
+sidecar next to the input NIfTI is left unchanged. The command does not decrypt:
+for sealed `.age` inputs, supply readable plaintext copies.
 
-Collision-free ROI names keep their released filenames and name-only `v2`
-manifest entries. Only colliding groups receive filenames of the form
-`<stem>__roi-<number>.nii.gz`; their `v3` manifest entries retain the stored ROI
-name and number. This includes names that collide after filename sanitization,
-case folding or removal of surrounding whitespace. Contours are selected by ROI
-number, so duplicate names can be exported separately.
+## File names
 
-An older input NIfTI sidecar is left unchanged. Reference provenance derived from
-the explicit CT series and NIfTI is stored under `metadata/original_reexport/` in
-the output root. Sealed `.age` inputs require separately supplied readable
-plaintext paths; this command performs no decryption.
+Each ROI is exported from its own contours, selected by ROI number. When every
+ROI name in the structure set is distinct, the masks keep their released file
+names and the manifest keeps its name-only `v2` entries. Only ROIs in a colliding
+group get file names of the form `<stem>__roi-<number>.nii.gz`, with `v3`
+manifest entries that record the stored ROI name and number. Names collide when
+they are identical, differ only in case or surrounding whitespace, or become the
+same file name once sanitized.
 
-Current exports can be reused; `--overwrite` rebuilds them and quarantines the
-export it supersedes. At the producer boundary, unverifiable entries are moved
-from `Segmentation_Original` into
-`Segmentation_Quarantine`. This includes stale or unmanifested exports, foreign
-producers' directories, loose files, an unfamiliar destination with the requested
-reference stem, and mixed directories containing undeclared files. Each move
-keeps the entry's bytes and writes a `record.json` receipt with its original path,
-reason and time.
+## Reuse, overwrite and quarantine
 
-One output root retains one reference stem. Running the command with a different
-`--reference-nifti` stem in the same output root supersedes the earlier stem:
-the earlier export is quarantined, even if it was current. Use separate output
-roots to retain exports for separate reference stems in active directories.
+A current export is reused. `--overwrite` rebuilds it and quarantines the export
+it replaces. Anything in `Segmentation_Original` that the producer cannot verify
+is moved to `Segmentation_Quarantine`: stale or unmanifested exports, other
+producers' directories, loose files, an unfamiliar directory with the requested
+reference stem, and directories that mix in undeclared files. Each moved entry
+keeps its bytes and gets a `record.json` receipt with its original path, the
+reason and the time.
 
-DVH and original export use ROI numbers. Name-keyed radiomics and robustness
-refuse the whole course when a source contains an ambiguous ROI name, including
-otherwise unambiguous ROIs in that course. The refusal records the colliding ROI
-numbers and source as `RTSTRUCT_AMBIGUOUS_ROI_NAME`. An exact custom-source name
-retains precedence over normalized aliases; an alias matching several sources
-records `CUSTOM_SOURCE_AMBIGUOUS_NAME`.
+An output root holds one reference stem. Running the command with a different
+`--reference-nifti` stem in the same output root supersedes the earlier stem and
+quarantines its export, even when that export was current. To keep exports for
+several reference stems, use one output root for each.
 
-Configured label-based anchor and Dice-reference globs resolve through the
-manifest. A wildcard label selects the complete matching set of numbered masks;
-a literal label matching several declarations is refused. A physical filename
-reference that also denotes a different stored ROI label is refused as ambiguous.
-The scoped reader preserves exact stored names, including leading whitespace.
-Consumers whose inventories strip whitespace check ambiguity before normalizing.
+## How other stages use the export
+
+DVH and the original export identify ROIs by number. Radiomics and robustness
+are keyed by ROI name, so they refuse the whole course when any source holds an
+ambiguous ROI name, including the course's unambiguous ROIs, and record the
+colliding ROI numbers and source as `RTSTRUCT_AMBIGUOUS_ROI_NAME`. For custom
+structures, an exact source-name match takes precedence over normalized aliases;
+an alias that matches several sources is refused as
+`CUSTOM_SOURCE_AMBIGUOUS_NAME`.
+
+Label-based anchor and Dice-reference globs in the configuration are resolved
+through the manifest. A wildcard label selects every matching numbered mask; a
+literal label that matches several ROIs is refused. A file-name reference that
+also names a different stored ROI label is refused as ambiguous. The scoped
+reader keeps stored names exactly, including leading whitespace, and consumers
+that strip whitespace from their inventories check for ambiguity before they
+normalize names.

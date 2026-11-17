@@ -3,7 +3,7 @@
 # - Main environment: NumPy 2.x for TotalSegmentator
 # - Radiomics environment: NumPy 1.x for PyRadiomics (via conda run)
 
-__version__ = "3.0.3"
+__version__ = "3.0.4"
 
 __all__ = [
     "config",
