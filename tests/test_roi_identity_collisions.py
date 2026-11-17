@@ -10,7 +10,7 @@ import pydicom
 import pytest
 
 from legacy_source import legacy_show
-from test_roi_identity_ws554 import source, names, builder, export
+from test_roi_identity import source, names, builder, export
 from rtpipeline import organize
 from rtpipeline.original_segmentation import (
     original_roi_filenames, require_current_original_export, require_current_original_mask,
@@ -27,10 +27,10 @@ def _legacy_module(relative, name):
 
 def test_collision_free_export_is_byte_identical_to_303(source, tmp_path):
     names(source[1], ['First', 'Second'])
-    fixture = Path(__file__).with_name('ws554_303_export_fixture.py.txt').read_bytes()
+    fixture = Path(__file__).with_name('roi_identity_303_export_fixture.py.txt').read_bytes()
     assert hashlib.sha256(fixture).hexdigest() == '186ea63c985b30b30b361471bfdb30f05c41ee7e6663d22b75d04e16eb45ad5b'
     namespace = dict(vars(organize))
-    exec(compile(fixture, 'ws554_303_export_fixture.py.txt', 'exec'), namespace)
+    exec(compile(fixture, 'roi_identity_303_export_fixture.py.txt', 'exec'), namespace)
     root = tmp_path / 'Segmentation_Original'
     args = dict(rs_path=source[1], primary_nifti=source[2], dicom_ct_dir=source[0],
                 segmentation_original_dir=root, log_root=tmp_path, overwrite=True)
@@ -51,7 +51,7 @@ def test_collision_free_export_is_byte_identical_to_303(source, tmp_path):
 def test_numbered_masks_match_pinned_geometry_on_unique_names(source):
     from rtpipeline.rtstruct_geometry import rtstruct_roi_mask
     names(source[1], ['First', 'Second'])
-    old = _legacy_module('rtstruct_geometry.py', '_ws554_pinned_geometry')
+    old = _legacy_module('rtstruct_geometry.py', '_roi_identity_pinned_geometry')
     reader = builder(source)
     for number, name in enumerate(reader.get_roi_names(), 1):
         assert old.rtstruct_roi_mask(reader, name).tobytes() == rtstruct_roi_mask(reader, name, roi_number=number).tobytes()
@@ -59,7 +59,7 @@ def test_numbered_masks_match_pinned_geometry_on_unique_names(source):
 
 def test_custom_outputs_match_pinned_processor_without_ambiguity(source):
     from rtpipeline.custom_structures import CustomStructureProcessor, CustomStructureConfig
-    old = _legacy_module('custom_structures.py', '_ws554_pinned_custom')
+    old = _legacy_module('custom_structures.py', '_roi_identity_pinned_custom')
     available = {'First': source[3], 'Second': np.roll(source[3], 1, axis=0) | source[4]}
     for operation in ['union', 'intersection', 'subtract', 'xor']:
         current, historical = CustomStructureProcessor(), old.CustomStructureProcessor()
@@ -144,12 +144,12 @@ def test_reexport_quarantines_ambiguous_303_manifest_and_uses_source_numbers(sou
 
 @pytest.mark.parametrize('mode', ['empty', 'read_failed'])
 def test_unique_omissions_preserve_303_export_bytes_and_record_reason(source, tmp_path, mode):
-    from test_roi_identity_ws554_r2 import _omit
+    from test_roi_identity_refusals import _omit
     names(source[1], ['First', 'Second'])
     _omit(source, mode)
     namespace = dict(vars(organize))
-    exec(compile(Path(__file__).with_name('ws554_303_export_fixture.py.txt').read_bytes(),
-                 'ws554_303_export_fixture.py.txt', 'exec'), namespace)
+    exec(compile(Path(__file__).with_name('roi_identity_303_export_fixture.py.txt').read_bytes(),
+                 'roi_identity_303_export_fixture.py.txt', 'exec'), namespace)
     root = tmp_path / 'Segmentation_Original'
     old = namespace['_export_original_segmentation_from_paths'](
         rs_path=source[1], primary_nifti=source[2], dicom_ct_dir=source[0],
@@ -172,3 +172,43 @@ def test_missing_roi_numbers_use_only_unique_names():
     reader.ds.StructureSetROISequence.append(SimpleNamespace(ROIName='Unique'))
     with pytest.raises(ValueError, match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
         rtstruct_roi_mask(reader, 'Unique')
+
+
+@pytest.mark.parametrize('source_state', ['unreadable', 'missing_declarations'])
+def test_unavailable_legacy_identity_is_recorded_stale_and_quarantined(source, tmp_path, source_state):
+    from rtpipeline.stage_completion import _stale_original_exports, stage_definition
+
+    names(source[1], ['First', 'Second'])
+    root = tmp_path / 'Segmentation_Original'
+    manifest = export(source, root)
+    directory = root / 'ct'
+    before = {path.name: path.read_bytes() for path in directory.glob('*.nii.gz')}
+    if source_state == 'unreadable':
+        source[1].write_bytes(b'unreadable synthetic RTSTRUCT')
+    else:
+        dataset = pydicom.dcmread(source[1])
+        del dataset.StructureSetROISequence
+        dataset.save_as(source[1])
+    # Keep content provenance current so identity, rather than changed bytes,
+    # decides whether this name-only export can be reused.
+    provenance = organize._original_segmentation_provenance(source[1], source[2])
+    (directory / 'provenance.json').write_text(json.dumps(provenance))
+    mask = root / manifest['structures'][0]['mask']
+    with pytest.raises(ValueError, match='RTSTRUCT_ROI_IDENTITY_UNAVAILABLE'):
+        require_current_original_mask(mask)
+    reusable, reason = organize._original_masks_reusable(directory, root, manifest, provenance)
+    assert not reusable and 'RTSTRUCT_ROI_IDENTITY_UNAVAILABLE' in reason
+    stale = _stale_original_exports(tmp_path, stage_definition('organize'))
+    assert len(stale) == 1 and stale[0]['status'] == 'stale'
+    assert stale[0]['path'] == 'Segmentation_Original/ct'
+    assert 'RTSTRUCT_ROI_IDENTITY_UNAVAILABLE' in stale[0]['reason']
+    result = organize._export_original_segmentation_from_paths(
+        rs_path=source[1], primary_nifti=source[2], dicom_ct_dir=source[0],
+        segmentation_original_dir=root, log_root=tmp_path, overwrite=False)
+    assert result is None
+    assert not list(root.rglob('*.nii.gz'))
+    records = list((tmp_path / 'Segmentation_Quarantine').glob('*/record.json'))
+    assert len(records) == 1
+    assert 'RTSTRUCT_ROI_IDENTITY_UNAVAILABLE' in json.loads(records[0].read_text())['reason']
+    archived = records[0].parent / 'export'
+    assert {path.name: path.read_bytes() for path in archived.glob('*.nii.gz')} == before

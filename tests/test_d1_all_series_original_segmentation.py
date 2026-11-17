@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from test_s9c_repairs import write_sidecar
+from course_contract_test_utils import write_synthetic_rtstruct
 from rtpipeline.original_segmentation import require_current_original_mask
 import sqlite3
 import sys
@@ -333,7 +334,7 @@ def test_original_segmentation_export_reuses_cached_manifest_on_rerun(tmp_path: 
     _patch_manual_export_dependencies(monkeypatch, calls)
 
     rs_path = tmp_path / "RS.dcm"
-    rs_path.write_text("rs", encoding="utf-8")
+    write_synthetic_rtstruct(rs_path, roi_names=["liver"])
     primary_nifti = tmp_path / "ct.nii.gz"
     primary_nifti.write_text("nifti", encoding="utf-8")
     write_sidecar(primary_nifti)
@@ -388,7 +389,7 @@ def test_per_course_original_export_records_physical_manifest_schema(tmp_path: P
     dirs = build_course_dirs(course_dir)
     dirs.ensure()
     rs_path = course_dir / "RS.dcm"
-    rs_path.write_text("rs", encoding="utf-8")
+    write_synthetic_rtstruct(rs_path, roi_names=["liver"])
     primary_nifti = dirs.nifti / "ct.nii.gz"
     primary_nifti.write_text("nifti", encoding="utf-8")
     write_sidecar(primary_nifti)
@@ -413,19 +414,18 @@ def test_per_course_original_export_records_physical_manifest_schema(tmp_path: P
 
     expected = {
         "schema": organize.ORIGINAL_SEGMENTATION_SCHEMA,
-        "producer": "rtpipeline",
         "geometry_status": "exact_physical_mapping",
         "opencv_runtime": opencv_runtime_provenance(),
         "model": "manual",
         "source_rtstruct": str(rs_path),
         "source_nifti": str(primary_nifti),
-        "structures": [{"roi_name": "liver", "roi_number": 1, "mask": "ct/roi-1__liver.nii.gz",
-            "sha256": hashlib.sha256((dirs.segmentation_original / "ct/roi-1__liver.nii.gz").read_bytes()).hexdigest(),
-            "size_bytes": (dirs.segmentation_original / "ct/roi-1__liver.nii.gz").stat().st_size}],
+        "structures": [{"roi_name": "liver", "mask": "ct/liver.nii.gz",
+            "sha256": hashlib.sha256((dirs.segmentation_original / "ct/liver.nii.gz").read_bytes()).hexdigest(),
+            "size_bytes": (dirs.segmentation_original / "ct/liver.nii.gz").stat().st_size}],
     }
     assert manifest == expected
     assert json.loads((dirs.segmentation_original / "ct" / "metadata.json").read_text()) == expected
-    require_current_original_mask(dirs.segmentation_original / "ct/roi-1__liver.nii.gz")
+    require_current_original_mask(dirs.segmentation_original / "ct/liver.nii.gz")
     assert "source" not in manifest
     assert calls == [{"dicom_series_path": dirs.dicom_ct, "rt_struct_path": rs_path}]
 
@@ -439,7 +439,7 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
     _patch_manual_export_dependencies(monkeypatch, calls)
 
     rtstruct_path = tmp_path / "source_rs.dcm"
-    rtstruct_path.write_text("rs", encoding="utf-8")
+    write_synthetic_rtstruct(rtstruct_path, roi_names=["liver"])
     db_path = tmp_path / "inventory.sqlite"
     _write_inventory_db(db_path, rtstruct_path=rtstruct_path, target_series_uid="SER_PLAN")
     cfg = _cfg(tmp_path, db_path=db_path)
@@ -503,6 +503,7 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
 
     monkeypatch.setattr(segmentation, "_ensure_ct_nifti", fake_ensure_nifti)
     monkeypatch.setattr(segmentation, "run_totalsegmentator", fake_totalseg)
+    monkeypatch.setattr(segmentation, "_detect_contrast_phase_safe", lambda *_: None)
 
     caplog.set_level("DEBUG", logger="rtpipeline.segmentation")
     summary = segmentation.segment_all_series_for_patient(cfg, "P1")
@@ -526,8 +527,8 @@ def test_all_series_original_export_binds_only_referenced_series_and_keeps_ai_se
     manual_manifest = json.loads(manual_manifest_path.read_text(encoding="utf-8"))
     assert manual_manifest["model"] == "manual"
     assert manual_manifest["structures"][0]["roi_name"] == "liver"
-    assert manual_manifest["structures"][0]["mask"] == "plan/roi-1__liver.nii.gz"
-    manual_mask = manual_manifest_path.parent / "roi-1__liver.nii.gz"
+    assert manual_manifest["structures"][0]["mask"] == "plan/liver.nii.gz"
+    manual_mask = manual_manifest_path.parent / "liver.nii.gz"
     assert manual_mask.exists()
     require_current_original_mask(manual_mask)
 

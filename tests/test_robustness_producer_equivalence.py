@@ -555,10 +555,10 @@ def test_identity_certificate_refuses_ambiguous_historical_sources(tmp_path, mon
     payload = before[1]
     current = rr._current_robustness_code_identity()
     assert rr._compatible_main_measured_code(payload, current, course_dir=course)
-    fixture = Path(__file__).with_name('ws554_legacy_certificate_fixture.py.txt').read_bytes()
+    fixture = Path(__file__).with_name('roi_identity_legacy_certificate_fixture.py.txt').read_bytes()
     assert hashlib.sha256(fixture).hexdigest() == '8216e67aa64cfab790ad535e3c2cac979540549862440eba540c8d1d92818035'
     namespace = dict(vars(rr))
-    exec(compile(fixture, 'ws554_legacy_certificate_fixture.py.txt', 'exec'), namespace)
+    exec(compile(fixture, 'roi_identity_legacy_certificate_fixture.py.txt', 'exec'), namespace)
     historical = namespace['_compatible_main_measured_code']
     path = course / 'RS.dcm'
     ds = pydicom.dcmread(path)

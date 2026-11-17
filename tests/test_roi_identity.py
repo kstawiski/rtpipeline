@@ -16,10 +16,10 @@ from rtpipeline.original_segmentation import quarantine_stale_original_exports
 
 # Evidence runs can require the immutable baseline package explicitly.
 import os
-_expected_source = os.environ.get("WS554_EXPECTED_SOURCE_ROOT")
+_expected_source = os.environ.get("ROI_IDENTITY_EXPECTED_SOURCE_ROOT")
 if _expected_source:
     assert Path(organize.__file__).resolve().is_relative_to(Path(_expected_source).resolve())
-    print("WS554 production source:", organize.__file__)
+    print("ROI identity production source:", organize.__file__)
 
 @pytest.fixture
 def source(tmp_path):

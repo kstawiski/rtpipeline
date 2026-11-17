@@ -12,7 +12,7 @@ import SimpleITK as sitk
 from PIL import Image
 from rt_utils.rtstruct import RTStruct
 
-from test_roi_identity_ws554 import source, names, builder, export
+from test_roi_identity import source, names, builder, export
 
 
 def _omit(source, mode, *, all_rois=False):

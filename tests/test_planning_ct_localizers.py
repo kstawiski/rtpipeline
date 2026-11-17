@@ -168,7 +168,7 @@ def test_clean_organize_outputs_byte_identical_to_baseline(tmp_path, monkeypatch
     assert [name for name in expected if expected[name] != actual[name]] == []
 
 
-def _organized_course(root, dcm2niix, name='course_a', localizer=True):
+def _organized_course(root, dcm2niix, name='course_a', localizer=True, *, roi_names=()):
     from course_contract_test_utils import write_minimal_course_contract
     from rtpipeline.course_contract import _ct_provenance
     from rtpipeline.config_dependencies import materialize_stage_dependency
@@ -180,6 +180,16 @@ def _organized_course(root, dcm2niix, name='course_a', localizer=True):
     ct = course / 'DICOM/CT'
     paths = write_ct_series(ct, uniform_z_positions(), signed=False)
     rs = _rtstruct(course / 'RS.dcm', paths)
+    if roi_names:
+        dataset = pydicom.dcmread(rs)
+        declarations = []
+        for number, roi_name in enumerate(roi_names, start=1):
+            declaration = pydicom.Dataset()
+            declaration.ROINumber = number
+            declaration.ROIName = roi_name
+            declarations.append(declaration)
+        dataset.StructureSetROISequence = declarations
+        dataset.save_as(rs, enforce_file_format=True)
     nifti = segmentation._ensure_ct_nifti(_config(root, dcm2niix), ct, course / 'NIFTI')
     sidecar = nifti.with_name(nifti.name[:-7] + '.metadata.json')
     original_meta = json.loads(sidecar.read_text())
@@ -363,7 +373,7 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
     from rtpipeline.stage_completion import write_stage_completion_sentinel
     from rtpipeline.original_segmentation import require_current_original_mask
     root = tmp_path / 'Output'
-    course = _organized_course(root, dcm2niix)
+    course = _organized_course(root, dcm2niix, roi_names=['mask'])
     contract = load_course_contract(course)
     original = course / 'Segmentation_Original/rtstruct'
     original.mkdir(parents=True)
@@ -376,7 +386,7 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
                 'source_nifti': str(contract.planning_ct_nifti),
                 'source_rtstruct': str(contract.authoritative_rtstruct_path),
                 'structures': [{'mask': 'rtstruct/mask.nii.gz',
-                    'roi_name': str(pydicom.dcmread(contract.authoritative_rtstruct_path, stop_before_pixels=True).StructureSetROISequence[0].ROIName),
+                    'roi_name': 'mask',
                     'sha256': __import__('hashlib').sha256(mask.read_bytes()).hexdigest(),
                     'size_bytes': mask.stat().st_size}]}
     if export == 'v1':

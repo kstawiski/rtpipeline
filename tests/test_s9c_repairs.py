@@ -13,11 +13,15 @@ from rtpipeline.rtstruct_geometry import rtstruct_mask_to_image, rtstruct_contou
 from test_nifti_nonuniform_fallback import dcm2niix  # noqa: F401
 
 
-def bind_export(root, paths):
+def bind_export(root, paths, *, roi_names=None):
     """Write a complete contract with content identities for synthetic inputs."""
     root.mkdir(parents=True, exist_ok=True)
     rs = root / 'RS.dcm'
-    rs.write_bytes(b'synthetic RTSTRUCT')
+    if roi_names is None:
+        rs.write_bytes(b'synthetic RTSTRUCT')
+    else:
+        from course_contract_test_utils import write_synthetic_rtstruct
+        write_synthetic_rtstruct(rs, roi_names=roi_names)
     nifti = root / 'CT.nii.gz'
     nifti.write_bytes(b'synthetic NIfTI')
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -136,7 +140,7 @@ def test_f1_f3_producer_quarantines_siblings_before_reuse(tmp_path, monkeypatch)
     parent.mkdir(parents=True)
     mask = parent / 'GTV-1vis-1.nii.gz'
     mask.write_bytes(b'mask')
-    bind_export(tmp_path, [mask])
+    bind_export(tmp_path, [mask], roi_names=['GTV-1vis-1'])
     import rt_utils
     monkeypatch.setattr(rt_utils.RTStructBuilder, 'get_roi_names', lambda _: ['GTV-1vis-1'])
     (tmp_path/'CT.nii.gz').rename(tmp_path/'CT_new.nii.gz')
@@ -160,7 +164,7 @@ def test_f1_f3_producer_quarantines_siblings_before_reuse(tmp_path, monkeypatch)
     _validate_stage_specific_outcome(tmp_path, stage_definition('segmentation'), 'ok', [])
     assert not old.exists()
     assert not parent.exists()  # A valid old stem is superseded too.
-    assert _resolve_reference_paths(str(parent.parent/'CT_*/GTV-1*-*.nii.gz')) == [parent.parent/'CT_new/roi-1__GTV-1vis-1.nii.gz']
+    assert _resolve_reference_paths(str(parent.parent/'CT_*/GTV-1*-*.nii.gz')) == [parent.parent/'CT_new/GTV-1vis-1.nii.gz']
     assert not _resolve_reference_paths(str(parent.parent/'CT_old/*.nii.gz'))
     records = list((tmp_path/'Segmentation_Quarantine').rglob('record.json'))
     assert records
