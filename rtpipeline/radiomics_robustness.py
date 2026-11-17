@@ -914,7 +914,12 @@ def _evaluated_robustness_sources(
                     if source_rs.resolve() != Path(roi["source_path"]).resolve():
                         continue
                     for entry in manifest.get("structures", []):
-                        if entry.get("roi_name") == roi["roi_name"]:
+                        numbered = entry.get("roi_number") is not None
+                        matches = (str(entry["roi_number"]) == str(roi["roi_number"]) if numbered
+                                   else entry.get("roi_name") == roi["roi_name"])
+                        if matches:
+                            if entry.get("roi_name") != roi["roi_name"]:
+                                raise ValueError("ROI_NAME_NUMBER_MISMATCH: original export")
                             path = metadata.parent.parent / entry["mask"]
                             require_current_original_mask(path)
                             candidates.append(path)
@@ -1005,6 +1010,14 @@ def _compatible_main_measured_code(
         )
         inventory = []
         for binding in bindings:
+            # Historical name-keyed measurements are equivalent only when
+            # every source declaration has an unambiguous identity.
+            import pydicom
+            from .rtstruct_geometry import ambiguous_roi_names, rtstruct_roi_entries
+            dataset = pydicom.dcmread(binding["source_path"], stop_before_pixels=True)
+            rtstruct_roi_entries(dataset)
+            if ambiguous_roi_names(dataset):
+                return False
             if binding["segmentation_source"] == "Custom":
                 from .radiomics_ct_contract import load_custom_structure_provenance
 

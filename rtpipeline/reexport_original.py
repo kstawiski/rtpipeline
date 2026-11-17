@@ -22,7 +22,7 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     from .course_contract import _ct_provenance
     from .nifti_provenance import nifti_geometry
     from .organize import _export_original_segmentation_from_paths, _strip_nifti_base
-    from .original_segmentation import is_rtpipeline_original_export, require_current_original_export
+    from .original_segmentation import require_current_original_export
     from .rtstruct_geometry import rtstruct_roi_entries, rtstruct_mask_to_image
     from .rtstruct_identity import require_rtstruct_identity
 
@@ -47,8 +47,6 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     # unrelated reference before touching an existing export.
     rtstruct_mask_to_image(np.zeros(shape, dtype=bool), builder.series_data, reference)
     target = output_root / 'Segmentation_Original' / _strip_nifti_base(reference_nifti)
-    if target.exists() and any(target.iterdir()) and not is_rtpipeline_original_export(target):
-        raise ValueError(f'ORIGINAL_EXPORT_NOT_OWNED: {target}')
     metadata = {
         **ct_metadata,
         'nifti_geometry': nifti_geometry(reference_nifti),
@@ -83,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--ct-series', type=Path, required=True)
     parser.add_argument('--reference-nifti', type=Path, required=True)
     parser.add_argument('--output-root', type=Path, required=True)
-    parser.add_argument('--overwrite', action='store_true', help='Rebuild an owned export even when its inputs are current.')
+    parser.add_argument('--overwrite', action='store_true', help='Rebuild an export even when its inputs are current.')
     args = parser.parse_args(argv)
     try:
         result = reexport_original(rtstruct=args.rtstruct, ct_series=args.ct_series,

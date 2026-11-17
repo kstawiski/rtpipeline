@@ -29,6 +29,8 @@ def _omit(source, mode, *, all_rois=False):
 
 @pytest.mark.parametrize("values", [["Organ", "Organ"], ["Organ", " Organ"]])
 @pytest.mark.parametrize("runner", ["producer", "course_adapter", "campaign_closure"])
+@pytest.mark.requires_radiomics_env
+@pytest.mark.skipif(int(np.__version__.split(".")[0]) >= 2, reason="requires the native NumPy 1.x radiomics interpreter")
 def test_robustness_identity_refusal_is_durable(source, tmp_path, values, runner):
     from course_contract_test_utils import write_minimal_course_contract
     from rtpipeline import radiomics_robustness as rb

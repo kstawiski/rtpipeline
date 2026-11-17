@@ -376,6 +376,7 @@ def test_repair_retains_and_rebinds_original_mask_provenance(tmp_path, dcm2niix,
                 'source_nifti': str(contract.planning_ct_nifti),
                 'source_rtstruct': str(contract.authoritative_rtstruct_path),
                 'structures': [{'mask': 'rtstruct/mask.nii.gz',
+                    'roi_name': str(pydicom.dcmread(contract.authoritative_rtstruct_path, stop_before_pixels=True).StructureSetROISequence[0].ROIName),
                     'sha256': __import__('hashlib').sha256(mask.read_bytes()).hexdigest(),
                     'size_bytes': mask.stat().st_size}]}
     if export == 'v1':

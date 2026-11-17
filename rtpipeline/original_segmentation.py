@@ -5,8 +5,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 
-ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v3"
-ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v3"
+ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v2"
+NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA = "rtpipeline-original-segmentation-v3"
+ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v2"
+ORIGINAL_SEGMENTATION_SCHEMAS = {ORIGINAL_SEGMENTATION_SCHEMA, NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA}
+
+
+def original_roi_filenames(entries):
+    """Retain released filenames outside the complete collision groups."""
+    from .organize import _sanitize_name
+    stems = [_sanitize_name(name, "ROI") for _, name in entries]
+    groups = {}
+    for index, ((_, name), stem) in enumerate(zip(entries, stems)):
+        for key in (("name", name.strip().casefold()), ("stem", stem.casefold())):
+            groups.setdefault(key, []).append(index)
+    colliding = {index for group in groups.values() if len(group) > 1 for index in group}
+    # Include second-order collisions in the released counter-based scheme.
+    counts, historical = {}, {}
+    for index, stem in enumerate(stems):
+        counts[stem] = counts.get(stem, 0) + 1
+        old = stem if counts[stem] == 1 else f"{stem}_{counts[stem]}"
+        historical.setdefault(old.casefold(), []).append(index)
+    colliding.update(index for group in historical.values() if len(group) > 1 for index in group)
+    while True:
+        planned, groups = [], {}
+        for index, ((number, _), stem) in enumerate(zip(entries, stems)):
+            if index in colliding:
+                if number is None:
+                    raise ValueError("RTSTRUCT_AMBIGUOUS_ROI_NAME: collision needs an ROI number")
+                stem = f"{stem[:180]}__roi-{number}"
+            planned.append(stem + ".nii.gz")
+            groups.setdefault(planned[-1].casefold(), []).append(index)
+        conflicts = {index for group in groups.values() if len(group) > 1 for index in group}
+        if not conflicts:
+            return planned, colliding
+        if conflicts <= colliding:
+            raise ValueError("RTSTRUCT_AMBIGUOUS_ROI_NAME: filenames remain ambiguous")
+        colliding.update(conflicts)
 
 
 def _load_manifest(directory: Path) -> dict:
@@ -44,10 +79,12 @@ def _declared_export_masks(directory: Path, metadata: dict) -> dict[Path, dict]:
         if not isinstance(item, dict):
             raise ValueError("invalid manifest")
         number = item.get("roi_number")
-        if (not isinstance(number, int) or isinstance(number, bool)
-                or number in roi_numbers or not isinstance(item.get("roi_name"), str)):
+        if (not isinstance(item.get("roi_name"), str) or
+                (number is not None and (not isinstance(number, int) or isinstance(number, bool)
+                                        or number in roi_numbers))):
             raise ValueError("invalid or repeated ROI number in export manifest")
-        roi_numbers.add(number)
+        if number is not None:
+            roi_numbers.add(number)
         relative = item.get("mask")
         if not isinstance(relative, str) or not relative:
             raise ValueError("invalid manifest mask path")
@@ -66,6 +103,31 @@ def _declared_export_masks(directory: Path, metadata: dict) -> dict[Path, dict]:
     return declared
 
 
+def _validate_roi_identity(metadata, source_rs):
+    """Legacy names need uniqueness in both inventories, including omitted ROIs."""
+    entries = metadata.get("structures", [])
+    legacy = [entry for entry in entries if entry.get("roi_number") is None]
+    if not legacy:
+        return
+    import pydicom
+    from .rtstruct_geometry import rtstruct_roi_entries
+    try:
+        source = rtstruct_roi_entries(pydicom.dcmread(source_rs, stop_before_pixels=True))
+    except (OSError, ValueError, pydicom.errors.InvalidDicomError) as exc:
+        raise ValueError("RTSTRUCT_ROI_IDENTITY_UNAVAILABLE: legacy export source") from exc
+    _, source_collisions = original_roi_filenames(source)
+    _, manifest_collisions = original_roi_filenames(
+        [(entry.get("roi_number"), entry["roi_name"]) for entry in entries])
+    source_names = [name for _, name in source]
+    for index, entry in enumerate(entries):
+        if entry.get("roi_number") is not None:
+            continue
+        name = entry["roi_name"]
+        matches = [i for i, stored in enumerate(source_names) if stored == name]
+        if (index in manifest_collisions or len(matches) != 1 or matches[0] in source_collisions):
+            raise ValueError(f"RTSTRUCT_AMBIGUOUS_ROI_NAME: unverifiable legacy export {name!r}")
+
+
 def require_current_original_mask(path: Path) -> None:
     """Reject unlisted masks, changed bytes and exports with changed inputs."""
     path = Path(path)
@@ -75,7 +137,7 @@ def require_current_original_mask(path: Path) -> None:
         metadata = _load_manifest(path.parent)
         if metadata.get("geometry_status") != "exact_physical_mapping":
             raise ValueError(str(metadata.get("geometry_status") or "physical-space export required"))
-        if metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA:
+        if metadata.get("schema") not in ORIGINAL_SEGMENTATION_SCHEMAS:
             raise ValueError("physical-space export required")
         _declared_export_masks(path.parent, metadata)
         relative = path.relative_to(path.parent.parent).as_posix()
@@ -131,6 +193,7 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
             raise ValueError("source CT publication or selection changed")
     if hashlib.sha256(source_nifti.read_bytes()).hexdigest() != expected["source_nifti_sha256"]:
         raise ValueError("source NIfTI content changed")
+    _validate_roi_identity(metadata, source_rs)
 
 
 def quarantine_original_export(directory: Path, reason: str) -> Path:
@@ -161,7 +224,7 @@ def require_current_original_export(directory: Path) -> None:
         if geometry_status == "MASK_GRID_NOT_EQUIVALENT" and not payload_entries:
             provenance = _load_provenance(directory)
             if (
-                metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA
+                metadata.get("schema") not in ORIGINAL_SEGMENTATION_SCHEMAS
                 or metadata.get("structures") != []
             ):
                 raise ValueError("export contains no masks or current rejection record")
@@ -171,7 +234,7 @@ def require_current_original_export(directory: Path) -> None:
             raise ValueError(
                 str(geometry_status or "export contains no masks or current rejection record")
             )
-        if metadata.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA:
+        if metadata.get("schema") not in ORIGINAL_SEGMENTATION_SCHEMAS:
             raise ValueError("physical-space export required")
         declared = _declared_export_masks(directory, metadata)
         missing = sorted(
@@ -214,7 +277,7 @@ def is_rtpipeline_original_export(directory: Path) -> bool:
         metadata = _load_manifest(directory)
         if metadata.get('schema') in {
             'rtpipeline-original-segmentation-v1', 'rtpipeline-original-segmentation-v2',
-            ORIGINAL_SEGMENTATION_SCHEMA,
+            NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA,
         }:
             structures = metadata.get('structures')
             if not isinstance(structures, list):
@@ -267,7 +330,7 @@ def is_rtpipeline_original_export(directory: Path) -> bool:
 def quarantine_stale_original_exports(root: Path) -> None:
     """Producer boundary: retain current exports and current rejection records."""
     for entry in original_export_entries(Path(root)):
-        if not entry.exists() or not is_rtpipeline_original_export(entry):
+        if not entry.exists():
             continue
         try:
             if not entry.is_dir():

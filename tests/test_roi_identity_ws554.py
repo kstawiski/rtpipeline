@@ -63,6 +63,8 @@ def test_indexed_reader_never_resolves_a_duplicate_to_first(source):
         rm._rt_utils_indexed_roi_mask(builder(source),'Organ',retain=True)
 
 @pytest.mark.parametrize('values',[['Organ','Organ'],['Organ',' Organ']])
+@pytest.mark.requires_radiomics_env
+@pytest.mark.skipif(int(np.__version__.split(".")[0]) >= 2, reason="requires the native NumPy 1.x radiomics interpreter")
 def test_name_keyed_collectors_record_every_ambiguous_declaration(source,values):
     names(source[1],values)
     from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
@@ -114,7 +116,7 @@ def legacy(root,ref,rs):
     (old/'metadata.json').write_text(json.dumps({'model':'manual','source_rtstruct':str(rs),'source_nifti':str(ref),'structures':[{'roi_name':'Organ','mask':'ct/Organ.nii.gz'}]}))
     return old
 
-def test_quarantine_keeps_other_producers_and_loose_files(source,tmp_path):
+def test_quarantine_moves_unverifiable_other_producers_and_loose_files(source,tmp_path):
     root=tmp_path/'Segmentation_Original';old=legacy(root,source[2],source[1])
     other=root/'external';other.mkdir();payload=b'external synthetic mask'
     (other/'mask.nii.gz').write_bytes(payload)
@@ -122,16 +124,19 @@ def test_quarantine_keeps_other_producers_and_loose_files(source,tmp_path):
     loose=root/'foreign.nii.gz';loose.write_bytes(payload)
     quarantine_stale_original_exports(root)
     assert not old.exists()
-    assert (other/'mask.nii.gz').read_bytes()==payload
-    assert loose.read_bytes()==payload
+    assert not other.exists() and not loose.exists()
+    quarantined = root.parent / 'Segmentation_Quarantine'
+    assert any(path.read_bytes() == payload for path in quarantined.rglob('mask.nii.gz'))
+    assert any(path.read_bytes() == payload for path in quarantined.rglob('export') if path.is_file())
 
-def test_foreign_target_is_refused_without_moving_it(source,tmp_path):
+def test_unverifiable_target_is_quarantined_before_export(source,tmp_path):
     root=tmp_path/'Segmentation_Original';target=root/'ct';target.mkdir(parents=True)
     (target/'metadata.json').write_text('{"producer":"other"}')
     marker=target/'other.nii.gz';marker.write_bytes(b'keep-exact-bytes')
-    with pytest.raises(ValueError,match='ORIGINAL_EXPORT_NOT_OWNED'):
-        export(source,root)
-    assert marker.read_bytes()==b'keep-exact-bytes'
+    assert export(source,root)['structures']
+    assert not marker.exists()
+    assert any(path.read_bytes() == b'keep-exact-bytes'
+               for path in (root.parent / 'Segmentation_Quarantine').rglob('other.nii.gz'))
 
 def test_standalone_repairs_legacy_sidecar_without_mutating_input(source,tmp_path):
     from rtpipeline.cli import main
@@ -200,12 +205,13 @@ def test_rectangular_unique_number_reader_keeps_the_geometry_adapter(tmp_path):
     expected=rtstruct_contours_to_mask(b.series_data,ds_helper.get_contour_sequence_by_roi_number(b.ds,1))
     assert rtstruct_roi_mask(b,roi_number=1).tobytes()==expected.tobytes()
 
-def test_quarantine_leaves_a_mixed_legacy_export_directory_untouched(source,tmp_path):
+def test_quarantine_moves_a_mixed_unverifiable_export_directory(source,tmp_path):
     root=tmp_path/'Segmentation_Original';old=legacy(root,source[2],source[1])
     (old/'external.nii.gz').write_bytes(b'unclaimed')
     quarantine_stale_original_exports(root)
-    assert (old/'external.nii.gz').read_bytes()==b'unclaimed'
-    assert (old/'Organ.nii.gz').exists()
+    assert not old.exists()
+    assert any(path.read_bytes() == b'unclaimed'
+               for path in (root.parent / 'Segmentation_Quarantine').rglob('external.nii.gz'))
 
 def test_standalone_wrong_grid_is_refused_before_touching_output(source,tmp_path):
     from rtpipeline.cli import main
@@ -224,15 +230,18 @@ def test_configured_label_globs_resolve_number_prefixed_exports(source,tmp_path)
     (numbered.parent/'metadata.json').write_text(json.dumps(manifest))
     assert _resolve_reference_paths(str(root/'ct/GTV-1vis-*.nii.gz'))==[numbered]
 
-def test_stage_validation_does_not_claim_foreign_exports(tmp_path):
+def test_stage_validation_records_foreign_exports_as_stale(tmp_path):
     from rtpipeline.stage_completion import _stale_original_exports,_validate_stage_specific_outcome,stage_definition
     other=tmp_path/'Segmentation_Original/other';other.mkdir(parents=True)
     (other/'metadata.json').write_text('{"schema":"foreign-producer-v1"}')
     (other/'mask.nii.gz').write_bytes(b'foreign-synthetic')
-    assert _stale_original_exports(tmp_path,stage_definition('organize'))==[]
-    _validate_stage_specific_outcome(tmp_path,stage_definition('segmentation'),'ok',[])
+    assert _stale_original_exports(tmp_path,stage_definition('organize'))[0]['status']=='stale'
+    with pytest.raises(ValueError, match='stale'):
+        _validate_stage_specific_outcome(tmp_path,stage_definition('segmentation'),'ok',[])
     assert (other/'mask.nii.gz').exists()
 
+@pytest.mark.requires_radiomics_env
+@pytest.mark.skipif(int(np.__version__.split(".")[0]) >= 2, reason="requires the native NumPy 1.x radiomics interpreter")
 def test_conda_preflight_records_stripped_name_ambiguity_before_extraction(source,tmp_path):
     from rtpipeline.radiomics_rasterizer import require_radiomics_rasterizer
     require_radiomics_rasterizer()
@@ -251,13 +260,15 @@ def test_conda_preflight_records_stripped_name_ambiguity_before_extraction(sourc
     assert {row['roi_number'] for row in outcomes}=={1,2}
     assert not (tmp_path/'radiomics_ct.parquet').exists()
 
-def test_quarantine_preserves_foreign_files_inside_a_branded_export(source,tmp_path):
+def test_quarantine_preserves_unlisted_bytes_outside_active_exports(source,tmp_path):
     root=tmp_path/'Segmentation_Original';manifest=export(source,root)
     owned=root/Path(manifest['structures'][0]['mask']).parent
     foreign=owned/'foreign-producer.nii.gz';foreign.write_bytes(b'foreign-synthetic')
     quarantine_stale_original_exports(root)
-    assert foreign.read_bytes()==b'foreign-synthetic'
-    assert all((root/entry['mask']).exists() for entry in manifest['structures'])
+    assert not foreign.exists()
+    assert any(path.read_bytes() == b'foreign-synthetic'
+               for path in (root.parent / 'Segmentation_Quarantine').rglob('foreign-producer.nii.gz'))
+    assert not any((root/entry['mask']).exists() for entry in manifest['structures'])
 
 def _numbered_manifest_layout(source,root):
     manifest=export(source,root)

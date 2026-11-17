@@ -1,0 +1,120 @@
+def _compatible_main_measured_code(
+    payload: Mapping[str, Any], current: Mapping[str, Any], *, course_dir: Optional[Path] = None,
+    custom_structures_config: Optional[Path] = None,
+) -> bool:
+    """Admit an unchanged main receipt only for this tested compatibility release.
+
+    Keep the original code attribution. The allowlist binds both complete code
+    identities; an edited producer cannot inherit the compatibility exception.
+    """
+    try:
+        certificate = json.loads((Path(__file__).parent / "robustness_main_compatibility.json").read_text())
+    except (OSError, ValueError):
+        return False
+    config = payload.get("effective_configuration", {}).get("robustness", {})
+    eligible = (
+        payload.get("measurement_outcome") == ROBUSTNESS_MEASURED_OUTCOME
+        and config.get("target_selection", "patterns") == "patterns"
+        and not config.get("perturbation", {}).get("exclude_structures")
+        and payload.get("code_identity", {}).get("sources_sha256") == certificate.get("main_sources_sha256")
+        and current.get("sources_sha256") == certificate.get("compatible_sources_sha256")
+        and "dicom_ct_rtstruct" in certificate.get("course_classes", [])
+    )
+    if not eligible or course_dir is None:
+        return False
+    try:
+        contract = load_course_contract(course_dir)
+        # Main did not bind RTSTRUCT sources on NIfTI CT, or voxel sources on
+        # fallback courses. Neither class can inherit this exception.
+        if contract.planning_ct_dir is None:
+            return False
+        ct_dir = Path(contract.planning_ct_dir)
+        if (not str(contract.planning_ct.get("series_instance_uid") or "").strip()
+                or not ct_dir.is_dir() or not any(path.is_file() for path in ct_dir.iterdir())):
+            return False
+        output = payload["measured_output"]
+        table = course_dir / output["path"]
+        if table.name != payload["output_path"] or _file_sha256(table) != output["sha256"]:
+            return False
+        frame = pd.read_parquet(table, columns=["rasterizer_backend", "segmentation_source", "roi_original_name"])
+        if frame.empty or not frame.rasterizer_backend.eq("rt-utils/cv2.fillPoly").all():
+            return False
+        enumeration = _evaluated_robustness_sources(
+            course_dir, contract=contract, configuration=payload["effective_configuration"],
+            custom_structures_config=custom_structures_config,
+        )
+        bindings = enumeration["source_bindings"]
+        voxel_bindings = enumeration["voxel_source_bindings"]
+
+        def identities(entries):
+            return sorted((entry["segmentation_source"], entry["source_path"], entry["sha256"])
+                          for entry in entries)
+
+        if identities(bindings) != identities(payload["source_bindings"]):
+            return False
+        if ("voxel_source_bindings" in payload
+                and identities(voxel_bindings) != identities(payload["voxel_source_bindings"])):
+            return False
+        # A newly discovered source, including malformed DICOM, needs a new
+        # producer run. Parse only after equality with the recorded bytes.
+        catalog, _ = _load_main_ct_identity_catalog(
+            course_dir, expected_series_uid=str(contract.planning_ct["series_instance_uid"]),
+        )
+        inventory = []
+        for binding in bindings:
+            if binding["segmentation_source"] == "Custom":
+                from .radiomics_ct_contract import load_custom_structure_provenance
+
+                recorded = next(b for b in payload["source_bindings"] if b["segmentation_source"] == "Custom")
+                configured = recorded.get("custom_structures_config")
+                custom_cfg = Path(custom_structures_config) if custom_structures_config else (
+                    Path(configured["path"]) if isinstance(configured, dict) else None)
+                if isinstance(configured, dict) and (
+                    _custom_configuration_digest(Path(configured["path"]), configured) != configured["sha256"]
+                    or (custom_cfg and _custom_configuration_digest(custom_cfg, configured) != configured["sha256"])
+                ):
+                    return False
+                provenance = load_custom_structure_provenance(custom_cfg)
+                if configured and provenance != recorded.get("custom_provenance"):
+                    return False
+                binding["custom_provenance"] = provenance
+                # Main's unconfigured classification is safe to reuse only
+                # where the active classifier agrees with main's publication.
+                for roi in _robustness_target_inventory(binding):
+                    classification = classify_robustness_roi(
+                        "Custom", roi["roi_name"], custom_provenance=provenance,
+                        has_contours=roi["has_contours"], volumetric=roi["volumetric"],
+                    )
+                    publishable = classification["in_publication_base"] and classification["volumetric"]
+                    published = ("Custom", roi["roi_name"]) in catalog
+                    if publishable != published:
+                        return False
+                    if not publishable and ((frame.segmentation_source == "Custom")
+                                            & (frame.roi_original_name == roi["roi_name"])).any():
+                        return False
+                scoped = _scope_custom_robustness_binding(
+                    binding, inventory, (name for label, name in catalog if label == "Custom"),
+                )
+                if any(row.get("segmentation_source") == "Custom"
+                       and row.get("roi_name") not in scoped["roi_names"] for row in payload.get("rows", [])):
+                    return False
+                binding = scoped
+            inventory.extend(_robustness_target_inventory(binding))
+        voxel_inventory = _robustness_voxel_target_inventory(voxel_bindings, configuration=payload["effective_configuration"])
+        requested = config.get("perturbation", {}).get("apply_to_structures", [])
+        # Main omitted voxel-only model inventories. Admit this omission only
+        # when no file could supply a selected measurement or a detected target.
+        if "voxel_source_bindings" not in payload and any(
+            roi["volumetric"] and (roi["detector_rules"] or robustness_selection_matches(
+                roi["roi_name"], requested, segmentation_source=roi["segmentation_source"],
+            )) for roi in voxel_inventory
+        ):
+            return False
+        inventory.extend(voxel_inventory)
+        return not any(roi["detector_rules"] and not robustness_selection_matches(
+            roi["roi_name"], requested, interpreted_types=roi["interpreted_types"],
+            segmentation_source=roi["segmentation_source"],
+        ) for roi in inventory)
+    except Exception:
+        # An unsupported or changed course is stale work, not a failed run.
+        return False

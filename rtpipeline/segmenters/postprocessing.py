@@ -117,7 +117,7 @@ def _resolve_reference_paths(reference_mask_path: str | Path) -> list[Path]:
         requested = Path(pattern)
         label_paths = []
         manifest_paths = sorted(glob(str(requested.parent / 'metadata.json')))
-        numbered_pattern = 'roi-' in requested.name and '__' in requested.name
+        numbered_pattern = ('roi-' in requested.name and '__' in requested.name) or '__roi-' in requested.name
         for manifest_path in manifest_paths:
             manifest_path = Path(manifest_path)
             metadata = json.loads(manifest_path.read_text())

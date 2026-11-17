@@ -4437,7 +4437,8 @@ def _original_masks_reusable(
         except ValueError as exc:
             return False, str(exc)
         return True, "unchanged inputs retain the grid rejection record"
-    if manifest.get("schema") != ORIGINAL_SEGMENTATION_SCHEMA or manifest.get("geometry_status") != "exact_physical_mapping":
+    from .original_segmentation import ORIGINAL_SEGMENTATION_SCHEMAS
+    if manifest.get("schema") not in ORIGINAL_SEGMENTATION_SCHEMAS or manifest.get("geometry_status") != "exact_physical_mapping":
         return False, "original export lacks verified physical geometry"
     structures = manifest.get("structures")
     if not isinstance(structures, list) or not structures:
@@ -4478,20 +4479,16 @@ def _export_original_segmentation_from_paths(
 ) -> Optional[dict]:
     seg_root = segmentation_original_dir
     from .original_segmentation import (quarantine_stale_original_exports, quarantine_original_export,
-                                        is_rtpipeline_original_export)
+                                        original_roi_filenames, NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA)
     quarantine_stale_original_exports(seg_root)
     if not rs_path or not rs_path.exists() or not primary_nifti or not primary_nifti.exists():
         return None
     base_name = _strip_nifti_base(primary_nifti)
     target_root = seg_root / base_name
-    if (target_root.exists() and any(target_root.iterdir())
-            and not is_rtpipeline_original_export(target_root)):
-        raise ValueError(f'ORIGINAL_EXPORT_NOT_OWNED: {target_root}')
     # Each producer owns this root (all-series uses a separate root per CT).
     # Even a byte-current old stem is superseded by the selected NIfTI stem.
     for sibling in sorted(seg_root.iterdir()) if seg_root.exists() else []:
-        if (sibling.is_dir() and sibling != target_root
-                and is_rtpipeline_original_export(sibling)):
+        if sibling.is_dir() and sibling != target_root:
             quarantine_original_export(sibling, "superseded NIfTI export stem")
     ensure_dir(target_root)
     manifest_path = target_root / "metadata.json"
@@ -4544,10 +4541,13 @@ def _export_original_segmentation_from_paths(
         return None
 
     from .rtstruct_geometry import rtstruct_roi_entries
-    roi_entries = rtstruct_roi_entries(builder)
+    if hasattr(getattr(builder, "ds", None), "StructureSetROISequence"):
+        roi_entries = rtstruct_roi_entries(builder)
+    else:
+        roi_entries = [(None, name) for name in builder.get_roi_names()]
+    filenames, colliding = original_roi_filenames(roi_entries)
     manifest = {
-        "schema": ORIGINAL_SEGMENTATION_SCHEMA,
-        "producer": "rtpipeline",
+        "schema": NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA if colliding else ORIGINAL_SEGMENTATION_SCHEMA,
         "geometry_status": "exact_physical_mapping",
         "opencv_runtime": provenance["opencv_runtime"],
         "model": "manual",
@@ -4559,16 +4559,31 @@ def _export_original_segmentation_from_paths(
     if nifti_sidecar_path is not None:
         manifest['source_nifti_sidecar'] = str(nifti_sidecar_path)
 
+    omissions = []
+    omission_path = log_root / "metadata" / "original_segmentation_omissions" / f"{base_name}.json"
+    omission_path.unlink(missing_ok=True)
+
     def record_skip(roi_number, roi_name, reason_code):
-        manifest.setdefault("skipped_structures", []).append({
+        row = {
             "roi_number": roi_number, "roi_name": roi_name,
             "reason_code": reason_code,
-        })
+        }
+        if colliding:
+            manifest.setdefault("skipped_structures", []).append(row)
+        else:
+            # Preserve released manifest bytes while retaining each omission.
+            omissions.append(row)
+            omission_path.parent.mkdir(parents=True, exist_ok=True)
+            omission_path.write_text(json.dumps({
+                "source_rtstruct_sha256": provenance["source_rtstruct_sha256"],
+                "skipped_structures": omissions,
+            }, indent=2), encoding="utf-8")
 
-    for roi_number, roi_name in roi_entries:
+    for index, (roi_number, roi_name) in enumerate(roi_entries):
         try:
             from .rtstruct_geometry import rtstruct_roi_mask
-            mask = rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
+            mask = (rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
+                    if roi_number is not None else rtstruct_roi_mask(builder, roi_name))
         except Exception:
             mask = None
         if mask is None:
@@ -4591,8 +4606,9 @@ def _export_original_segmentation_from_paths(
                 json.dumps(provenance, indent=2), encoding="utf-8")
             logger.warning("original_segmentation event=geometry_rejected: %s", exc)
             return None
-        safe = f'roi-{roi_number}__{_sanitize_name(roi_name, "ROI")[:180]}'
-        out_path = target_root / f"{safe}.nii.gz"
+        out_path = target_root / filenames[index]
+        if out_path.exists():
+            raise ValueError(f"RTSTRUCT_AMBIGUOUS_ROI_NAME: refusing to replace {out_path}")
         try:
             sitk.WriteImage(sitk_mask, str(out_path), useCompression=True)
         except Exception as exc:
@@ -4602,7 +4618,7 @@ def _export_original_segmentation_from_paths(
         manifest["structures"].append(
             {
                 "roi_name": roi_name,
-                "roi_number": roi_number,
+                **({"roi_number": roi_number} if index in colliding else {}),
                 "mask": str(out_path.relative_to(seg_root)),
                 "sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
                 "size_bytes": out_path.stat().st_size,

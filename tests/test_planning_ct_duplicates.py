@@ -170,6 +170,7 @@ def test_mismatched_nifti_rederived_and_old_masks_stay_stale(tmp_path, dcm2niix,
             'source_nifti': str(contract.planning_ct_nifti),
             'source_rtstruct': str(contract.authoritative_rtstruct_path),
             'structures': [{'mask': 'rtstruct/mask.nii.gz',
+                    'roi_name': str(pydicom.dcmread(contract.authoritative_rtstruct_path, stop_before_pixels=True).StructureSetROISequence[0].ROIName),
                 'sha256': __import__('hashlib').sha256((masks/'mask.nii.gz').read_bytes()).hexdigest(),
                 'size_bytes': (masks/'mask.nii.gz').stat().st_size}]}))
         require_current_original_mask(masks / 'mask.nii.gz')

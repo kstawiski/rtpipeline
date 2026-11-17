@@ -463,5 +463,10 @@ def test_every_declared_taxonomy_code_is_registered():
             "REQUIRED_ROI_AMBIGUOUS_MATCH",
             "ROI_EXTRACTION_FAILED",
             "RTSTRUCT_NO_NAMED_ROIS",
+            "RTSTRUCT_AMBIGUOUS_ROI_NAME",
+            "ROI_MASK_EMPTY",
+            "ROI_MASK_READ_FAILED",
+            "ROI_MASK_WRITE_FAILED",
+            "CUSTOM_SOURCE_AMBIGUOUS_NAME",
         }
     )

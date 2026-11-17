@@ -141,9 +141,23 @@ def test_resolved_roi_withdraws_only_its_own_row(monkeypatch):
 
 
 def test_robustness_opts_in_for_the_source_rtstruct():
+    import ast
     import inspect
     from rtpipeline import radiomics_robustness
-    source = inspect.getsource(radiomics_robustness)
-    call = source[source.index('source_masks = _rtstruct_masks('):]
-    call = call[:call.index('_record_source_dispositions(source_binding, source_sink)')]
-    assert 'quantized_scope_rescue=True' in call and 'scoped_reader=True' in call
+    tree = ast.parse(inspect.getsource(radiomics_robustness))
+    assignment = next(node for node in ast.walk(tree)
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'source_masks'
+                              for target in node.targets)
+                      and isinstance(node.value, ast.Call)
+                      and isinstance(node.value.func, ast.Name)
+                      and node.value.func.id == '_read_bound_rtstruct_masks')
+    options = {item.arg: item.value for item in assignment.value.keywords}
+    for name in ('quantized_scope_rescue', 'scoped_reader'):
+        assert isinstance(options[name], ast.Constant) and options[name].value is True
+    wrapper = next(node for node in ast.walk(tree)
+                   if isinstance(node, ast.FunctionDef) and node.name == '_read_bound_rtstruct_masks')
+    forwarded = next(node.value for node in ast.walk(wrapper)
+                     if isinstance(node, ast.Return) and isinstance(node.value, ast.Call)
+                     and isinstance(node.value.func, ast.Name) and node.value.func.id == '_rtstruct_masks')
+    assert ast.dump(forwarded) == ast.dump(ast.parse('_rtstruct_masks(*args, **kwargs)', mode='eval').body)

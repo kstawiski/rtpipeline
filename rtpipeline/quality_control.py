@@ -88,7 +88,10 @@ class QualityControlError(Exception):
 
 def _qc_inputs(course_dir):
     from .artifact_progress import inventory
+    from .original_segmentation import original_export_entries, require_current_original_export
     course_dir = Path(course_dir)
+    for entry in original_export_entries(course_dir / "Segmentation_Original"):
+        require_current_original_export(entry)
     paths = set()
     for name in ("DICOM", "NIFTI", "Segmentation_TotalSegmentator", "Segmentation_CustomModels", "Segmentation_Original"):
         paths.update(p for p in (course_dir / name).rglob("*")
@@ -105,7 +108,7 @@ def _qc_item(course_dir, name, settings, inputs=None, environment=None, *, artif
     from .artifact_progress import ArtifactItem, code_files
     return ArtifactItem(Path(course_dir) / ".qc-progress/items", name, settings,
         _qc_inputs(course_dir) if inputs is None else inputs, base=artifact_base or course_dir,
-        code=code_files("quality_control.py", "rtstruct_geometry.py", "course_contract.py"), environment=environment)
+        code=code_files("quality_control.py", "rtstruct_geometry.py", "course_contract.py", "original_segmentation.py"), environment=environment)
 
 
 def validate_qc_publication(course_dir, *, verify_environment=True):

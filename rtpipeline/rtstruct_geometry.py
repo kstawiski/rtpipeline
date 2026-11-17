@@ -648,11 +648,12 @@ def rtstruct_roi_entries(builder):
     for roi in sequence:
         try:
             number = int(roi.ROINumber)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ROIIdentityError('RTSTRUCT_INVALID_ROI_NUMBER') from exc
-        if number in seen:
+        except (AttributeError, TypeError, ValueError):
+            number = None
+        if number is not None and number in seen:
             raise ROIIdentityError(f'RTSTRUCT_DUPLICATE_ROI_NUMBER: {number}')
-        seen.add(number)
+        if number is not None:
+            seen.add(number)
         entries.append((number, str(getattr(roi, 'ROIName', ''))))
     return entries
 
@@ -660,7 +661,9 @@ def rtstruct_roi_entries(builder):
 def ambiguous_roi_names(dataset):
     """Declarations colliding under the stripped-name inventory convention."""
     groups = {}
-    for number, name in rtstruct_roi_entries(dataset):
+    for roi in getattr(dataset, 'StructureSetROISequence', []) or []:
+        name = str(getattr(roi, 'ROIName', ''))
+        number = getattr(roi, 'ROINumber', None)
         groups.setdefault(name.strip(), []).append((number, name))
     return {name: entries for name, entries in groups.items() if len(entries) > 1}
 
@@ -688,7 +691,12 @@ def rtstruct_roi_mask(builder, name=None, *, roi_number=None):
         if roi_number is not None:
             raise ROIIdentityError('RTSTRUCT_ROI_IDENTITY_UNAVAILABLE')
         return builder.get_roi_mask_by_name(name)
-    entries = dict(rtstruct_roi_entries(builder))
+    declarations = rtstruct_roi_entries(builder)
+    if roi_number is None and any(number is None and stored == name for number, stored in declarations):
+        if sum(stored == name for _, stored in declarations) != 1:
+            raise ROIIdentityError(f'RTSTRUCT_AMBIGUOUS_ROI_NAME: {name!r}')
+        return builder.get_roi_mask_by_name(name)
+    entries = dict(declarations)
     number = rtstruct_roi_number(builder, name) if roi_number is None else int(roi_number)
     if number not in entries:
         raise ROIIdentityError(f'RTSTRUCT_ROI_NUMBER_NOT_FOUND: {number}')

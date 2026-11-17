@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from legacy_source import legacy_show
+from roi_identity_source_pins import assert_source_bytes
 
 from rtpipeline import custom_structures_rtstruct as custom
 from rtpipeline import dvh, radiomics_robustness as rr, stage_completion as sc
@@ -21,7 +22,7 @@ def test_rs_custom_generator_byte_identity_with_4ad1c53(monkeypatch):
         original = legacy_show('4ad1c53', f'rtpipeline/{relative}', cwd=root)
         current = (root / "rtpipeline" / relative).read_bytes()
         if relative not in {"auto_rtstruct.py", "custom_structures_rtstruct.py"}:
-            assert current == original, relative
+            assert_source_bytes(relative, current, original)
         sources.append({"path": relative, "sha256": hashlib.sha256(current).hexdigest()})
     monkeypatch.setattr(custom, "_RS_CUSTOM_GENERATOR_RESOLVED", False)
     monkeypatch.setattr(custom, "_RS_CUSTOM_GENERATOR_SHA256", None)

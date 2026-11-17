@@ -16,6 +16,7 @@ import pytest
 import SimpleITK as sitk
 
 from legacy_source import legacy_show, legacy_code_sources
+from roi_identity_source_pins import assert_source_bytes
 
 from rtpipeline import radiomics as rm, radiomics_robustness as rr
 from rtpipeline import robustness_completion as rc
@@ -45,7 +46,8 @@ def main_producer(tmp_path, monkeypatch):
             # Preserve byte checks on unchanged historical helpers. Phase B/C
             # changed the listed producers to bind durable item publications;
             # their scientific equivalence has dedicated production proofs.
-            assert (Path(rr.__file__).parent / relative).read_bytes() == (directory / relative).read_bytes(), relative
+            assert_source_bytes(relative, (Path(rr.__file__).parent / relative).read_bytes(),
+                                (directory / relative).read_bytes())
     modules = []
     for filename in ("radiomics_robustness", "robustness_completion"):
         name = f"rtpipeline._s11e_main_{filename}"
@@ -539,3 +541,40 @@ def test_new_7_main_without_custom_provenance_is_refused(tmp_path, monkeypatch, 
     assert "Custom" not in set(new[0].segmentation_source)
     print({"layout": "custom_without_provenance", "main_rows": len(old[0]), "current_rows": len(new[0]),
            "comparison": "main extracted a configured planning helper without provenance", "reuse": False})
+
+
+@pytest.mark.parametrize('collision', ['duplicate_name', 'whitespace_name', 'duplicate_number'])
+def test_identity_certificate_refuses_ambiguous_historical_sources(tmp_path, monkeypatch, main_producer, collision):
+    course, config, contract, _ = _layout(tmp_path, monkeypatch)
+    main, completion = main_producer
+    for name in ('load_course_contract', '_load_main_ct_identity_catalog', 'extract_features_for_masks'):
+        monkeypatch.setattr(main, name, getattr(rr, name))
+    cfg = main.RobustnessConfig(enabled=True)
+    cfg.perturbation.apply_to_structures = ['*']
+    before = _produce(main, completion, course, config, rob_config=cfg)
+    payload = before[1]
+    current = rr._current_robustness_code_identity()
+    assert rr._compatible_main_measured_code(payload, current, course_dir=course)
+    fixture = Path(__file__).with_name('ws554_legacy_certificate_fixture.py.txt').read_bytes()
+    assert hashlib.sha256(fixture).hexdigest() == '8216e67aa64cfab790ad535e3c2cac979540549862440eba540c8d1d92818035'
+    namespace = dict(vars(rr))
+    exec(compile(fixture, 'ws554_legacy_certificate_fixture.py.txt', 'exec'), namespace)
+    historical = namespace['_compatible_main_measured_code']
+    path = course / 'RS.dcm'
+    ds = pydicom.dcmread(path)
+    declaration = copy.deepcopy(ds.StructureSetROISequence[0])
+    declaration.ROINumber = 1 if collision == 'duplicate_number' else 2
+    declaration.ROIName = ('PTV_SECOND' if collision == 'duplicate_number' else
+                           ' PTV' if collision == 'whitespace_name' else 'PTV')
+    ds.StructureSetROISequence.append(declaration)
+    contour = copy.deepcopy(ds.ROIContourSequence[0])
+    contour.ReferencedROINumber = declaration.ROINumber
+    ds.ROIContourSequence.append(contour)
+    ds.save_as(path)
+    # Model the old producer's source binding to this ambiguous source. Keep
+    # its measured table and every other certificate precondition unchanged.
+    enumeration = rr._evaluated_robustness_sources(
+        course, contract=contract, configuration=payload['effective_configuration'])
+    payload['source_bindings'] = enumeration['source_bindings']
+    assert historical(payload, current, course_dir=course)
+    assert not rr._compatible_main_measured_code(payload, current, course_dir=course)

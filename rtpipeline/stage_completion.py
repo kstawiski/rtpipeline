@@ -439,14 +439,11 @@ def _stale_original_exports(course_dir: Path, definition: StageDefinition) -> li
     """Record retained stale exports without certifying them as organize outputs."""
     if definition.name != "organize":
         return []
-    from .original_segmentation import (original_export_entries, require_current_original_export,
-                                        is_rtpipeline_original_export)
+    from .original_segmentation import original_export_entries, require_current_original_export
 
     root = Path(course_dir)
     stale = []
     for entry in original_export_entries(root / "Segmentation_Original"):
-        if not is_rtpipeline_original_export(entry):
-            continue
         try:
             if not entry.is_dir():
                 raise ValueError("loose file outside an export directory")
@@ -539,20 +536,15 @@ def _validate_stage_specific_outcome(
         from .quality_control import validate_qc_publication
         validate_qc_publication(course_dir, verify_environment=False)
     if definition.name == "segmentation" and status == "ok":
-        from .original_segmentation import (original_export_entries, require_current_original_export,
-                                        is_rtpipeline_original_export)
+        from .original_segmentation import original_export_entries, require_current_original_export
 
         for original in Path(course_dir).rglob("Segmentation_Original"):
             # Validate per export: shared sources once, then every declared mask.
             for entry in original_export_entries(original):
-                if not is_rtpipeline_original_export(entry):
-                    continue
                 if not entry.is_dir():
                     raise ValueError("Original segmentation is stale: loose file outside an export directory")
                 require_current_original_export(entry)
             for path in original.rglob("metadata.json"):
-                if not is_rtpipeline_original_export(path.parent):
-                    continue
                 metadata = json.loads(path.read_text())
                 if metadata.get("geometry_status") == "MASK_GRID_NOT_EQUIVALENT":
                     raise ValueError("Original segmentation geometry was rejected")

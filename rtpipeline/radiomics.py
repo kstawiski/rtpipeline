@@ -1272,7 +1272,10 @@ def _rtstruct_masks(
 
     if Path(rs_path).is_file():
         from .rtstruct_geometry import ambiguous_roi_names
-        source_dataset = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
+        try:
+            source_dataset = pydicom.dcmread(str(rs_path), stop_before_pixels=True)
+        except (OSError, pydicom.errors.InvalidDicomError):
+            source_dataset = None  # Preserve the reader's governed unreadable-source outcome.
         ambiguous = ambiguous_roi_names(source_dataset)
         if ambiguous:
             detail = f"RTSTRUCT_AMBIGUOUS_ROI_NAME: {sorted(ambiguous)!r} in {rs_path}"
