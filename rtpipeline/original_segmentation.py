@@ -106,6 +106,10 @@ def _declared_export_masks(directory: Path, metadata: dict) -> dict[Path, dict]:
 def _validate_roi_identity(metadata, source_rs):
     """Bind numbers to stored names; verify legacy names across both inventories."""
     entries = metadata.get("structures", [])
+    if not entries:
+        # A manifest that declares no masks (for example a geometry rejection)
+        # binds no ROI identity, so it needs no source read.
+        return
     import pydicom
     from .rtstruct_geometry import rtstruct_roi_entries
     try:

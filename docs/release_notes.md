@@ -1,5 +1,9 @@
 # Release notes
 
+## Unreleased
+
+No changes since 3.0.4.
+
 ## 3.0.4 — 2026-11-17
 
 Cite this release by version and by the DOI archived for the `v3.0.4` tag (see
