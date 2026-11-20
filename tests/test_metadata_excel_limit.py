@@ -6,11 +6,15 @@ is monkeypatched to a few rows so no large workbook is written.
 from __future__ import annotations
 
 import datetime
+import importlib
 import importlib.util
+import io
 import json
 import logging
 import sys
 import types
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -335,6 +339,25 @@ class _FrozenDatetime(datetime.datetime):
     def now(cls, tz=None):
         return cls(2026, 1, 1, 12, 0, 0, tzinfo=tz)
 
+    @classmethod
+    def utcnow(cls):
+        return cls(2026, 1, 1, 12, 0, 0)
+
+
+def _freeze_module_datetime(monkeypatch, module) -> None:
+    current = getattr(module, "datetime", None)
+    if isinstance(current, types.ModuleType):
+        frozen = types.SimpleNamespace(
+            date=datetime.date,
+            datetime=_FrozenDatetime,
+            time=datetime.time,
+            timedelta=datetime.timedelta,
+            timezone=datetime.timezone,
+        )
+        monkeypatch.setattr(module, "datetime", frozen)
+    elif isinstance(current, type) and issubclass(current, datetime.datetime):
+        monkeypatch.setattr(module, "datetime", _FrozenDatetime)
+
 
 def _freeze_workbook_clock(monkeypatch) -> None:
     """Workbook writers stamp document properties with the current time."""
@@ -344,13 +367,24 @@ def _freeze_workbook_clock(monkeypatch) -> None:
     frozen = types.SimpleNamespace(datetime=_FrozenDatetime, timezone=datetime.timezone)
     monkeypatch.setattr(openpyxl_core, "datetime", frozen)
     monkeypatch.setattr(openpyxl_writer, "datetime", frozen)
-    try:
-        import xlsxwriter.core as xlsxwriter_core
-        import xlsxwriter.workbook as xlsxwriter_workbook
-    except ImportError:
-        return
-    monkeypatch.setattr(xlsxwriter_core, "datetime", _FrozenDatetime)
-    monkeypatch.setattr(xlsxwriter_workbook, "datetime", _FrozenDatetime)
+    # Only freeze xlsxwriter modules that import datetime; newer xlsxwriter
+    # releases dropped datetime from xlsxwriter.workbook while core still stamps core.xml.
+    for module_name in ("xlsxwriter.core", "xlsxwriter.workbook", "xlsxwriter.app", "xlsxwriter.packager"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        _freeze_module_datetime(monkeypatch, module)
+
+
+def _assert_frozen_workbook_properties(raw_bytes: bytes, label: str) -> None:
+    with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        core_xml = zf.read("docProps/core.xml").decode("utf-8")
+    root = ET.fromstring(core_xml)
+    created = root.findtext("{http://purl.org/dc/terms/}created")
+    modified = root.findtext("{http://purl.org/dc/terms/}modified")
+    assert created == "2026-01-01T12:00:00Z", (label, created, core_xml)
+    assert modified == "2026-01-01T12:00:00Z", (label, modified, core_xml)
 
 
 def _baseline_meta(monkeypatch):
@@ -406,6 +440,10 @@ def test_normal_size_export_is_byte_identical_to_baseline(tmp_path, monkeypatch)
     assert sorted(current_files) == sorted(baseline_files)
     assert "_CACHE/metadata_export.json" in current_files
     assert len([name for name in current_files if name.startswith("Data/")]) == 6
+    xlsx_files = [name for name in current_files if name.endswith(".xlsx")]
+    assert len(xlsx_files) == 6
+    for name in xlsx_files:
+        _assert_frozen_workbook_properties(current_files[name], name)
     for name in baseline_files:
         if name == "_CACHE/metadata_export.json":
             old, new = json.loads(baseline_files[name]), json.loads(current_files[name])
@@ -419,6 +457,34 @@ def test_normal_size_export_is_byte_identical_to_baseline(tmp_path, monkeypatch)
             assert meta._load_cached_outputs(cfg, meta._export_dir(cfg.output_root), identity) is not None
         else:
             assert current_files[name] == baseline_files[name], name
+
+
+def test_freeze_workbook_clock_handles_xlsxwriter_without_workbook_datetime(tmp_path, monkeypatch):
+    import pandas as pd
+    import xlsxwriter.core as xlsxwriter_core
+    import xlsxwriter.workbook as xlsxwriter_workbook
+
+    # Export with the installed xlsxwriter and verify docProps/core.xml gets frozen.
+    with monkeypatch.context() as m:
+        _freeze_workbook_clock(m)
+        workbook_path = tmp_path / "frozen.xlsx"
+        pd.DataFrame({"when": [datetime.datetime(2025, 5, 6, 7, 8, 9)]}).to_excel(
+            workbook_path, index=False, engine="xlsxwriter"
+        )
+        _assert_frozen_workbook_properties(workbook_path.read_bytes(), str(workbook_path))
+
+    # Simulate container xlsxwriter (3.3.0+) where xlsxwriter.workbook has no datetime.
+    with monkeypatch.context() as m:
+        m.delattr(xlsxwriter_workbook, "datetime", raising=False)
+        _freeze_workbook_clock(m)
+        assert not hasattr(xlsxwriter_workbook, "datetime")
+        assert xlsxwriter_core.datetime is _FrozenDatetime
+
+        m.setattr(xlsxwriter_core, "datetime", datetime)
+        _freeze_workbook_clock(m)
+        assert xlsxwriter_core.datetime.datetime.now(datetime.timezone.utc) == _FrozenDatetime(
+            2026, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc
+        )
 
 
 # --- aggregation copy into _RESULTS ---------------------------------------------
