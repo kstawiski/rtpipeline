@@ -78,6 +78,8 @@ def _ensure_dir_helper(snakefile_source: str, root_dir: Path):
 
 
 def _materialize_helper(snakefile_source: str, tmp_path: Path, config: dict):
+    radiomics = config.get("radiomics", {})
+    params = radiomics.get("params_file")
     return _load_helper(
         snakefile_source,
         "_materialize_effective_config",
@@ -87,6 +89,8 @@ def _materialize_helper(snakefile_source: str, tmp_path: Path, config: dict):
             "sys": sys,
             "ROOT_DIR": tmp_path,
             "LOGS_DIR": tmp_path / "logs",
+            "RADIOMICS_CONFIG": radiomics,
+            "RADIOMICS_PARAMS": str((tmp_path / params).resolve()) if params else "",
             "config": config,
         },
     )
@@ -296,6 +300,17 @@ def test_materialize_effective_config_writes_merged_yaml(
     ).resolve()
     loaded = yaml.safe_load(Path(target).read_text(encoding="utf-8"))
     assert loaded == _merged_config()
+
+
+def test_materialized_config_keeps_the_dag_ct_parameter_path(tmp_path, snakefile_source):
+    config = {"radiomics": {"params_file": "params/ct.yaml", "enabled": True}}
+    path = _materialize_helper(snakefile_source, tmp_path, config)()
+    active = yaml.safe_load(path.read_text())
+
+    assert active["radiomics"] == {
+        "params_file": str(tmp_path / "params/ct.yaml"), "enabled": True,
+    }
+    assert config["radiomics"]["params_file"] == "params/ct.yaml"
 
 
 def test_materialize_effective_config_missing_yaml_raises_without_source_fallback(

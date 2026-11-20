@@ -334,7 +334,10 @@ def _duplicate(registry, key, path, repeated):
     registry[key] = path
 
 
-def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, custom_structures_config=None):
+def aggregate_robustness_results(
+    input_parquets, output_excel, rob_config, *,
+    custom_structures_config=None, active_ct_parameters_path: Path | None = None,
+):
     """Aggregate per-course robustness results into a cohort-level Excel summary.
 
     This exploratory package summary reports fixed-grid perturbation stability.
@@ -351,7 +354,10 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, cu
     with TemporaryDirectory(prefix=".robustness-aggregate-", dir=output_excel.parent) as directory:
         staged = _StagedValues(directory, output_excel.parent / ("." + output_excel.stem + "-progress"))
         for path in frozen_paths:
-            entry = rr._admit_robustness_aggregation_input(path, rob_config, custom_structures_config=custom_structures_config)
+            entry = rr._admit_robustness_aggregation_input(
+                path, rob_config, custom_structures_config=custom_structures_config,
+                active_ct_parameters_path=active_ct_parameters_path,
+            )
             for registry, key, repeated in (
                 (seen_paths, str(entry.path.resolve()), "input path"),
                 (seen_courses, (entry.patient_id, entry.course_id), "course identity"),
@@ -365,8 +371,10 @@ def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, cu
             if tuple(map(Path, input_parquets)) != frozen_paths:
                 raise ValueError("robustness aggregate input membership changed")
             for expected in snapshots:
-                fresh = rr._admit_robustness_aggregation_input(expected.path, rob_config,
-                    custom_structures_config=custom_structures_config)
+                fresh = rr._admit_robustness_aggregation_input(
+                    expected.path, rob_config, custom_structures_config=custom_structures_config,
+                    active_ct_parameters_path=active_ct_parameters_path,
+                )
                 for field in ("path", "course_dir", "patient_id", "course_id", "run_identifier",
                               "table_sha256", "source_dispositions"):
                     if getattr(fresh, field) != getattr(expected, field):
@@ -381,6 +389,7 @@ def aggregate_robustness_cohort(
     campaign_mode: bool = False, campaign_require_all_courses: bool = False,
     campaign_min_completion_fraction: float = 0.5,
     custom_structures_config: Path | None = None,
+    active_ct_parameters_path: Path | None = None,
 ):
     """Account for exact manifest membership with one live admitted frame.
 
@@ -403,6 +412,7 @@ def aggregate_robustness_cohort(
                 course.course_dir, patient_id=course.patient_id,
                 course_id=course.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
                 custom_structures_config=custom_structures_config,
+                active_ct_parameters_path=active_ct_parameters_path,
             )
             if isinstance(course, rr.RobustnessCohortCourse):
                 _check_snapshot(course, fresh, check_frame=True)
@@ -426,6 +436,7 @@ def aggregate_robustness_cohort(
                     snapshot.course_dir, patient_id=snapshot.patient_id,
                     course_id=snapshot.course_id, rob_config=rob_config, campaign_mode=campaign_mode,
                     custom_structures_config=custom_structures_config,
+                    active_ct_parameters_path=active_ct_parameters_path,
                 )
                 _check_snapshot(snapshot, fresh)
                 del fresh

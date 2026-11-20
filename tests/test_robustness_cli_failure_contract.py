@@ -853,7 +853,8 @@ def test_a_valid_configuration_still_routes_manifest_aggregation(tmp_path, monke
 
     (admitted, out, cfg, cohort, policy), = calls
     assert policy == {"campaign_mode": False, "campaign_require_all_courses": False, "campaign_min_completion_fraction": 0.5,
-                      "custom_structures_config": Path(cli.__file__).with_name("custom_structures_pelvic.yaml")}
+                      "custom_structures_config": Path(cli.__file__).with_name("custom_structures_pelvic.yaml"),
+                      "active_ct_parameters_path": Path(cli.__file__).with_name("radiomics_params.yaml")}
     assert out == output.resolve()
     assert cohort is cohort_metadata
     assert cfg.enabled is True

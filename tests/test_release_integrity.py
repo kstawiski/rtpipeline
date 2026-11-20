@@ -300,6 +300,7 @@ def _publish_course_tables(
                 code_identity=robustness._current_robustness_code_identity(),
                 output_path=table,
                 measured_output=table,
+                extraction_parameters_binding=robustness._compute_extraction_parameters_binding(None),
             )
             tables.append(table)
     return tables

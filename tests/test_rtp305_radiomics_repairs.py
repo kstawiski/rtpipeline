@@ -521,7 +521,8 @@ def test_c3_unavailable_contour_after_16_attempts_gives_disposition_not_runtime_
 # ---------------------------------------------------------------------------
 
 
-def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypatch):
+@pytest.mark.parametrize("switch_parameters", [False, True])
+def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypatch, switch_parameters):
     from rasterizer_test_utils import stub_synthetic_rasterizer_columns
 
     stub_synthetic_rasterizer_columns(monkeypatch)
@@ -548,11 +549,17 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
     # Write real authoritative radiomics_ct.parquet on disk
     from rtpipeline.radiomics_ct_contract import (
         _feature_schema_metadata,
+        PRIMARY_ARM,
+        configured_parameter_hash,
         disposition_rows_for_arms,
         write_ct_publication_atomic,
     )
     from rasterizer_test_utils import PINNED_RASTERIZER_ROW
 
+    custom_params = tmp_path / "custom_ct_params.yaml"
+    original_params_text = (ROOT / "rtpipeline" / "radiomics_params.yaml").read_text(encoding="utf-8")
+    custom_params.write_text(original_params_text, encoding="utf-8")
+    decision = classify_ct_roi("Manual", "PTV")
     rows = disposition_rows_for_arms(
         {
             "modality": "CT",
@@ -565,7 +572,7 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
             "mask_identity": "mask-id",
             "stable_roi_identifier": "roi-1",
         },
-        decision=classify_ct_roi("Manual", "PTV"),
+        decision=decision,
         disposition="success",
         detail="ok",
         failure_kind="none",
@@ -573,7 +580,14 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
         code_revision="rev",
         native_voxel_count=int(arr.sum()),
         required=True,
-        configured_parameter_hashes={a: f"cfg-{a}" for a in CT_EXTRACTION_ARMS},
+        configured_parameter_hashes={
+            arm: configured_parameter_hash(
+                custom_params, arm=arm,
+                window=decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None,
+                large_roi=False,
+            )
+            for arm in CT_EXTRACTION_ARMS
+        },
         effective_hashes={a: f"eff-{a}" for a in CT_EXTRACTION_ARMS},
     )
     for r in rows:
@@ -585,9 +599,6 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
     write_ct_publication_atomic(pd.DataFrame(rows), baseline_xlsx)
     done_file = course / ".radiomics_done"
     done_file.write_text(json.dumps({"status": "ok", "run": "base-run"}), encoding="utf-8")
-    custom_params = tmp_path / "custom_ct_params.yaml"
-    original_params_text = (ROOT / "rtpipeline" / "radiomics_params.yaml").read_text(encoding="utf-8")
-    custom_params.write_text(original_params_text, encoding="utf-8")
 
     monkeypatch.setattr(
         rr,
@@ -644,6 +655,17 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
             apply_to_structures=["PTV"],
         ),
     )
+    if switch_parameters:
+        different = yaml.safe_load(original_params_text)
+        different["setting"]["binWidth"] = 50
+        cfg.radiomics_params_file = tmp_path / "different_ct_params.yaml"
+        cfg.radiomics_params_file.write_text(yaml.safe_dump(different), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="configured_parameter_hash"):
+            rr.robustness_for_course(cfg, rob, course)
+        assert not (course / "radiomics_robustness_ct.parquet").exists()
+        assert not rr.robustness_source_dispositions_path(course).exists()
+        return
+
     table_path = rr.robustness_for_course(cfg, rob, course)
     sidecar = json.loads(rr.robustness_source_dispositions_path(course).read_text())
     run_id = sidecar["robustness_run_identifier"]
@@ -690,6 +712,58 @@ def test_c4_sidecar_binds_ct_pixels_and_baseline_publication(tmp_path, monkeypat
     write_ct_publication_atomic(df_base, baseline_xlsx)
     with pytest.raises((ValueError, RuntimeError)):
         rr.load_robustness_source_dispositions(course, run_identifier=run_id, rob_config=rob)
+
+
+def test_r3_measured_sidecar_requires_parameter_binding(tmp_path, monkeypatch):
+    from test_robustness_aggregation_admission import _build_cohort
+
+    cohort = _build_cohort(tmp_path, monkeypatch, patients=("P1",))
+    sidecar = rr.robustness_source_dispositions_path(cohort.courses[0])
+    payload = json.loads(sidecar.read_text())
+    assert payload.pop("extraction_parameters_binding")["sha256"]
+    sidecar.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="extraction parameters binding"):
+        rr._admit_robustness_aggregation_input(cohort.tables[0], cohort.rob)
+
+
+def test_r3_default_parameter_binding_uses_package(tmp_path):
+    logs = tmp_path / "Logs"
+    logs.mkdir()
+    stale = logs / "radiomics_params.yaml"
+    stale.write_text("setting: {binWidth: 50}")
+    config = PipelineConfig(tmp_path, tmp_path, logs)
+    packaged = ROOT / "rtpipeline" / "radiomics_params.yaml"
+
+    assert rm._get_params_file(config, "CT") == packaged
+    assert rr._compute_extraction_parameters_binding(config)["path"] == str(packaged)
+    assert stale.read_text() == "setting: {binWidth: 50}"
+
+
+@pytest.mark.parametrize("mode", ["inputs", "manifest"])
+def test_r3_aggregate_refuses_different_configured_ct_parameters(tmp_path, monkeypatch, caplog, mode):
+    from test_robustness_cohort_snapshot_contract import _fixture
+
+    fixture, manifest, _, _, courses = _fixture(tmp_path, monkeypatch, ("measured",))
+    output = tmp_path / "summary.xlsx"
+    args = ["radiomics-robustness-aggregate", "--config", str(fixture.config_path),
+            "--output", str(output)]
+    if mode == "inputs":
+        args += ["--inputs", str(courses[0].measured_output)]
+    else:
+        args += ["--manifest", str(manifest), "--output-root", str(fixture.output_root)]
+
+    config = yaml.safe_load(fixture.config_path.read_text())
+    params = fixture.config_path.parent / "active_params.yaml"
+    packaged = ROOT / "rtpipeline" / "radiomics_params.yaml"
+    params.write_bytes(packaged.read_bytes())
+    config["radiomics"] = {"params_file": params.name}
+    fixture.config_path.write_text(yaml.safe_dump(config))
+    assert cli.main(args) == 0
+
+    params.write_text("setting: {binWidth: 50}")
+    assert cli.main(args) == 1
+    assert "configured CT parameter file does not match" in caplog.text
+    assert all(not path.exists() for path in rr.robustness_cohort_output_paths(output))
 
 
 # ---------------------------------------------------------------------------

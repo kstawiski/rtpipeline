@@ -126,6 +126,11 @@ def _workflow_configfiles() -> list[Path]:
     return paths
 
 
+RADIOMICS_CONFIG = config.get("radiomics", {})
+_radiomics_params = RADIOMICS_CONFIG.get("params_file")
+RADIOMICS_PARAMS = str((ROOT_DIR / _radiomics_params).resolve()) if _radiomics_params else ""
+
+
 def _materialize_effective_config() -> Path:
     """Persist the merged Snakemake config for subprocess stages.
 
@@ -139,7 +144,15 @@ def _materialize_effective_config() -> Path:
 
         target.parent.mkdir(parents=True, exist_ok=True)
         from rtpipeline.durable_progress import final_result_writer
-        payload = yaml.safe_dump(config, sort_keys=False).encode("utf-8")
+        effective_config = config
+        if RADIOMICS_PARAMS:
+            # Stage subprocesses read this YAML beneath Logs. Keep the CT
+            # parameter path anchored to the same workflow root as the DAG.
+            effective_config = {
+                **config,
+                "radiomics": {**RADIOMICS_CONFIG, "params_file": RADIOMICS_PARAMS},
+            }
+        payload = yaml.safe_dump(effective_config, sort_keys=False).encode("utf-8")
         if not target.is_file() or target.read_bytes() != payload:
             final_result_writer(target, payload)
     except Exception as exc:
@@ -433,21 +446,11 @@ else:
     RTSEG_MODELS = [str(item).strip() for item in _rtseg_models_raw if str(item).strip()]
 CUSTOM_STAGE_ENABLED = CUSTOM_MODELS_ENABLED or RTSEG_ENABLED
 
-RADIOMICS_CONFIG = config.get("radiomics", {})
 CAMPAIGN_MODE = bool(config.get("campaign_mode", False))
 CAMPAIGN_MIN_COMPLETION_FRACTION = float(config.get("campaign_min_completion_fraction", 0.5))
 CAMPAIGN_REQUIRE_ALL_COURSES = bool(config.get("campaign_require_all_courses", False))
 RADIOMICS_ENABLED = bool(RADIOMICS_CONFIG.get("enabled", False))
 RADIOMICS_SEQUENTIAL = bool(RADIOMICS_CONFIG.get("sequential", False))
-_radiomics_params = RADIOMICS_CONFIG.get("params_file")
-if _radiomics_params:
-    params_path = Path(_radiomics_params)
-    if not params_path.is_absolute():
-        params_path = ROOT_DIR / params_path
-    RADIOMICS_PARAMS = str(params_path.resolve())
-else:
-    RADIOMICS_PARAMS = ""
-
 _radiomics_params_mr_cfg = RADIOMICS_CONFIG.get("mr_params_file")
 if _radiomics_params_mr_cfg:
     params_mr_path = Path(_radiomics_params_mr_cfg)

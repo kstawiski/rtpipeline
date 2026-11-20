@@ -645,8 +645,8 @@ def _mask_from_array_like(ct_img: sitk.Image, mask3d: np.ndarray, *, series_data
 
 def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Optional[Path]:
     """Return a filesystem path to a radiomics params YAML.
-    Prefer a user file, then a packaged filesystem resource. Copy only when a
-    configured logs directory or a non-filesystem package resource requires it.
+    Prefer a user file, then the packaged CT YAML on disk. MR may materialize
+    its packaged resource in the configured logs directory or temporary storage.
     """
     try:
         modality_upper = (modality or 'CT').upper()
@@ -659,17 +659,18 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
 
         if candidate and Path(candidate).exists():
             return Path(candidate)
-        # Copy packaged file to logs_root for stable path
         packaged = importlib_resources.files('rtpipeline').joinpath(packaged_name)
         logs_root = getattr(config, 'logs_root', None) if config is not None else None
         if packaged.is_file():
-            if not logs_root:
+            if modality_upper != "MR" or not logs_root:
                 try:
                     packaged_path = Path(packaged)
                 except TypeError:
                     packaged_path = None
                 if packaged_path is not None and packaged_path.is_file():
                     return packaged_path
+            if modality_upper != "MR":
+                return None
             target_root = (
                 Path(logs_root)
                 if logs_root

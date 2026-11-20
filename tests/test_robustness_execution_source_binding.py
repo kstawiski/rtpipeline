@@ -113,6 +113,7 @@ def _publish_measured(course: Path, rob: RobustnessConfig) -> Path:
         code_identity=rr._current_robustness_code_identity(),
         output_path=table,
         measured_output=table,
+        extraction_parameters_binding=rr._compute_extraction_parameters_binding(None),
     )
     return table
 

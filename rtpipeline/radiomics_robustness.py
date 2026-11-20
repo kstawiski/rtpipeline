@@ -1473,14 +1473,14 @@ def _compute_extraction_parameters_binding(config: Any) -> Optional[Dict[str, An
     from .course_manifest import require_no_output_symlinks
     from .radiomics import _get_params_file
 
-    params_path = _get_params_file(config, "CT")
+    configured = getattr(config, "radiomics_params_file", None)
+    params_path = Path(configured) if configured else _get_params_file(None, "CT")
     if params_path is None:
         return None
     p = Path(params_path)
     if p.is_symlink() or not p.is_file():
         return None
     require_no_output_symlinks(p)
-    configured = getattr(config, "radiomics_params_file", None)
     return {
         "path": str(p.resolve()),
         "configured_path": str(configured) if configured else None,
@@ -1494,6 +1494,7 @@ def _verify_extraction_parameters_binding(
     *,
     error: type[Exception],
     context: str,
+    active_path: Optional[Path] = None,
 ) -> None:
     from .course_manifest import require_no_output_symlinks
 
@@ -1515,6 +1516,43 @@ def _verify_extraction_parameters_binding(
             raise error(f"{context}: configured CT parameter file is missing: {cfg_p}")
         if _file_sha256(cfg_p) != expected_sha or int(cfg_p.stat().st_size) != expected_size:
             raise error(f"{context}: configured CT parameter file bytes changed: {cfg_p}")
+    if active_path is not None:
+        require_no_output_symlinks(active_path)
+        if not active_path.is_file() or _file_sha256(active_path) != expected_sha:
+            raise error(f"configured CT parameter file does not match the robustness run: {active_path}")
+
+
+def _configured_ct_parameter_hashes(params_path, decision) -> Dict[str, str]:
+    from .radiomics_ct_contract import CT_EXTRACTION_ARMS, PRIMARY_ARM, configured_parameter_hash
+
+    return {
+        arm: configured_parameter_hash(
+            params_path,
+            arm=arm,
+            window=decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None,
+            large_roi=False,
+        )
+        for arm in CT_EXTRACTION_ARMS
+    }
+
+
+def _verify_baseline_ct_parameter_hashes(
+    baseline_path, selected_structures, params_path, custom_provenance,
+) -> None:
+    from .radiomics_ct_contract import classify_ct_roi
+
+    keys = ["segmentation_source", "roi_original_name", "extraction_arm"]
+    field = "configured_parameter_hash"
+    baseline_hashes = pd.read_parquet(baseline_path, columns=[*keys, field]).set_index(keys)[field]
+    for roi_name, source in selected_structures:
+        decision = classify_ct_roi(source, roi_name, custom_provenance=custom_provenance)
+        for arm, expected in _configured_ct_parameter_hashes(params_path, decision).items():
+            observed = baseline_hashes.get((source, roi_name, arm))
+            if not isinstance(observed, str) or observed != expected:
+                raise RuntimeError(
+                    f"baseline CT radiomics configured_parameter_hash does not match "
+                    f"active extraction parameters for {source}/{roi_name}/{arm}"
+                )
 
 
 def _write_robustness_source_dispositions(
@@ -1980,6 +2018,7 @@ def _read_robustness_source_dispositions(
     snapshot: Optional[bytes] = None,
     custom_structures_config: Optional[Path] = None,
     evaluated_sources=None,
+    active_ct_parameters_path: Optional[Path] = None,
 ) -> RobustnessSourceDispositionInspection:
     """Read the run-bound disposition sidecar, rejecting stale or foreign bytes.
 
@@ -2135,11 +2174,15 @@ def _read_robustness_source_dispositions(
             contract=load_course_contract(course_dir),
         )
 
-    if payload.get("extraction_parameters_binding") is not None:
+    parameters_binding = payload.get("extraction_parameters_binding")
+    if measured and parameters_binding is None:
+        raise ValueError("measured robustness sidecar lacks an extraction parameters binding")
+    if parameters_binding is not None:
         _verify_extraction_parameters_binding(
-            payload["extraction_parameters_binding"],
+            parameters_binding,
             error=ValueError,
             context="robustness CT extraction parameters changed after run",
+            active_path=active_ct_parameters_path if measured else None,
         )
 
     recorded_configuration = payload.get("effective_configuration")
@@ -2427,6 +2470,7 @@ def load_robustness_source_dispositions(
     rob_config: "RobustnessConfig",
     output_name: Optional[str] = None,
     custom_structures_config: Optional[Path] = None,
+    active_ct_parameters_path: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """Admit a run's source dispositions into the caller's current context.
 
@@ -2450,6 +2494,7 @@ def load_robustness_source_dispositions(
         rob_config=rob_config,
         output_name=output_name,
         custom_structures_config=custom_structures_config,
+        active_ct_parameters_path=active_ct_parameters_path,
     )
     if not inspection.configuration_verified:
         raise RuntimeError(
@@ -4204,7 +4249,6 @@ def _extract_features_for_masks_uncached(
             CT_EXTRACTION_ARMS,
             PRIMARY_ARM,
             classify_ct_roi,
-            configured_parameter_hash,
             current_code_revision,
             extract_ct_roi_arms,
             load_custom_structure_provenance,
@@ -4244,15 +4288,7 @@ def _extract_features_for_masks_uncached(
                 else None
             ),
         )
-        configured_hashes = {
-            arm: configured_parameter_hash(
-                params_path,
-                arm=arm,
-                window=(decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None),
-                large_roi=False,
-            )
-            for arm in CT_EXTRACTION_ARMS
-        }
+        configured_hashes = _configured_ct_parameter_hashes(params_path, decision)
         shared_run_id = run_identifier or new_run_identifier()
         feature_declarations: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
@@ -6844,6 +6880,14 @@ def robustness_for_course(
             )
         return None
 
+    if extraction_parameters_binding is None:
+        raise RuntimeError("CT extraction parameters cannot be bound for robustness measurement")
+    if baseline_ct_publication["radiomics_ct.parquet"] is not None:
+        _verify_baseline_ct_parameter_hashes(
+            course_dir / "radiomics_ct.parquet", selected_structures,
+            Path(extraction_parameters_binding["path"]), custom_structure_provenance,
+        )
+
     logger.info("Selected %d structure(s) for robustness analysis:", len(selected_structures))
     for roi_name, source in selected_structures:
         logger.info("  - %s (from %s)", roi_name, source)
@@ -7591,12 +7635,11 @@ def robustness_for_course(
         course_dir, ct_source_binding, baseline_ct_publication,
         measured=True, error=RuntimeError, contract=load_course_contract(course_dir),
     )
-    if extraction_parameters_binding is not None:
-        _verify_extraction_parameters_binding(
-            extraction_parameters_binding,
-            error=RuntimeError,
-            context="refusing to publish robustness measurements",
-        )
+    _verify_extraction_parameters_binding(
+        extraction_parameters_binding,
+        error=RuntimeError,
+        context="refusing to publish robustness measurements",
+    )
     _verify_robustness_code_identity(
         run_code_identity,
         context="refusing to publish robustness measurements",
@@ -7990,7 +8033,11 @@ def _verify_admitted_table_bytes(
 
 
 def _admit_robustness_aggregation_input(
-    parquet_path: Path, rob_config: RobustnessConfig, *, custom_structures_config: Optional[Path] = None,
+    parquet_path: Path,
+    rob_config: RobustnessConfig,
+    *,
+    custom_structures_config: Optional[Path] = None,
+    active_ct_parameters_path: Optional[Path] = None,
 ) -> _AdmittedRobustnessInput:
     """Admit one per-course table into this aggregation's current context.
 
@@ -8036,6 +8083,7 @@ def _admit_robustness_aggregation_input(
         rob_config=rob_config,
         output_name=path.name,
         custom_structures_config=custom_structures_config,
+        active_ct_parameters_path=active_ct_parameters_path,
     )
     _verify_admitted_table_bytes(course_dir, path, table_sha256)
     mode = getattr(rob_config, "target_selection", "patterns")
@@ -8424,6 +8472,7 @@ def admit_robustness_cohort_course(
     rob_config: RobustnessConfig,
     campaign_mode: bool = False,
     custom_structures_config: Optional[Path] = None,
+    active_ct_parameters_path: Optional[Path] = None,
 ) -> RobustnessCohortCourse:
     """Admit one manifest course from its completion receipt.
 
@@ -8505,6 +8554,7 @@ def admit_robustness_cohort_course(
         snapshot=snapshot,
         custom_structures_config=custom_structures_config,
         evaluated_sources=evaluated_sources,
+        active_ct_parameters_path=active_ct_parameters_path,
     )
     if inspection.measurement_outcome != receipt.measurement_outcome:
         raise ValueError("canonical disposition sidecar outcome differs from completion receipt")
@@ -8533,7 +8583,10 @@ def admit_robustness_cohort_course(
 
     table_path = course_dir / receipt.output_name
     require_no_output_symlinks(table_path)
-    admitted = _admit_robustness_aggregation_input(table_path, rob_config, custom_structures_config=custom_structures_config)
+    admitted = _admit_robustness_aggregation_input(
+        table_path, rob_config, custom_structures_config=custom_structures_config,
+        active_ct_parameters_path=active_ct_parameters_path,
+    )
     if admitted.run_identifier != receipt.run_identifier:
         raise RuntimeError(
             f"robustness table {table_path} declares run "

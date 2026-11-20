@@ -1835,6 +1835,10 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
     # result, and neither may publish one under an assumed configuration.
     try:
         yaml_config, rob_config_data = _load_requested_robustness_config(config_path)
+        radiomics_cfg = _require_mapping(yaml_config.get("radiomics", {}), "radiomics")
+        params_file = radiomics_cfg.get("params_file")
+        if params_file is not None:
+            params_file = _require_name(params_file, "radiomics.params_file")
     except _RobustnessRequestError as e:
         return _refuse("Refusing to aggregate radiomics robustness: %s", e)
 
@@ -1854,11 +1858,27 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
 
     if args.inputs and args.campaign_mode:
         return _refuse("campaign aggregation requires manifest mode")
+
+    from .radiomics_conda import resolve_ct_params_file
+
+    try:
+        active_ct_parameters_path = Path(params_file) if params_file else None
+        if active_ct_parameters_path is not None and not active_ct_parameters_path.is_absolute():
+            active_ct_parameters_path = (config_path.parent / active_ct_parameters_path).resolve()
+        active_ct_parameters_path = Path(resolve_ct_params_file(active_ct_parameters_path))
+        if not active_ct_parameters_path.is_file():
+            raise FileNotFoundError(active_ct_parameters_path)
+    except (OSError, ValueError) as e:
+        return _refuse("Refusing to resolve CT extraction parameters: %s", e)
     if args.inputs:
         # Historical contract, unchanged: the caller's tables, measured only.
         input_paths = [Path(item) for item in args.inputs]
         try:
-            aggregate_robustness_results(input_paths, output_path, rob_config, custom_structures_config=active_custom_structures)
+            aggregate_robustness_results(
+                input_paths, output_path, rob_config,
+                custom_structures_config=active_custom_structures,
+                active_ct_parameters_path=active_ct_parameters_path,
+            )
             logger.info("Aggregation complete: %s", output_path)
             return 0
         except Exception as e:
@@ -1890,6 +1910,7 @@ def _radiomics_robustness_aggregate(argv: list[str]) -> int:
             campaign_require_all_courses=args.campaign_require_all_courses,
             campaign_min_completion_fraction=args.campaign_min_completion_fraction,
             custom_structures_config=active_custom_structures,
+            active_ct_parameters_path=active_ct_parameters_path,
         )
         logger.info(
             "Cohort robustness accounting complete for %d manifest course(s): %s",
