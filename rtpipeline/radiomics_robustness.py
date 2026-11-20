@@ -2874,7 +2874,7 @@ def _validate_translated_mask(
     tolerance_mm = 0.5 * float(np.linalg.norm(np.asarray(original.GetSpacing(), dtype=float)))
     req_norm = float(np.linalg.norm(requested))
     projected_mm = float(np.dot(realized, requested) / req_norm) if req_norm > 0 else 0.0
-    zero_quantized = req_norm > 1e-6 and (
+    zero_quantized = any(translation_mm) and (
         float(np.linalg.norm(realized)) <= 1e-6 or projected_mm <= 1e-6
     )
     if zero_quantized or displacement_error > tolerance_mm + 1e-6:
@@ -2972,14 +2972,13 @@ def randomize_contour(
                     [int(pad_hi[2]), int(pad_hi[1]), int(pad_hi[0])],
                     0,
                 )
-                padded_dist = sitk.GetArrayViewFromImage(
-                    sitk.SignedMaurerDistanceMap(
-                        padded,
-                        insideIsPositive=True,
-                        squaredDistance=False,
-                        useImageSpacing=True,
-                    )
+                padded_distance = sitk.SignedMaurerDistanceMap(
+                    padded,
+                    insideIsPositive=True,
+                    squaredDistance=False,
+                    useImageSpacing=True,
                 )
+                padded_dist = sitk.GetArrayViewFromImage(padded_distance)
                 clipped_count = 0
                 for axis in range(3):
                     if pad_lo[axis]:
@@ -3225,13 +3224,11 @@ def _ntcv_factors(config: PerturbationConfig) -> Tuple[List[float], int, int, Li
 
 
 def _format_ntcv_scalar(value: float) -> str:
-    """Losslessly format numeric NTCV parameters for perturbation identifiers."""
-    rounded = round(float(value), 6)
-    if abs(rounded) < 1e-9:
-        rounded = 0.0
-    if abs(rounded - round(rounded)) <= 1e-6:
-        return str(int(round(rounded)))
-    return f"{rounded:g}".replace(".", "p")
+    """Preserve integer IDs and encode each distinct fractional float."""
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return repr(value).replace(".", "p")
 
 
 def _course_seed_offset(course_seed_key: Optional[str]) -> Tuple[int, ...]:
@@ -3251,6 +3248,18 @@ def _ntcv_translation_key_for_pert_id(pert_id: str) -> str:
 
     match = re.search(r"(_t-?[0-9p]+_-?[0-9p]+_-?[0-9p]+)(?=(?:_c|_v|$))", str(pert_id))
     return match.group(1) if match else ""
+
+
+def _ntcv_volume_suffix(tau: float) -> str:
+    """Encode the requested percentage, preserving established integer IDs."""
+    from decimal import Decimal
+
+    if tau == 0:
+        return "_v0"
+    percent = Decimal(str(tau)).scaleb(2)
+    if percent == percent.to_integral_value():
+        return f"_v{int(percent):+03d}"
+    return "_v" + format(percent, "+f").replace(".", "p")
 
 
 def _ntcv_noise_suffix(noise_std: float) -> str:
@@ -3341,14 +3350,12 @@ def _iter_ntcv_geometry_states(
         else ()
     )
     for translation_index, trans_vec in enumerate(translation_vectors):
-        if any(abs(t) > 1e-3 for t in trans_vec):
+        if any(trans_vec):
             translated_mask = translate_mask(original_mask, trans_vec)
             translation_outcome = None
             realized_vec: Optional[Tuple[float, float, float]] = None
             try:
                 realized_vec = _validate_translated_mask(original_mask, translated_mask, trans_vec)
-                if realized_vec is None:
-                    realized_vec = tuple(float(v) for v in trans_vec)
             except GeometricNotExtractable as exc:
                 translation_outcome = exc.outcome
                 if exc.outcome.reason_code == "translation_not_realizable":
@@ -3381,7 +3388,7 @@ def _iter_ntcv_geometry_states(
             for contour_index in range(contour_realizations + 1):
                 contour_suffix = f"_c{contour_index}" if contour_index else ""
                 for tau in volume_changes:
-                    vol_suffix = "_v0" if abs(tau) < 1e-6 else f"_v{int(tau * 100):+03d}"
+                    vol_suffix = _ntcv_volume_suffix(tau)
                     yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", translation_outcome)
             continue
 
@@ -3445,18 +3452,17 @@ def _iter_ntcv_geometry_states(
             contour_suffix = f"_c{contour_index}" if contour_index > 0 else ""
             if isinstance(contour_item, GeometricNonmeasurement):
                 for tau in volume_changes:
-                    vol_suffix = "_v0" if abs(tau) < 1e-6 else f"_v{int(tau * 100):+03d}"
+                    vol_suffix = _ntcv_volume_suffix(tau)
                     yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", contour_item)
                 continue
             for tau in volume_changes:
+                vol_suffix = _ntcv_volume_suffix(tau)
                 if abs(tau) < 1e-6:
                     final_mask = contour_item
-                    vol_suffix = "_v0"
                 else:
                     final_mask = volume_adapt_mask(contour_item, tau)
                     if final_mask is None:
                         final_mask = volume_nonmeasurement(contour_item, tau)
-                    vol_suffix = f"_v{int(tau * 100):+03d}"
                 yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
                 del final_mask
 
