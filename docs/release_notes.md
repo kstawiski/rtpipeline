@@ -2,48 +2,101 @@
 
 ## Unreleased
 
-## 3.0.5 — release candidate
+## 3.0.5 — 2026-11-20
 
-- `dvh_generation`: Bind DVH reuse to the authoritative plan, dose, structure set and delivery record bytes.
-- `dvh`: Select the hot end of exact cumulative dose plateaus for Dx endpoints, including the minimum dose in the hottest 2 cm³ (D2cc).
-- `dvh`, `dvh_support`: Weight each axial contour plane by the slab bounded by adjacent midpoints. The two end slabs extend by half their adjacent interval.
-- `dvh`: Withhold dose metrics for ROIs with missing or mismatched frame-of-reference identity.
-- `dvh`, `dvh_aggregate`: Require matching RTSTRUCT SOP instance and ROI geometry before collapsing duplicate measurements.
-- `dvh_rotation`, `dvh`, `organize`: Honor declared RTDOSE frame positions, including unequal spacing and descending offsets.
-- `dvh`: Retain ROI number zero and distinguish insufficient contour planes from an ROI that contains no sampled dose-grid point.
-- `dvh`: Count samples at the threshold in Vx. Histogram-only Vx includes bins whose lower edge meets the threshold.
-- `organize`: Refuse equally ranked dose grids when the course evidence cannot resolve the tie.
-- `organize`, `course_contract`: Require complete, disjoint beam and fraction-group coverage before summing beam doses.
-- `organize`, `dvh_rotation`, `dvh`: Require support from every component at composite dose interpolation nodes.
-- `course_contract`, `dvh`: Require explicit physical Gy on the authoritative RTDOSE and every selected RTDOSE.
-- `reexport_original`, `original_segmentation`: Require the contracted RTSTRUCT and planning CT for original-mask re-export into a contracted course.
-- `dvh`, `dvh_generation`, `dvh_aggregate`, `cli`: Record refused-only tables as nonmeasurements and retain their ROI dispositions.
-- `prescription`, `dvh`: Normalize prescription-relative DVH metrics to the nominal total reported in the row and withhold them when the target or dose scope is unresolved.
-- `workflow_aggregate`: Apply manual ROI precedence within each patient and course.
-- `dvh_rotation`: Interpolate integer dose samples in floating point before applying dose scaling.
-- `dvh`, `dvh_rotation`: Use exact samples for sub-centigray dose endpoints, including D90 for rotated NIfTI masks, and homogeneity. Otherwise the RTSTRUCT histogram uses 0.01 Gy bins, with mean dose at bin centres, the minimum and maximum at populated upper bin edges and interpolation between bin centres for Dx.
-- `dvh`, `dvh_support`: Report contour-derived ROI volume between the outer contour planes and dose-grid-covered sample volume separately for partial coverage.
-- `dvh`: Count only sampled volume at or above each threshold in partial-grid legacy Vx diagnostics and use the full histogram volume for their percentages.
-- `original_segmentation`, `rtstruct_geometry`, `custom_structures`, `custom_structures_rtstruct`: Apply common name-collision rules and withhold custom structures with ambiguous sources.
-- `radiomics_robustness`, `robustness_watchdog`: Retain worker identity mismatches as technical-failure rows and withhold measured completion.
-- `radiomics_robustness`: Record requested and realized translations and give shifts outside the allowed tolerance a geometric disposition.
-- `radiomics_robustness`: Preserve the requested translation in Parquet for small subvoxel shifts by using fixed-point perturbation identifiers.
-- `radiomics_robustness`: Record clipped contour offsets and unavailable realizations as nonmeasurements, support zero translation and preserve fractional perturbation identifiers.
-- The robustness preparation equivalence suite separately verifies translation clipping, outward contour clipping and retained worker identity failures.
-- `radiomics_robustness`: Bind planning CT bytes and the upstream CT radiomics publication at production, reuse and aggregation.
-- `radiomics`, `radiomics_robustness`, `cli`: Require matching CT extraction parameters for selected baseline ROIs and robustness measurements. Aggregation checks the configured parameter file, and the default binds the packaged YAML directly.
-- `acquisition_scale`, `radiomics`, `radiomics_robustness`: Withhold HU-dependent features and noise perturbations for unverified or non-HU intensities.
-- `acquisition_scale`, `radiomics_ct_contract`: Leave HU ranges unset for non-HU CT and report shape only for any unnormalized CT extraction arm when HU is unverified.
-- `radiomics`: Bind the CT image cache to the requested series UID and its ordered content and refuse missing UIDs.
-- `radiomics`, `radiomics_robustness_outcomes`: Preserve zero-spacing axes and count the prepared binary mask for optional IBSI preprocessing. Report a compatibility error at NumPy 2 entry points.
-- `radiomics_robustness`, `radiomics_robustness_aggregate`: Record geometric nonmeasurements and classify undefined ICC as `not_evaluable` in the exploratory package summary. Study analysis O7 follows its own specification.
-- `cli`, `radiomics_conda`: Apply YAML settings for `--stage radiomics` with explicit flags taking precedence and default to the packaged CT parameter file.
-- `Snakefile`, `radiomics_robustness`: Require the named radiomics interpreter and libraries and propagate ICC computation errors.
-- `radiomics_conda`: Use the radiomics environment probe timeout to materialize CT extraction parameters.
-- `radiomics_robustness`: Require the configured perturbation count in stability summaries and report ICC as not evaluable with fewer than five non-missing values.
-- `config`, `radiomics`: Apply the native ROI gate at `radiomics.min_voxels`. The shipped configuration selects 64 and an omitted setting defaults to 120. PyRadiomics separately requires more than 64 resampled voxels under `minimumROISize: 64`.
-- `extraction_progress`, `radiomics_robustness`: Bind sequential resume to extraction parameters, the ROI map, verified HU status and effective perturbation settings.
-- `radiomics_robustness`: Support course-specific noise and contour seeds with `radiomics_robustness.segmentation_perturbation.course_specific_seeds` while preserving the default seed sequence.
+Cite this release by version and by the DOI archived for the `v3.0.5` tag (see
+[citing](citing.md)). This release corrects DVH, dose-selection and radiomics
+robustness behaviour found in an independent review of 3.0.4, and adds the public
+DVH validation harnesses. Whether a course's values change depends on its data,
+for example on contour spacing, dose-grid coverage and dose selection. After
+upgrade, the workflow recomputes DVH, radiomics and robustness outputs made by
+earlier 3.0 releases, because the code that produces them has changed.
+
+### DVH
+
+- Dx endpoints take the hot end of an exact cumulative-dose plateau, including
+  D2cc. Vx counts samples at the threshold; histogram-only Vx includes bins whose
+  lower edge meets it.
+- Each axial contour plane is weighted by the slab between the midpoints to its
+  neighbours, and the two end slabs extend by half their adjacent interval, so
+  unequal slice spacing no longer biases ROI volume and DVH.
+- RTDOSE frame positions are honoured as declared, including unequal spacing and
+  descending offsets. Integer dose samples are interpolated in floating point
+  before dose scaling.
+- Below one centigray, endpoints and homogeneity come from exact samples,
+  including D90 for rotated NIfTI masks. Otherwise the RTSTRUCT histogram uses
+  0.01 Gy bins, with mean dose at bin centres, minimum and maximum at populated
+  upper bin edges and interpolation between bin centres for Dx.
+- For an ROI only partly inside the dose grid, the contour-derived ROI volume and
+  the dose-grid-covered volume are reported separately, whole-ROI dose metrics are
+  withheld, and the legacy diagnostic Vx counts only the sampled volume at or above
+  each threshold.
+- Dose metrics are withheld for an ROI whose frame of reference is missing or
+  differs from the dose. ROI number 0 is kept, and an ROI with too few contour
+  planes is distinguished from one containing no dose-grid point.
+- Duplicate measurements are collapsed only when the RTSTRUCT SOP instance and the
+  ROI geometry match. A table holding only refusals is recorded as a
+  nonmeasurement with its ROI dispositions.
+- Prescription-relative metrics are normalised to the nominal total reported in the
+  row, and withheld when the target or dose scope is unresolved.
+- DVH reuse is bound to the bytes of the authoritative plan, dose, structure set and
+  delivery records.
+
+### Dose selection and the course contract
+
+- Equally ranked dose grids are refused when the course evidence cannot break the
+  tie, instead of being ordered by file name.
+- Beam doses are summed only when beam and fraction-group coverage is complete and
+  disjoint, and composite interpolation requires support from every component grid.
+- The authoritative RTDOSE and every selected RTDOSE must be physical dose in Gy.
+- Re-export of original masks into a contracted course requires the contracted
+  RTSTRUCT and planning CT.
+
+### ROI identity
+
+- Original segmentation, RTSTRUCT geometry and custom structures share one
+  name-collision rule, and custom structures with ambiguous sources are withheld.
+- Manual ROI precedence applies within each patient and course.
+
+### Radiomics and robustness
+
+- Robustness measurements are bound to the planning CT bytes, the baseline CT
+  radiomics publication and its extraction parameters, at production, reuse and
+  aggregation. A robustness run with parameters different from the baseline is
+  refused. With no parameter file configured, the packaged YAML is bound directly.
+- HU-dependent features and noise perturbations are withheld for CT whose
+  intensities are not verified HU, in every extraction arm. Non-HU CT leaves the
+  HU range fields empty.
+- Translations, contour realisations and volume changes record what was requested
+  and what was realised. A shift that cannot be realised, a contour clipped at the
+  image edge and an unavailable realisation are recorded as geometric
+  nonmeasurements with their evidence, and worker identity mismatches as technical
+  failures. Small subvoxel shifts keep their requested vector.
+- Undefined ICC, and ICC with fewer than five non-missing values, is reported as
+  `not_evaluable` in the exploratory package summary, which also requires the
+  configured number of perturbation conditions. Study analyses such as O7 follow
+  their own specifications.
+- The CT image cache is bound to the requested series UID and its ordered content.
+  Sequential resume is bound to extraction parameters, the ROI map, HU status and
+  the effective perturbation settings.
+- `--stage radiomics` applies the YAML settings (explicit flags take precedence),
+  the Snakefile requires the named radiomics interpreter, and ICC errors propagate.
+- Optional IBSI preprocessing keeps zero-spacing axes and counts the prepared binary
+  mask.
+- `radiomics_robustness.segmentation_perturbation.course_specific_seeds` makes noise
+  and contour seeds course-specific; the default seed sequence is unchanged.
+- The native ROI gate is `radiomics.min_voxels`: the shipped configuration selects
+  64, and an omitted setting defaults to 120. PyRadiomics separately requires more
+  than 64 resampled voxels under `minimumROISize: 64`.
+
+### Validation
+
+- `validation/dvh_accuracy` and `validation/dvh_extension` hold the synthetic DVH
+  benchmarks: analytic accuracy on 120 cases, and the extended design of 1,208
+  cases covering small volumes, NIfTI masks and rotated dose grids. Their verifiers
+  pass only on complete evidence: every planned case, the full generated input
+  inventory with its digests, an exact terminal disposition for each case without a
+  measurement, and the recorded benchmark script digests.
 
 ## 3.0.4 — 2026-11-17
 
