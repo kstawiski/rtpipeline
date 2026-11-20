@@ -697,6 +697,10 @@ ROBUSTNESS_DISPOSITION_CODE_SOURCES = (
     "original_segmentation.py",
     "extraction_progress.py",
     "durable_progress.py",
+    "acquisition_scale.py",
+    "ibsi_preprocessing.py",
+    "radiomics_params.yaml",
+    "roi_class_map_v1.yaml",
 )
 
 
@@ -951,10 +955,10 @@ def _compatible_main_measured_code(
     payload: Mapping[str, Any], current: Mapping[str, Any], *, course_dir: Optional[Path] = None,
     custom_structures_config: Optional[Path] = None,
 ) -> bool:
-    """Admit an unchanged main receipt only for this tested compatibility release.
+    """Check whether a historical producer meets the code compatibility certificate.
 
-    Keep the original code attribution. The allowlist binds both complete code
-    identities; an edited producer cannot inherit the compatibility exception.
+    This preserves original code attribution. Admission separately requires
+    current measurement input bindings.
     """
     try:
         certificate = json.loads((Path(__file__).parent / "robustness_main_compatibility.json").read_text())
@@ -1394,6 +1398,125 @@ def _validate_source_disposition_rows(
     return validated
 
 
+def _compute_ct_source_binding(contract: Any) -> Optional[Dict[str, Any]]:
+    """Bind the ordered files selected by the planning CT reader."""
+    from .course_manifest import require_no_output_symlinks
+    from .radiomics import _dicom_series_content_sha256
+
+    series_uid = str((getattr(contract, "planning_ct", None) or {}).get(
+        "series_instance_uid"
+    ) or "").strip()
+    ct_dir = getattr(contract, "planning_ct_dir", None)
+    if ct_dir is not None:
+        reader = sitk.ImageSeriesReader()
+        if not series_uid or series_uid not in (reader.GetGDCMSeriesIDs(str(ct_dir)) or ()):
+            return None
+        files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_uid)
+        if not files:
+            return None
+        for filename in files:
+            require_no_output_symlinks(Path(filename))
+        return {
+            "kind": "dicom_series",
+            "series_uid": series_uid,
+            "directory": str(Path(ct_dir).resolve()),
+            "file_count": len(files),
+            "files_sha256": _dicom_series_content_sha256(files),
+        }
+    ct_nifti = getattr(contract, "planning_ct_nifti", None)
+    if ct_nifti is None:
+        return None
+    nifti_path = Path(ct_nifti)
+    require_no_output_symlinks(nifti_path)
+    return {
+        "kind": "nifti",
+        "series_uid": series_uid,
+        "path": str(nifti_path.resolve()),
+        "sha256": _file_sha256(nifti_path),
+    }
+
+
+def _compute_baseline_ct_publication_binding(course_dir: Path) -> Dict[str, Any]:
+    """Bind the exact upstream CT publication and its completion receipt."""
+    from .course_manifest import require_no_output_symlinks
+
+    binding = {}
+    for name in ("radiomics_ct.parquet", ".radiomics_done"):
+        path = course_dir / name
+        require_no_output_symlinks(path)
+        binding[name] = _file_sha256(path) if path.is_file() else None
+    return binding
+
+
+def _verify_measurement_inputs(
+    course_dir: Path,
+    ct_source_binding: Optional[Mapping[str, Any]],
+    baseline_ct_publication: Optional[Mapping[str, Any]],
+    *,
+    measured: bool,
+    error: type[Exception],
+    contract: Any,
+) -> None:
+    current_ct = _compute_ct_source_binding(contract)
+    if current_ct != ct_source_binding:
+        raise error("robustness planning CT source, series membership or bytes changed or are unbound")
+    if baseline_ct_publication is not None or measured:
+        current_baseline = _compute_baseline_ct_publication_binding(course_dir)
+        if current_baseline != baseline_ct_publication and (
+            baseline_ct_publication is not None or any(current_baseline.values())
+        ):
+            raise error("robustness baseline radiomics_ct.parquet or .radiomics_done changed or is unbound")
+
+
+def _compute_extraction_parameters_binding(config: Any) -> Optional[Dict[str, Any]]:
+    """Capture byte digest of the active CT PyRadiomics parameter file."""
+    from .course_manifest import require_no_output_symlinks
+    from .radiomics import _get_params_file
+
+    params_path = _get_params_file(config, "CT")
+    if params_path is None:
+        return None
+    p = Path(params_path)
+    if p.is_symlink() or not p.is_file():
+        return None
+    require_no_output_symlinks(p)
+    configured = getattr(config, "radiomics_params_file", None)
+    return {
+        "path": str(p.resolve()),
+        "configured_path": str(configured) if configured else None,
+        "sha256": _file_sha256(p),
+        "size_bytes": int(p.stat().st_size),
+    }
+
+
+def _verify_extraction_parameters_binding(
+    binding: Mapping[str, Any],
+    *,
+    error: type[Exception],
+    context: str,
+) -> None:
+    from .course_manifest import require_no_output_symlinks
+
+    if not isinstance(binding, Mapping):
+        raise error(f"{context}: invalid extraction parameters binding")
+    p = Path(str(binding.get("path") or ""))
+    require_no_output_symlinks(p)
+    if not p.is_file():
+        raise error(f"{context}: bound CT parameter file is missing: {p}")
+    expected_sha = str(binding.get("sha256") or "")
+    expected_size = int(binding.get("size_bytes", -1))
+    if _file_sha256(p) != expected_sha or int(p.stat().st_size) != expected_size:
+        raise error(f"{context}: CT parameter file bytes changed: {p}")
+    configured_raw = binding.get("configured_path")
+    if configured_raw:
+        cfg_p = Path(str(configured_raw))
+        require_no_output_symlinks(cfg_p)
+        if not cfg_p.is_file():
+            raise error(f"{context}: configured CT parameter file is missing: {cfg_p}")
+        if _file_sha256(cfg_p) != expected_sha or int(cfg_p.stat().st_size) != expected_size:
+            raise error(f"{context}: configured CT parameter file bytes changed: {cfg_p}")
+
+
 def _write_robustness_source_dispositions(
     course_dir: Path,
     *,
@@ -1411,6 +1534,9 @@ def _write_robustness_source_dispositions(
     voxel_source_bindings: Optional[List[Dict[str, Any]]] = None,
     source_errors: Optional[List[Dict[str, Any]]] = None,
     translation_realizations: Optional[List[Dict[str, Any]]] = None,
+    ct_source_binding: Optional[Dict[str, Any]] = None,
+    baseline_ct_publication: Optional[Dict[str, Any]] = None,
+    extraction_parameters_binding: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Atomically publish the terminal RTSTRUCT source dispositions of one run.
 
@@ -1577,7 +1703,25 @@ def _write_robustness_source_dispositions(
         "target_inventory": inventory,
         **({"translation_realizations": list(translation_realizations)}
            if translation_realizations is not None else {}),
+        **({"ct_source_binding": ct_source_binding}
+           if ct_source_binding is not None else {}),
+        **({"baseline_ct_publication": baseline_ct_publication}
+           if baseline_ct_publication is not None else {}),
+        **({"extraction_parameters_binding": extraction_parameters_binding}
+           if extraction_parameters_binding is not None else {}),
     }
+    if ct_source_binding is not None or baseline_ct_publication is not None:
+        _verify_measurement_inputs(
+            course_dir, ct_source_binding, baseline_ct_publication,
+            measured=measured_output is not None, error=RuntimeError,
+            contract=load_course_contract(course_dir),
+        )
+    if extraction_parameters_binding is not None:
+        _verify_extraction_parameters_binding(
+            extraction_parameters_binding,
+            error=RuntimeError,
+            context="refusing to publish robustness source dispositions",
+        )
     selection = effective_configuration["robustness"].get("perturbation", {}).get("apply_to_structures", [])
     missed_targets = [roi for roi in payload["target_inventory"] if roi["detector_rules"]
                       and not robustness_selection_matches(
@@ -1969,14 +2113,33 @@ def _read_robustness_source_dispositions(
             raise ValueError(
                 "robustness code identity does not match its own per-file digests"
             )
-    if not isinstance(recorded_code, dict) or recorded_code.get(
-        "sources_sha256"
-    ) != current_code["sources_sha256"] and not _compatible_main_measured_code(payload, current_code, course_dir=course_dir, custom_structures_config=custom_structures_config):
-        raise ValueError(
-            "robustness source dispositions were produced by different code "
-            f"(recorded {(recorded_code or {}).get('sources_sha256')!r}, current "
-            f"{current_code['sources_sha256']!r}); a matching revision does not "
-            "certify a dirty worktree"
+    if (not isinstance(recorded_code, dict)
+            or recorded_code.get("sources_sha256") != current_code["sources_sha256"]):
+        if not _compatible_main_measured_code(
+            payload, current_code, course_dir=course_dir,
+            custom_structures_config=custom_structures_config,
+        ):
+            raise ValueError(
+                "robustness source dispositions were produced by different code "
+                f"(recorded {(recorded_code or {}).get('sources_sha256')!r}, current "
+                f"{current_code['sources_sha256']!r}); a matching revision does not "
+                "certify a dirty worktree"
+            )
+    measured = payload.get("measurement_outcome") == ROBUSTNESS_MEASURED_OUTCOME
+    ct_binding = payload.get("ct_source_binding")
+    baseline_binding = payload.get("baseline_ct_publication")
+    if measured or ct_binding is not None or baseline_binding is not None:
+        _verify_measurement_inputs(
+            course_dir, ct_binding, baseline_binding,
+            measured=measured, error=ValueError,
+            contract=load_course_contract(course_dir),
+        )
+
+    if payload.get("extraction_parameters_binding") is not None:
+        _verify_extraction_parameters_binding(
+            payload["extraction_parameters_binding"],
+            error=ValueError,
+            context="robustness CT extraction parameters changed after run",
         )
 
     recorded_configuration = payload.get("effective_configuration")
@@ -5681,6 +5844,11 @@ def robustness_for_course(
     series_uid = str(
         contract.planning_ct.get("series_instance_uid") or ""
     ).strip()
+    if not series_uid:
+        raise RuntimeError(
+            f"Planning CT contract has no SeriesInstanceUID for robustness in {course_dir}"
+        )
+    ct_source_binding = _compute_ct_source_binding(contract)
     ct_dir = contract.planning_ct_dir
     ct_image = (
         _load_contracted_series_image(_load_series_image, ct_dir, series_uid or None)
@@ -5704,10 +5872,13 @@ def robustness_for_course(
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
         return None
 
-    if not series_uid:
-        raise RuntimeError(
-            f"Planning CT contract has no SeriesInstanceUID for robustness in {course_dir}"
-        )
+    if (ct_source_binding and ct_source_binding["kind"] == "dicom_series"
+            and ct_image.HasMetaDataKey("rtpipeline_dicom_series_sha256")
+            and ct_image.GetMetaData("rtpipeline_dicom_series_sha256")
+            != ct_source_binding["files_sha256"]):
+        raise RuntimeError("robustness CT read did not match the captured DICOM series bytes")
+    baseline_ct_publication = _compute_baseline_ct_publication_binding(course_dir)
+    extraction_parameters_binding = _compute_extraction_parameters_binding(config)
     identity_catalog, identity_catalog_issues = _load_main_ct_identity_catalog(
         course_dir,
         expected_series_uid=series_uid,
@@ -6433,6 +6604,9 @@ def robustness_for_course(
             tolerated_failures=tolerated_source_failures,
             voxel_source_bindings=voxel_source_bindings,
             translation_realizations=translation_realizations,
+            ct_source_binding=ct_source_binding,
+            baseline_ct_publication=baseline_ct_publication,
+            extraction_parameters_binding=extraction_parameters_binding,
         )
         logger.info(
             "Recorded %d RTSTRUCT source disposition(s) and %d tolerated "
@@ -7270,6 +7444,16 @@ def robustness_for_course(
         error=RuntimeError,
         context="refusing to publish robustness measurements",
     )
+    _verify_measurement_inputs(
+        course_dir, ct_source_binding, baseline_ct_publication,
+        measured=True, error=RuntimeError, contract=load_course_contract(course_dir),
+    )
+    if extraction_parameters_binding is not None:
+        _verify_extraction_parameters_binding(
+            extraction_parameters_binding,
+            error=RuntimeError,
+            context="refusing to publish robustness measurements",
+        )
     _verify_robustness_code_identity(
         run_code_identity,
         context="refusing to publish robustness measurements",
@@ -7730,6 +7914,18 @@ def _admit_robustness_aggregation_input(
         expected_hashes = _selection_bound_parameter_hashes(frame.extraction_configured_parameter_hash, mode, exclusions)
         if "configured_parameter_hash" not in frame or not frame.configured_parameter_hash.eq(expected_hashes).fillna(False).all():
             raise ValueError("robustness configured_parameter_hash does not bind target_selection/exclude_structures")
+    if "roi_map_hash" in frame.columns or "roi_map_version" in frame.columns:
+        from .radiomics_ct_contract import roi_class_map_identity
+
+        current_map_version, current_map_hash = roi_class_map_identity()
+        if "roi_map_hash" in frame.columns:
+            map_hashes = frame["roi_map_hash"].dropna()
+            if not map_hashes.empty and (map_hashes.astype(str) != str(current_map_hash)).any():
+                raise ValueError("robustness table uses a stale ROI class map hash")
+        if "roi_map_version" in frame.columns:
+            map_versions = frame["roi_map_version"].dropna()
+            if not map_versions.empty and (map_versions.astype(str) != str(current_map_version)).any():
+                raise ValueError("robustness table uses a stale ROI class map version")
 
     return _AdmittedRobustnessInput(
         path=path,

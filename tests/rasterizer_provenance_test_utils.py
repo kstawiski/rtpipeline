@@ -14,6 +14,7 @@ ROBUSTNESS_AUDIT_PROVENANCE_FIELDS = frozenset({
     "translation_realizations",
     "ct_source_binding",
     "baseline_ct_publication",
+    "extraction_parameters_binding",
 })
 HISTORICAL_PROVENANCE_FIELDS = RASTERIZER_PROVENANCE_FIELDS | ROBUSTNESS_AUDIT_PROVENANCE_FIELDS
 

@@ -468,16 +468,16 @@ def _have_pyradiomics() -> bool:
 
 def _dicom_series_content_sha256(files: Iterable[str | Path]) -> str:
     hasher = hashlib.sha256()
-    paths = [str(f) for f in files]
-    hasher.update(f"count={len(paths)}\n".encode("utf-8"))
-    for path_str in paths:
-        path = Path(path_str)
-        hasher.update(path.name.encode("utf-8", errors="replace"))
-        hasher.update(b"\x00")
+    for filename in files:
+        path = Path(filename)
+        name = os.fsencode(path.name)
+        file_digest = hashlib.sha256()
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(65536), b""):
-                hasher.update(chunk)
-        hasher.update(b"\x00")
+                file_digest.update(chunk)
+        hasher.update(len(name).to_bytes(4, "big"))
+        hasher.update(name)
+        hasher.update(file_digest.digest())
     return hasher.hexdigest()
 
 
@@ -577,8 +577,19 @@ def _load_series_image(dicom_dir: Path, series_uid: Optional[str] = None, use_ca
                     img.SetMetaData("rtpipeline_hu_status", str(hu_info["status"]))
                     img.SetMetaData("rtpipeline_hu_detail", str(hu_info["detail"]))
             except Exception as exc:
-                logger.debug("HU metadata check skipped/failed for %s: %s", dicom_dir, exc)
+                img.SetMetaData("rtpipeline_hu_verified", "0")
+                img.SetMetaData("rtpipeline_hu_status", "unverifiable_hu_rescale")
+                img.SetMetaData("rtpipeline_hu_detail", "DICOM rescale metadata could not be read")
+                logger.debug("HU metadata check failed for %s: %s", dicom_dir, exc)
 
+        if img is not None and (
+            reader.GetGDCMSeriesFileNames(str(dicom_dir), sid) != files
+            or _dicom_series_content_sha256(files) != content_digest
+        ):
+            raise RuntimeError(f"DICOM series changed while it was being read: {dicom_dir}")
+
+        if img is not None:
+            img.SetMetaData("rtpipeline_dicom_series_sha256", content_digest)
         if use_cache and img is not None:
             with _IMAGE_CACHE_LOCK:
                 if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX_SIZE:

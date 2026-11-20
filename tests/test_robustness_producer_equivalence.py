@@ -216,8 +216,20 @@ def _produce(module, completion, course, config, *, rob_config=None):
 # These are the ONLY semantic exclusions. Container hashes and sizes below are
 # recomputed from normalized content, so a changed field is never hidden by
 # ignoring the checksum of its containing artifact.
-EXCLUDED_FRAME_FIELDS = {"run_identifier", "code_revision"}
-EXCLUDED_SIDECAR_FIELDS = {"robustness_run_identifier", "code_identity"}
+EXCLUDED_FRAME_FIELDS = {
+    "run_identifier",
+    "code_revision",
+    "requested_translation_mm",
+    "realized_translation_mm",
+}
+EXCLUDED_SIDECAR_FIELDS = {
+    "robustness_run_identifier",
+    "code_identity",
+    "translation_realizations",
+    "ct_source_binding",
+    "baseline_ct_publication",
+    "extraction_parameters_binding",
+}
 EXCLUDED_RECEIPT_FIELDS = {"robustness_run_identifier"}
 # Neither producer currently emits a timestamp in these four artifacts.
 EXCLUDED_TIMESTAMP_FIELDS = set()
@@ -297,25 +309,24 @@ def test_main_producer_equivalence(tmp_path, monkeypatch, main_producer, kind):
         assert new[3] == expected_receipt
     else:
         assert old[1:] == new[1:]
-    # Admission must preserve an actual historical artifact byte for byte.
+    # A historical artifact without a measured CT binding cannot be reused.
     _produce(main, completion, course, config)
     paths = [course / ".radiomics_robustness_done", course / "radiomics_robustness_ct.parquet",
              rr.robustness_source_dispositions_path(course)]
     snapshot = [path.read_bytes() for path in paths]
-    if kind == "fallback":
-        # Main never bound voxel inputs. Equal values alone cannot certify reuse.
-        with pytest.raises((ValueError, rc.RobustnessCompletionError), match="different code"):
-            rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True))
-    else:
-        assert rr.admit_robustness_cohort_course(course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True),
-                                                custom_structures_config=config.custom_structures_config).measured
+    with pytest.raises((ValueError, rc.RobustnessCompletionError),
+                       match="different code|planning CT source"):
+        rr.admit_robustness_cohort_course(
+            course, patient_id="P1", course_id="C1", rob_config=rr.RobustnessConfig(enabled=True),
+            custom_structures_config=config.custom_structures_config,
+        )
     assert snapshot == [path.read_bytes() for path in paths]
     foreign_code = {**rr._current_robustness_code_identity(), "sources_sha256": "unlisted-digest"}
     assert not rr._compatible_main_measured_code(before[1], foreign_code, course_dir=course)
     print({"layout": kind, "rows": len(new[0]),
            "comparison": ("voxel binding correction" if kind == "fallback" else
                           "equal measurements; explicit custom provenance" if kind == "default_pelvic" else "equal"),
-           "reuse": kind != "fallback"})
+           "reuse": False})
 
 
 @pytest.mark.parametrize("kind", ["normal", "model", "stale_auto"])
