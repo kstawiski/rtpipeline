@@ -64,6 +64,13 @@ BASE_MODULE_SHA256 = {
 }
 
 
+# RTP305 changes the authoritative dose and prescription gates.
+RTP305_MODULE_SHA256 = {
+    "course_contract.py": "9efaca9eaf524f062a25d626a422434d904c1f25b7b69723a8c7b8830be8d2f3",
+    "prescription.py": "f976ed56be1301e51cc16c48b183feef5a42809f9cfce922ce4f939a3edf2fd0",
+}
+
+
 def _checked_root() -> Path:
     location = Path(org.__file__).resolve()
     if location != ROOT / "rtpipeline" / "organize.py":
@@ -248,9 +255,9 @@ def test_publication_and_membership_functions_are_unchanged(source_root: Path, m
 
 @pytest.mark.concern_f
 @pytest.mark.parametrize("module", ["course_contract.py", "prescription.py", "plan_approval.py"])
-def test_supporting_modules_are_byte_identical(source_root: Path, module: str) -> None:
+def test_supporting_modules_match_source_pins(source_root: Path, module: str) -> None:
     digest = lambda root: hashlib.sha256((root / "rtpipeline" / module).read_bytes()).hexdigest()  # noqa: E731
-    assert digest(source_root) == BASE_MODULE_SHA256[module]
+    assert digest(source_root) == RTP305_MODULE_SHA256.get(module, BASE_MODULE_SHA256[module])
 
 
 @pytest.mark.concern_f

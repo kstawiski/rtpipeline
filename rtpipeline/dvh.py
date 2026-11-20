@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .radiomics_rasterizer import opencv_runtime_provenance
-from .dvh_generation import output_path, logical_path, staging, effective_settings
+from .dvh_generation import output_path, logical_path, staging, effective_settings, measured_rows
 
 import copy
 from dataclasses import dataclass
@@ -21,9 +21,11 @@ import SimpleITK as sitk
 
 logger = logging.getLogger(__name__)
 DVH_METRIC_VERSION = "2026-09-05-grid-support-derived-mask-d003-v5"
-from .dvh_support import (rtstruct_grid_coverage, resample_grid_support, mask_grid_coverage,
+from .dvh_support import (rtstruct_grid_coverage, mask_grid_coverage,
                           nifti_identity, publish_derived_mask, validate_derived_mask, sha256_file,
-                          roi_nonvolume_coverage, unbinned_plane_summary, combine_dose_summaries)
+                          roi_nonvolume_coverage, unbinned_plane_summary, combine_dose_summaries,
+                          contour_slab_widths, contour_geometry_volume,
+                          weighted_plane_dvh)
 NEAR_ZERO_TARGET_D95_GY = 0.1
 # Target zero-dose classes counted by ``summarize_target_near_zero_rows``.
 NEAR_ZERO_TARGET_ZERO_DOSE_STATUSES = (
@@ -1122,6 +1124,8 @@ def annotate_dvh_metrics(
         output["dose_grid_coverage_reason_code"] = grid_coverage.get("reason_code")
         output["dose_grid_covered_volume_cm3"] = grid_coverage.get("covered_volume_cm3")
         output["dose_grid_roi_volume_cm3"] = grid_coverage.get("roi_volume_cm3")
+        if coverage_status == "partial_grid":
+            output["Volume (cm³)"] = grid_coverage.get("roi_volume_cm3")
         if grid_coverage.get("evidence") is not None:
             output["dvh_nonmeasurement_evidence"] = json.dumps(grid_coverage["evidence"], sort_keys=True)
         if coverage_status != "fully_covered":
@@ -1191,6 +1195,7 @@ from .course_contract import (
     DOSE_RESPONSE_FIELD,
     CourseContractError,
     load_course_contract,
+    require_physical_gy_dose,
 )
 
 from .utils import sanitize_rtstruct, mask_is_cropped, run_tasks_with_adaptive_workers, dose_on_contour_planes
@@ -1934,26 +1939,13 @@ def _resolve_dvh_structures(
     reasons: List[str] = []
 
     if authoritative_path is not None:
-        if _rtstruct_matches_dose_for(authoritative_path, dose_for_uid):
-            selected.append(
-                DVHRTStructSource(
-                    authoritative_path,
-                    "Manual",
-                    authoritative_uid or _sop_uid(authoritative_path) or None,
-                )
-            )
-            if authoritative_uid:
-                selected_uids.append(authoritative_uid)
-            reasons.append("Using organize's authoritative RTSTRUCT")
-        else:
-            reasons.append(
-                "Authoritative RTSTRUCT FrameOfReferenceUID does not match the contracted RTDOSE"
-            )
-            logger.warning(
-                "Authoritative RTSTRUCT %s does not match RTDOSE FrameOfReferenceUID=%s",
-                authoritative_path,
-                dose_for_uid or "missing",
-            )
+        selected.append(DVHRTStructSource(
+            authoritative_path, "Manual",
+            authoritative_uid or _sop_uid(authoritative_path) or None,
+        ))
+        if authoritative_uid:
+            selected_uids.append(authoritative_uid)
+        reasons.append("Using organize's authoritative RTSTRUCT")
 
     planning_ct_dir = contract.planning_ct_dir
     course_ct_for = _ct_frame_of_reference_uids(planning_ct_dir)
@@ -1974,14 +1966,6 @@ def _resolve_dvh_structures(
     selected_path_keys = {src.path.resolve(strict=False) for src in selected}
     for candidate, label in candidate_sources:
         if candidate is None or not _is_rtstruct_path(candidate):
-            continue
-        if not _rtstruct_matches_dose_for(candidate, dose_for_uid):
-            logger.warning(
-                "Skipping %s RTSTRUCT %s because its FrameOfReferenceUID does not match contracted RTDOSE %s",
-                label,
-                candidate,
-                dose_for_uid,
-            )
             continue
         key = candidate.resolve(strict=False)
         if key in selected_path_keys:
@@ -2025,7 +2009,12 @@ def _resolve_dvh_structures(
 def _dose_at_fraction(bins, cumulative, fraction: float) -> float:
     V_total = cumulative[0]
     target = fraction * V_total
-    idx = np.where(cumulative <= target)[0]
+    # At an exact plateau, the endpoint is the minimum dose to the hottest
+    # qualifying volume. Use the hot edge of the plateau.
+    at_target = np.flatnonzero(np.isclose(cumulative, target, rtol=8*np.finfo(float).eps, atol=0.))
+    if at_target.size:
+        return float(bins[at_target[-1]])
+    idx = np.where(cumulative < target)[0]
     if idx.size == 0:
         return float(bins[-1])
     i = int(idx[0])
@@ -2061,7 +2050,7 @@ def _get_volume_at_threshold(bins, cumulative, threshold: float) -> float:
     V_total = cumulative[0]
     if threshold <= bins[0]:
         return float(V_total)
-    if threshold >= bins[-1]:
+    if threshold > bins[-1]:
         return 0.0
     idx = np.where(bins >= threshold)[0]
     if idx.size == 0:
@@ -2107,38 +2096,124 @@ def _automatic_rtstruct_source(course_dir, source_label, rtstruct_path):
     return None
 
 
-def _rtstruct_dose_summary(rtstruct, dose, roi_number):
-    """Replay the default axial DVH rasterizer on its working dose grid.
+def _axial_contour_planes(rtss, roi_number):
+    parsed = rtss.GetStructureCoordinates(roi_number)
+    # Dicompyler groups on rounded keys. Use physical positions for the
+    # slab widths and keep distinct planes even if the keys coincide.
+    contours = [(float(np.mean(np.asarray(item["data"])[:, 2])), item)
+                for group in parsed.values() for item in group]
+    planes = {}
+    for z, contour in sorted(contours, key=lambda pair: pair[0]):
+        if planes and abs(z - next(reversed(planes))) <= .001:
+            z = next(reversed(planes))
+        planes.setdefault(z, []).append(contour)
+    return planes
 
-    Use parsed contour-plane keys, patient-to-pixel LUT, XOR fill and supported
-    planes exactly as get_dvh does. Outside-grid dummy planes used only for
-    full-volume accounting never enter the dose summary.
-    """
-    rtss = _dicomparser.DicomParser(rtstruct)
+
+def _axial_planes(dose, planes):
+    from .utils import _axial_dose_plane_positions
+
     parser = _dicomparser.DicomParser(dose)
-    planes = rtss.GetStructureCoordinates(roi_number)
+    dose_z = _axial_dose_plane_positions(dose)
+    lower, upper = min(dose_z), max(dose_z)
+    slab_widths = contour_slab_widths(list(planes))
     dd, image = parser.GetDoseData(), parser.GetImageData()
     x_index = dd['x_lut_index']
     x, y = np.meshgrid(dd['lut'][x_index], dd['lut'][1-x_index])
     points = np.column_stack((x.ravel(), y.ravel()))
 
-    def summaries():
-        for z, plane in sorted(planes.items()):
-            doseplane = parser.GetDoseGrid(z)
+    def sampled_planes(composite_grid=None):
+        for (z, plane), thickness in zip(planes.items(), slab_widths):
+            if thickness <= 0 or not lower - .001 <= z <= upper + .001:
+                continue
+            doseplane = parser.GetDoseGrid(z, threshold=.0011)
             if doseplane.size:
-                # Axial get_dvh assigns the same thickness to every plane;
-                # its constant factor cancels in the weighted mean.
-                yield unbinned_plane_summary(plane, doseplane, points, dd, image, 1.)
-    return combine_dose_summaries(summaries())
+                if composite_grid is not None:
+                    xyz = np.column_stack((points, np.full(len(points), z)))
+                    _, supported = composite_grid.support_at(xyz)
+                    plane_mask = supported.reshape(y.shape)
+                    if x_index:
+                        plane_mask = plane_mask.T
+                    doseplane = np.ma.array(doseplane, mask=~plane_mask)
+                yield plane, doseplane, thickness
+
+    return dd, image, points, sampled_planes
+
+
+def _rtstruct_dose_summary(rtstruct, dose, roi_number):
+    rtss = _dicomparser.DicomParser(rtstruct)
+    dd, image, points, sampled_planes = _axial_planes(dose, _axial_contour_planes(rtss, roi_number))
+    return combine_dose_summaries(
+        unbinned_plane_summary(plane, doseplane, points, dd, image, thickness)
+        for plane, doseplane, thickness in sampled_planes()
+    )
+
+
+def _axial_roi_dvh(rtstruct, dose, roi_number, *, calculate_full_volume=True, composite_grid=None):
+    rtss = _dicomparser.DicomParser(rtstruct)
+    planes = _axial_contour_planes(rtss, roi_number)
+    positions = np.asarray(list(planes))
+    intervals = np.diff(positions)
+    uniform = intervals.size < 2 or np.allclose(intervals, intervals[0], rtol=0, atol=1e-9)
+    exact_keys = np.allclose(positions, np.round(positions, 2), rtol=0, atol=1e-9)
+    if composite_grid is None and uniform and exact_keys:
+        return dvhcalc.get_dvh(rtstruct, dose, roi_number, calculate_full_volume=calculate_full_volume)
+    name = rtss.GetStructures()[roi_number]['name']
+    dd, image, points, sampled_planes = _axial_planes(dose, planes)
+    return weighted_plane_dvh(name, sampled_planes(composite_grid), dd, image, points)
+
+
+def _sample_endpoint(doses, cumulative, target):
+    # Target can equal an accumulated weight within floating-point summation error.
+    meeting = cumulative >= target * (1. - 8*np.finfo(float).eps)
+    return float(doses[np.flatnonzero(meeting)[-1]]) if meeting.any() else float(doses[0])
+
+
+def _apply_sample_metrics(metrics, distribution, cumulative, rx_dose, *, collapsed=False):
+    doses, sampled_cumulative = distribution
+    volume = metrics["Volume (cm³)"]
+    if collapsed:
+        metrics["DminGy"] = float(doses[0])
+    # Use exact samples for collapsed bins and for hot-side ties spanning
+    # multiple histogram bins. Other Dx endpoints retain cGy interpolation.
+    hi_changed = False
+    for name, fraction in (("D98", .98), ("D95", .95), ("D50", .50), ("D2", .02),
+                           ("D1cc", 1./volume), ("D0.1cc", .1/volume),
+                           ("D0.03cc", .03/volume), ("D2cc", 2./volume)):
+        key = name + "Gy"
+        if metrics[key] is None:
+            continue
+        if collapsed or np.count_nonzero(np.isclose(cumulative, fraction*cumulative[0],
+                                                    rtol=8*np.finfo(float).eps, atol=0.)) > 1:
+            metrics[key] = _sample_endpoint(doses, sampled_cumulative, fraction*sampled_cumulative[0])
+            hi_changed |= name in {"D98", "D50", "D2"}
+            if rx_dose and name in {"D98", "D95", "D50", "D2"}:
+                metrics[name + "%"] = metrics[key] / rx_dose * 100.
+    if collapsed:
+        metrics["SpreadGy"] = metrics["DmaxGy"] - metrics["DminGy"]
+        if rx_dose:
+            for name in ("Dmean", "Dmax", "Dmin", "Spread"):
+                metrics[name + "%"] = metrics[name + "Gy"] / rx_dose * 100.
+    if hi_changed:
+        metrics["HI"] = ((metrics["D2Gy"] - metrics["D98Gy"]) / metrics["D50Gy"]
+                         if metrics["D50Gy"] else float("nan"))
+        if rx_dose:
+            metrics["HI%"] = ((metrics["D2%"] - metrics["D98%"]) / metrics["D50%"]
+                              if metrics["D50%"] else float("nan"))
+    thresholds = [(f"V{x}Gy", float(x)) for x in range(1, 61)]
+    if rx_dose:
+        thresholds.extend((("V95%Rx", .95*rx_dose), ("V100%Rx", rx_dose)))
+    positions = np.searchsorted(doses, [threshold for _, threshold in thresholds], side="left")
+    for (name, _), index in zip(thresholds, positions):
+        sampled_fraction = (float(sampled_cumulative[index] / sampled_cumulative[0])
+                            if index < len(doses) else 0.)
+        metrics[name + " (cm³)"] = volume * sampled_fraction
+        metrics[name + " (%)"] = sampled_fraction * 100.
 
 
 def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Optional[Dict[str, object]]:
-    """Extract binned metrics, recovering mean/max from a collapsed histogram.
-
-    The optional lazy summary must use the histogram's working grid and mask.
-    Quantiles remain histogram-derived; multibin positive-dose metrics retain
-    their existing arithmetic and do not invoke the sampler.
-    """
+    """Extract cGy histogram metrics and use physical samples when available."""
+    rx_dose = rx_dose if rx_dose is not None and rx_dose > 0 else None
     bins_abs = abs_dvh.bincenters
     cum_abs = abs_dvh.counts
     if cum_abs.size == 0 or cum_abs[0] == 0:
@@ -2154,10 +2229,17 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Op
     HI_abs = (D2Gy - D98Gy) / D50Gy if D50Gy != 0 else float("nan")
     SpreadGy = DmaxGy - DminGy
 
+    def binned_threshold(threshold):
+        edges = getattr(abs_dvh, "bins", None)
+        if edges is None:
+            return _get_volume_at_threshold(bins_abs, cum_abs, threshold)
+        index = np.searchsorted(edges[:-1], threshold, side="left")
+        return float(cum_abs[index]) if index < len(cum_abs) else 0.
+
     V_abs: Dict[str, float] = {}
     V_rel: Dict[str, float] = {}
     for x in range(1, 61):
-        vol = _get_volume_at_threshold(bins_abs, cum_abs, float(x))
+        vol = binned_threshold(float(x))
         V_abs[f"V{x}Gy (cm³)"] = float(vol)
         V_rel[f"V{x}Gy (%)"] = float((vol / V_total) * 100.0)
 
@@ -2205,8 +2287,8 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Op
 
     if rx_dose and rx_dose > 0:
         try:
-            V95Rx_cc = _get_volume_at_threshold(bins_abs, cum_abs, 0.95 * rx_dose)
-            V100Rx_cc = _get_volume_at_threshold(bins_abs, cum_abs, 1.00 * rx_dose)
+            V95Rx_cc = binned_threshold(0.95 * rx_dose)
+            V100Rx_cc = binned_threshold(rx_dose)
             V95Rx_pct = (V95Rx_cc / V_total) * 100.0 if V_total > 0 else None
             V100Rx_pct = (V100Rx_cc / V_total) * 100.0 if V_total > 0 else None
 
@@ -2260,22 +2342,21 @@ def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Op
     metrics.update(V_abs)
     metrics.update(V_rel)
     metrics['dose_summary_basis'] = 'binned'
-    if cum_abs.size <= 1 or DmaxGy == 0:
-        notes = getattr(abs_dvh, 'notes', None)
-        summary = dose_summary or (notes.get('_unbinned_dose_summary') if isinstance(notes, dict) else None)
+    notes = getattr(abs_dvh, 'notes', None)
+    summary = dose_summary or (notes.get('_unbinned_dose_summary') if isinstance(notes, dict) else None)
+    summary = summary() if callable(summary) else summary
+    collapsed = cum_abs.size <= 1 or DmaxGy == 0
+    if collapsed:
         if summary is None:
             raise ValueError('A collapsed DVH needs unbinned in-mask dose samples')
-        summary = summary() if callable(summary) else summary
         mean, maximum = float(summary['mean']), float(summary['max'])
         if not (np.isfinite(mean) and np.isfinite(maximum) and 0 <= mean <= maximum):
             raise ValueError('Invalid unbinned in-mask dose summary')
         metrics.update(DmeanGy=mean, DmaxGy=maximum,
-                       IntegralDose_Gycm3=mean * V_total, SpreadGy=maximum - DminGy,
-                       dose_summary_basis='unbinned_subcentigray')
-        if rx_dose and rx_dose > 0:
-            metrics['Dmean%'] = mean / rx_dose * 100.
-            metrics['Dmax%'] = maximum / rx_dose * 100.
-            metrics['Spread%'] = (maximum - DminGy) / rx_dose * 100.
+                       IntegralDose_Gycm3=mean * V_total, dose_summary_basis='unbinned_subcentigray')
+    if summary is not None and summary.get('distribution') is not None:
+        _apply_sample_metrics(metrics, summary['distribution'], cum_abs, rx_dose, collapsed=collapsed)
+
     return metrics
 
 
@@ -2285,13 +2366,8 @@ def _compute_metrics_from_arrays(
     max_dose_gy: float,
     rx_dose: Optional[float] = None,
 ) -> Optional[Dict[str, float]]:
-    """Compute DVH metrics directly from dose values within a structure mask.
-
-    Produces output identical in format to _compute_metrics() but works from raw
-    dose arrays rather than dicompyler-core DVH objects.  Used for structures
-    loaded from NIfTI masks (TotalSegmentator, custom composites) that bypass
-    RTSTRUCT.
-    """
+    """Compute DVH metrics from unbinned doses within a NIfTI mask."""
+    rx_dose = rx_dose if rx_dose is not None and rx_dose > 0 else None
     if dose_values.size == 0:
         return None
 
@@ -2416,6 +2492,10 @@ def _compute_metrics_from_arrays(
     }
     metrics.update(V_abs)
     metrics.update(V_rel)
+    doses, counts = np.unique(dose_values, return_counts=True)
+    exact_cumulative = np.cumsum(counts[::-1])[::-1] * voxel_vol_cm3
+    _apply_sample_metrics(metrics, (doses, exact_cumulative), cumulative_vol, rx_dose,
+                          collapsed=DmaxGy < bin_width)
     return metrics
 
 
@@ -2648,8 +2728,9 @@ def _write_dvh_qc(
         if _normalize_structure_name(name) not in present
     ]
     target_coverage = summarize_target_near_zero_rows(df.to_dict("records"))
+    measured = bool(measured_rows(df).any())
     payload = {
-        "status": "ok" if not missing_custom else "degraded",
+        "status": "ok" if measured and not missing_custom else "degraded",
         "metric_version": DVH_METRIC_VERSION,
         "code_sources_sha256": _current_dvh_measurement_code_sha256(),
         "rx_source": rx_source,
@@ -2708,7 +2789,9 @@ def _write_dvh_qc(
         payload["dose_grid_resampling"] = dict(dose_grid_resampling)
     if rx_dose_gy is not None and rx_dose_gy > 0:
         payload["rx_dose_gy"] = float(rx_dose_gy)
-    if rx_source == "none":
+    if not measured:
+        payload["warning"] = "No whole-ROI dose measurements were available."
+    elif rx_source == "none":
         payload["warning"] = "Prescription-relative DVH metrics are unavailable; absolute Gy/cc metrics are present."
     elif dose_plan_scope is not None and not dose_plan_scope.complete:
         payload["warning"] = (
@@ -3112,6 +3195,7 @@ def _compute_nifti_based_dvh(
     dose_response_ineligibility_reason: str | None = None,
     derived_mask_output_dir: Path | None = None,
     rotated_grid=None,
+    composite_grid=None,
 ) -> List[Dict]:
     """Compute DVH for TotalSegmentator and custom composite structures directly from NIfTI masks.
 
@@ -3160,26 +3244,14 @@ def _compute_nifti_based_dvh(
 
     ct_spacing = ct_image.GetSpacing()  # (x, y, z) mm
 
-    if rotated_grid is not None:
-        dose_ct_arr, grid_support_ct = rotated_grid.sample_image(ct_image)
-    else:
-        # --- Load RTDOSE and resample to CT grid ---
-        try:
-            dose_sitk = sitk.ReadImage(str(rd_path))
-        except Exception as exc:
-            logger.warning("NIfTI DVH: Failed to read RTDOSE: %s", exc)
-            return results
-
-        dose_grid_scaling = float(getattr(rtdose_ds, "DoseGridScaling", 1.0))
-
-        # Resample dose to CT geometry (linear interpolation)
-        dose_in_ct = sitk.Resample(
-            dose_sitk, ct_image,
-            sitk.Transform(), sitk.sitkLinear,
-            0.0, dose_sitk.GetPixelID(),
-        )
-        grid_support_ct = resample_grid_support(dose_sitk, ct_image)
-        dose_ct_arr = sitk.GetArrayFromImage(dose_in_ct).astype(np.float64) * dose_grid_scaling
+    from .dvh_rotation import PatientDoseGrid
+    try:
+        grid = rotated_grid or composite_grid or PatientDoseGrid(rtdose_ds)
+        dose_ct_arr, grid_support_ct = grid.sample_image(
+            ct_image, half_voxel_edges=rotated_grid is None)
+    except (AttributeError, TypeError, ValueError, IndexError) as exc:
+        logger.warning("NIfTI DVH: failed to sample the RTDOSE geometry in %s: %s", rd_path, exc)
+        return results
     max_dose_gy = float(np.max(dose_ct_arr)) if dose_ct_arr.size > 0 else 0.0
     ct_voxel_vol_cm3 = (ct_spacing[0] * ct_spacing[1] * ct_spacing[2]) / 1000.0
 
@@ -3252,6 +3324,8 @@ def _compute_nifti_based_dvh(
             continue
         try:
             coverage = mask_grid_coverage(mask_zyx, grid_support_ct, ct_voxel_vol_cm3)
+            if composite_grid is not None:
+                coverage["method"] = "composite_all_source_grid_support"
             dose_values = dose_ct_arr[mask_zyx]
             if dose_values.size == 0:
                 continue
@@ -3413,6 +3487,47 @@ def _publish_skipped_course_rs_custom(
         raise RuntimeError(f"RS_custom could not be built for {course_dir}")
 
 
+def _nominal_dvh_prescription(contract):
+    """Convert the verified nominal source prescription to total-course Gy."""
+    confirmed = contract.resolved_prescribed_dose_total_gy
+    if confirmed is None:
+        return None
+    delivery = contract.delivery
+    if delivery.get("prescription_source") == "CLINICAL_RECORD":
+        return confirmed
+
+    from .prescription import (aggregate_course_prescription_values,
+                               contracted_source_prescription)
+    classification = contract.data["dose_classification"]
+    prescription_uids = set(classification.get("prescription_plan_uids") or [])
+    nominal_totals = []
+    for plan in contract.selected_plans:
+        if prescription_uids and plan["sop_instance_uid"] not in prescription_uids:
+            continue
+        groups = plan["prescription_groups"]
+        if len(groups) != 1:
+            nominal_totals.append(None)
+            continue
+        group = groups[0]
+        source = group.get("source_prescribed_dose_gy")
+        scope = group.get("prescribed_dose_scope")
+        if (group.get("source_prescribed_dose_tag_path") or "").startswith("DoseReferenceSequence["):
+            path = contract.resolve_path(plan["path"], "selected_plans.path")
+            current = contracted_source_prescription(pydicom.dcmread(path, stop_before_pixels=True))
+            if (current is None or current["tag_path"] != group["source_prescribed_dose_tag_path"]):
+                nominal_totals.append(None)
+                continue
+        if source is None or scope not in {"TOTAL", "PER_FRACTION", "INDETERMINATE_SINGLE_FRACTION"}:
+            nominal_totals.append(None)
+        elif scope == "PER_FRACTION":
+            nominal_totals.append(source * group["planned_fractions"])
+        else:
+            nominal_totals.append(source)
+    sum_all = (delivery.get("prescribed_dose_scope") == "COURSE_TOTAL_SUMMED"
+               or bool(classification.get("should_sum") and len(contract.selected_doses) > 1))
+    return aggregate_course_prescription_values(nominal_totals, sum_all=sum_all)
+
+
 def _compute_dvh_for_course(
     course_dir: Path,
     custom_structures_config: Optional[Union[str, Path]] = None,
@@ -3495,10 +3610,8 @@ def _compute_dvh_for_course(
         and not dose_resolution.planning_dose_basis
         and not dose_resolution.composite_dose_basis
     )
-    prescription_resolved = bool(
-        dose_response_eligible
-        and contract.resolved_prescribed_dose_total_gy is not None
-    )
+    rx_est = _nominal_dvh_prescription(contract)
+    prescription_resolved = bool(dose_response_eligible and rx_est is not None)
 
     # Check if DVH is already up-to-date (skip recomputation on re-runs).
     if not staging() and _is_dvh_up_to_date(
@@ -3556,15 +3669,28 @@ def _compute_dvh_for_course(
             logger.error("Failed to read RP/RD even with force=True: %s", e)
             return None
 
+    require_physical_gy_dose(rtdose)
     from .dvh_rotation import (prepare_rotated_dose, DoseOrientationError,
+                               DoseGridCoordinates, PatientDoseGrid,
                                add_brachy_metrics, MAX_ROTATION_DEGREES)
+    dose_frame = str(getattr(rtdose, "FrameOfReferenceUID", "") or "").strip()
+    composite_grid = None
+    source_grids = ()
+    if str(rtdose.SOPInstanceUID) not in dose_resolution.source_dose_sop_instance_uids:
+        source_grids = tuple(DoseGridCoordinates(pydicom.dcmread(path, stop_before_pixels=True))
+                             for path in dose_resolution.selected_dose_paths or [])
+        if not source_grids:
+            raise CourseContractError("COMPOSITE_DOSE_SUPPORT_UNAVAILABLE")
     rotated_grid = None
     rotation_error = None
     rotation_metadata = None
     try:
-        rotated_grid = prepare_rotated_dose(rtdose)
+        rotated_grid = prepare_rotated_dose(rtdose, source_grids=source_grids)
         if rotated_grid is not None:
             rotation_metadata = rotated_grid.provenance
+            composite_grid = rotated_grid if source_grids else None
+        elif source_grids:
+            composite_grid = PatientDoseGrid(rtdose, source_grids=source_grids)
     except DoseOrientationError as exc:
         rotation_error = str(exc)
         try:
@@ -3634,22 +3760,43 @@ def _compute_dvh_for_course(
             rtstruct_sop_uid,
             rtstruct_path,
             automatic_source,
+            roi_frame,
+            geometry_sha256,
         ) = task
-        coverage = roi_nonvolume_coverage(geometry_rtstruct_ds, int(roi_number),
-                                          automatic_source=automatic_source)
+        coverage = None
+        if not roi_frame or not dose_frame:
+            coverage = {"status": "roi_frame_of_reference_unresolved",
+                        "reason_code": "ROI_FRAME_OF_REFERENCE_UNRESOLVED",
+                        "reason": "An explicit ROI and RTDOSE frame is required."}
+        elif roi_frame != dose_frame:
+            coverage = {"status": "roi_frame_of_reference_mismatch",
+                        "reason_code": "ROI_FRAME_OF_REFERENCE_MISMATCH",
+                        "reason": "The declared ROI frame differs from the RTDOSE frame."}
+        if coverage is None:
+            coverage = roi_nonvolume_coverage(geometry_rtstruct_ds, roi_number,
+                                              automatic_source=automatic_source)
         if coverage is None:
             coverage = (rotated_grid.coverage(geometry_rtstruct_ds, int(roi_number))
                     if rotated_grid is not None else
                     rtstruct_grid_coverage(geometry_rtstruct_ds, int(roi_number), rtdose))
         alignment = None
-        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours",
-                                  "nonmeasurable_auto_sliver"}:
-            unavailable = annotate_dvh_metrics(
+        identity = {"ROI_Number": roi_number, "ROI_Name": roi_name,
+                    "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
+                    "roi_geometry_sha256": geometry_sha256}
+
+        def unavailable(status, reason=None, error=None):
+            disposition = dict(coverage)
+            if coverage["status"] == "fully_covered" or (
+                    error is None and coverage["status"] != "partial_grid"):
+                disposition["status"] = status
+            if reason is not None:
+                disposition.update(reason=reason, reason_code=status.upper())
+            metrics = annotate_dvh_metrics(
                 {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS), "Volume (cm³)": None,
                  "DmeanGy": None, "DmaxGy": None, "DminGy": None,
                  "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
                  "D0.03ccGy": None, "D0.1ccGy": None, "D1ccGy": None,
-                 "D90Gy": None, "D2ccGy": None, "D2cc_status": coverage["status"]},
+                 "D90Gy": None, "D2ccGy": None, "D2cc_status": status},
                 technique=treatment_technique, structure_name=roi_name,
                 structure_interpreted_type=roi_interpreted_type,
                 target_like=_is_target_structure(roi_name, roi_interpreted_type),
@@ -3657,56 +3804,64 @@ def _compute_dvh_for_course(
                 dose_response_eligible=dose_response_eligible,
                 dose_response_ineligibility_reason=contract_dose_completeness_reason,
                 rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
-                grid_coverage=coverage,
+                grid_coverage=disposition,
             )
-            unavailable.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
-                                "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
-                                "row_status": "not_computed",
-                                "dvh_nonmeasurement_class": coverage["status"],
-                                "_curve_data": []})
-            return unavailable
+            metrics.update(identity, row_status="not_computed", dvh_nonmeasurement_class=status,
+                           _curve_data=[])
+            if error is not None:
+                metrics["dvh_computation_error"] = error
+            if alignment is not None:
+                metrics["dose_plane_alignment"] = alignment
+            return metrics
+
+        if coverage["status"] in {"declared_empty", "non_volumetric", "degenerate_contours",
+                                  "nonmeasurable_auto_sliver", "roi_frame_of_reference_mismatch",
+                                  "roi_frame_of_reference_unresolved"}:
+            return unavailable(coverage["status"])
+        contours, unresolved = _dose_grid_contour_coordinates(geometry_rtstruct_ds, roi_number)
         try:
             if rotation_error:
                 raise DoseOrientationError(rotation_error)
             roi_dose = rtdose
             if rotated_grid is None:
+                positions = [float(p[:, 2].mean()) for p in contours]
+                if not unresolved and positions and max(positions) - min(positions) <= .001:
+                    return unavailable("insufficient_contour_planes_for_volume",
+                                       "Fewer than two contour planes bound a volume.")
                 roi_dose, alignment = dose_on_contour_planes(rtstruct_ds, rtdose, roi_number)
             abs_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number)
                        if rotated_grid is not None else
-                       dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number))
-            metrics = _compute_metrics(
-                abs_dvh, rx_value,
-                None if rotated_grid is not None else
-                lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
+                       _axial_roi_dvh(rtstruct_ds, roi_dose, roi_number, composite_grid=composite_grid))
+            if composite_grid is not None and contours and not unresolved:
+                complete = (abs_dvh.notes["all_in_plane_samples_supported"]
+                            and all(composite_grid.support_at(p)[1].all() for p in contours))
+                if coverage["status"] == "fully_covered" and not complete:
+                    coverage = {**coverage, "status": "partial_grid" if abs_dvh.volume else "outside_grid",
+                                "fraction": None if abs_dvh.volume else 0.,
+                                "method": "composite_all_source_grid_support",
+                                "reason": "Complete composite dose requires support from every source grid."}
+            if abs_dvh.volume == 0 and coverage["status"] in {"fully_covered", "partial_grid"}:
+                if coverage["status"] == "partial_grid":
+                    volume = coverage.get("roi_volume_cm3")
+                    if volume is None and not unresolved:
+                        volume = contour_geometry_volume(contours)
+                    coverage = {**coverage, "roi_volume_cm3": volume, "covered_volume_cm3": 0.}
+                return unavailable("no_dose_grid_point_sampled",
+                                   "No supported dose-grid point was sampled inside the ROI contours.")
+            summary = (None if isinstance(getattr(abs_dvh, "notes", None), dict) or rotated_grid is not None else
+                       lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
+            metrics = _compute_metrics(abs_dvh, rx_value, summary)
         except MemoryError:
             raise
+        except DoseOrientationError as exc:
+            if str(exc) == "rotated_dose_insufficient_contour_planes_for_volume":
+                return unavailable("insufficient_contour_planes_for_volume",
+                                   "Fewer than two contour planes bound a volume.")
+            logger.error("DVH failed for ROI %s: %s", roi_name, exc)
+            return unavailable("dvh_computation_failed", error=str(exc))
         except Exception as exc:
             logger.error("DVH failed for ROI %s: %s", roi_name, exc)
-            failed = annotate_dvh_metrics(
-                {**dict.fromkeys(RELATIVE_DVH_METRIC_COLUMNS),
-                 "Volume (cm³)": None,
-                 "DmeanGy": None, "DmaxGy": None, "DminGy": None,
-                 "D98Gy": None, "D95Gy": None, "D50Gy": None, "D2Gy": None,
-                 "D0.03ccGy": None, "D0.03cc_status": "dvh_computation_failed",
-                 "D2ccGy": None, "D2cc_status": "dvh_computation_failed"},
-                technique=treatment_technique, structure_name=roi_name,
-                structure_interpreted_type=roi_interpreted_type,
-                target_like=_is_target_structure(roi_name, roi_interpreted_type),
-                prescription_resolved=prescription_resolved,
-                dose_response_eligible=dose_response_eligible,
-                dose_response_ineligibility_reason=contract_dose_completeness_reason,
-                rtstruct_sop_instance_uid=rtstruct_sop_uid, rtstruct_path=rtstruct_path,
-                grid_coverage=coverage if coverage["status"] != "fully_covered" else
-                    {**coverage, "status": "dvh_computation_failed"},
-            )
-            failed.update({"ROI_Number": int(roi_number), "ROI_Name": roi_name,
-                           "ROI_OriginalName": roi_name, "Segmentation_Source": source_label,
-                           "dvh_computation_error": str(exc), "_curve_data": []})
-            if alignment is not None:
-                failed["dose_plane_alignment"] = alignment
-            return failed
-        if abs_dvh.volume == 0 and coverage["status"] == "fully_covered":
-            return None
+            return unavailable("dvh_computation_failed", error=str(exc))
         if abs_dvh.volume < 1.0:
             logger.warning(
                 "Structure '%s' has very small volume (%.3f cc); "
@@ -3722,15 +3877,18 @@ def _compute_dvh_for_course(
                        "Volume (cm³)": coverage.get("roi_volume_cm3")}
         covered = None
         if coverage["status"] == "partial_grid":
-            covered_dvh = (rotated_grid.get_dvh(rtstruct_ds, roi_number, calculate_full_volume=False)
-                           if rotated_grid is not None else
-                           dvhcalc.get_dvh(rtstruct_ds, roi_dose, roi_number, calculate_full_volume=False))
-            covered = _compute_metrics(
-                covered_dvh, rx_value,
-                None if rotated_grid is not None else
-                lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
-            if rotated_grid is not None:
-                covered = add_brachy_metrics(covered_dvh, covered)
+            if rotated_grid is not None or composite_grid is not None:
+                covered, covered_dvh = metrics, abs_dvh
+            else:
+                covered_dvh = _axial_roi_dvh(rtstruct_ds, roi_dose, roi_number, calculate_full_volume=False)
+                covered_summary = (None if isinstance(getattr(covered_dvh, "notes", None), dict) else
+                                   lambda: _rtstruct_dose_summary(rtstruct_ds, roi_dose, roi_number))
+                covered = _compute_metrics(covered_dvh, rx_value, covered_summary)
+            volume = coverage.get("roi_volume_cm3")
+            if volume is None and not unresolved:
+                volume = contour_geometry_volume(contours)
+            coverage = {**coverage, "roi_volume_cm3": volume,
+                        "covered_volume_cm3": float(covered_dvh.volume)}
         target_like = _is_target_structure(roi_name, roi_interpreted_type)
         zero_qc = _near_zero_dose_geometry_qc(
             metrics,
@@ -3794,10 +3952,8 @@ def _compute_dvh_for_course(
 
         metrics.update(
             {
-                "ROI_Number": int(roi_number),
+                **identity,
                 "ROI_Name": display_name,
-                "ROI_OriginalName": roi_name,
-                "Segmentation_Source": source_label,
                 "structure_cropped": cropped,
                 "rtstruct_sop_instance_uid": rtstruct_sop_uid,
                 "rtstruct_path": str(logical_path(rtstruct_path)),
@@ -3829,15 +3985,26 @@ def _compute_dvh_for_course(
         rois = list(getattr(rtstruct, "StructureSetROISequence", []) or [])
         if not rois:
             return
+        geometry_records = {}
+        for item in getattr(rtstruct, "ROIContourSequence", []) or []:
+            try:
+                number = int(item.ReferencedROINumber)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            geometry_records.setdefault(number, []).append(item.to_json())
         tasks = []
         for roi in rois:
             roi_name = str(getattr(roi, "ROIName", ""))
             try:
                 roi_number = int(roi.ROINumber)
             except Exception:
-                roi_number = int(getattr(roi, "ROINumber", 0) or 0)
-            if roi_number <= 0:
                 continue
+            if roi_number < 0:
+                continue
+            roi_frame = str(getattr(roi, "ReferencedFrameOfReferenceUID", "") or "").strip()
+            records = geometry_records.get(roi_number)
+            geometry_sha256 = (hashlib.sha256(json.dumps([roi_frame, records]).encode()).hexdigest()
+                               if records else None)
             tasks.append((
                 roi_number,
                 roi_name,
@@ -3850,6 +4017,8 @@ def _compute_dvh_for_course(
                 rs_source.sop_instance_uid,
                 logical_path(rs_path),
                 automatic_source,
+                roi_frame,
+                geometry_sha256,
             ))
 
         if not tasks:
@@ -3874,9 +4043,6 @@ def _compute_dvh_for_course(
             if item:
                 results.append(item)
 
-    # Relative dose arithmetic requires the BeamDose-confirmed total, not the
-    # preserved source value whose temporal scope may be unresolved.
-    rx_est = contract.resolved_prescribed_dose_total_gy
     rx_source = "course_contract_resolved_total" if rx_est is not None else "none"
     rx_recovery_attempted = True
     if rx_dose_gy is not None and rx_dose_gy > 0:
@@ -3933,7 +4099,7 @@ def _compute_dvh_for_course(
         rs_model = model_course_dir / "rtstruct.dcm"
         if not rs_model.exists():
             continue
-        if not structure_resolution.allow_nifti_direct or not _rtstruct_matches_dose_for(rs_model, _dose_frame_of_reference_uid(rd)):
+        if not structure_resolution.allow_nifti_direct:
             logger.warning(
                 "Skipping custom model RTSTRUCT %s: structure geometry is not compatible with selected RTDOSE",
                 rs_model,
@@ -3952,6 +4118,7 @@ def _compute_dvh_for_course(
             rtdose_ds=rtdose,
             rd_path=rd,
             rotated_grid=rotated_grid,
+            composite_grid=composite_grid,
             rx_est=rx_est,
             existing_roi_names=existing_roi_names,
             technique=treatment_technique,
@@ -4015,10 +4182,7 @@ def _compute_dvh_for_course(
             # Same conditions as the rows' Prescribed_Dose_Status / Delivered_Dose_Status
             # "resolved", which are attached after this call.
             course_prescription_gy=(
-                dose_resolution.prescribed_dose_gy
-                if dose_plan_scope.complete
-                and dose_resolution.resolved_prescribed_dose_total_gy is not None
-                else None
+                rx_est if dose_plan_scope.complete else None
             ),
             course_delivery_resolved=bool(
                 dose_plan_scope.complete and dose_resolution.delivered_dose_gy is not None
@@ -4079,6 +4243,8 @@ def _compute_dvh_for_course(
             logger.warning("Failed to save DVH curves JSON: %s", e)
 
     for row in clean_results:
+        mean = row.get("DmeanGy")
+        row.setdefault("row_status", "computed" if mean is not None and np.isfinite(mean) else "not_computed")
         if rotation_metadata is not None:
             row.setdefault("D90Gy", None)
             row.setdefault("D2ccGy", None)
@@ -4125,29 +4291,27 @@ def _compute_dvh_for_course(
         row["Course_Target_Geometry_Unresolved_Count"] = target_coverage[
             "geometry_unresolved_count"
         ]
-        row["Prescribed_Dose_Gy"] = dose_resolution.prescribed_dose_gy
+        nominal_source = dose_resolution.prescribed_dose_gy
+        row["Prescribed_Dose_Gy"] = rx_est if rx_est is not None else nominal_source
+        if rx_est is not None and nominal_source != rx_est:
+            row["Source_Prescribed_Dose_Gy"] = nominal_source
+        row["Prescription_Normalization_Gy"] = (
+            rx_est if row.get("relative_metric_status") == "computed" else None
+        )
         row["Prescribed_Dose_Status"] = (
-            "resolved"
-            if dose_plan_scope.complete
-            and dose_resolution.resolved_prescribed_dose_total_gy is not None
-            else "resolved_selected_plan_scope_only"
-            if dose_resolution.resolved_prescribed_dose_total_gy is not None
+            "resolved" if dose_plan_scope.complete and rx_est is not None
+            else "resolved_selected_plan_scope_only" if rx_est is not None
             else "unresolved"
         )
         row["Prescribed_Dose_Reason"] = (
             "Prescription total is available for the complete course plan set."
-            if dose_plan_scope.complete
-            and dose_resolution.resolved_prescribed_dose_total_gy is not None
+            if dose_plan_scope.complete and rx_est is not None
             else (
                 "The prescription is resolved for the selected dose plan scope, but the "
                 "dose grid does not represent the complete course treatment plan set."
             )
-            if dose_resolution.resolved_prescribed_dose_total_gy is not None
-            else (
-                "Prescription is present but its course total is unresolved."
-                if dose_resolution.prescribed_dose_gy is not None
-                else "Prescription is absent from the authoritative course contract."
-            )
+            if rx_est is not None else "Prescription is present but its course total is unresolved."
+            if nominal_source is not None else "Prescription is absent from the authoritative course contract."
         )
         row["Delivered_Dose_Gy"] = dose_resolution.delivered_dose_gy
         row["Delivered_Dose_Provenance"] = dose_resolution.delivered_dose_provenance

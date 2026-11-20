@@ -165,7 +165,8 @@ def test_scoped_reader_preserves_distinct_stored_names_by_number(source):
     reader=create_scoped_rtstruct(source[0],source[1])
     for number,expected in enumerate(source[3:],1):
         assert np.array_equal(reader.get_roi_mask_by_number(number),expected)
-    assert np.array_equal(reader.get_roi_mask_by_name(' Organ'),source[4])
+    with pytest.raises(ValueError, match='RTSTRUCT_AMBIGUOUS_ROI_NAME'):
+        reader.get_roi_mask_by_name(' Organ')
 
 def test_qc_cropping_is_bound_to_the_second_roi_number(source,tmp_path):
     from rtpipeline.quality_control import DICOMValidator

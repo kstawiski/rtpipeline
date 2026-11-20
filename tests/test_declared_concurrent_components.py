@@ -282,7 +282,19 @@ def test_rejected_declaration_is_legacy_selection_with_visible_reason(tmp_path, 
             ds.ReferencedRTPlanSequence.append(ref)
         change(fixture["doses"][0], shared)
     monkeypatch.delenv(ENV, raising=False)
-    expected = asdict(legacy._classify_doses(fixture["plans"], fixture["doses"]))
+    if failure in {"duplicate_dose", "shared_dose_reference"}:
+        # These two fixtures exercised the historical filename tie-break.
+        # A rejected declaration still leaves the ordinary selector in charge.
+        fallback = classify(fixture)
+        if failure == "duplicate_dose":
+            assert fallback.classification == "ambiguous_dose_grid"
+            assert fallback.selected_doses == []
+        else:
+            assert fallback.classification == org.INDEPENDENT_DELIVERY_UNRECONCILED
+            assert fallback.selected_doses == []
+        expected = asdict(fallback)
+    else:
+        expected = asdict(legacy._classify_doses(fixture["plans"], fixture["doses"]))
     declare(tmp_path, monkeypatch, uids)
     actual = asdict(classify(fixture))
     warnings = actual.pop("warnings")

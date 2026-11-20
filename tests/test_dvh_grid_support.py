@@ -145,7 +145,8 @@ def test_dvh_cache_rejects_changed_component_bytes(tmp_path, monkeypatch):
         'structure_provenance_status', 'zero_dose_status', 'zero_dose_trigger_metric',
         'Dose_Plan_Scope_Status', 'Course_Treatment_Isocenter_Status',
         'Course_Treatment_Isocenter_Count', 'Course_Target_Dose_Coverage_Status']}
-    row.update(structure_provenance_type='DERIVED_NIFTI_MASK',
+    row.update(DmeanGy=1., row_status='computed',
+               structure_provenance_type='DERIVED_NIFTI_MASK',
                structure_provenance_path=str(closure),
                structure_provenance_sha256=sha256_file(closure))
     parquet = tmp_path / 'dvh_metrics.parquet'
@@ -208,14 +209,32 @@ def test_d003_nonconstant_backend_agreement_one_cgy_tolerance():
     assert b['D0.1ccGy']<=b['D0.03ccGy']<=b['DmaxGy']
 
 
-def test_all_preexisting_fully_covered_metric_bytes_unchanged():
+def test_fully_covered_metrics_preserve_unaffected_bytes_and_use_exact_thresholds():
+    import re
     import struct
-    golden=json.loads((Path(__file__).parent/'fixtures/dvh_prepatch_metrics.json').read_text())
+    from dvh_plan_target_fixtures import dvh_305_changes_metric
+
+    golden = json.loads((Path(__file__).parent/'fixtures/dvh_prepatch_metrics.json').read_text())
     for case in golden:
-        result=dvh._compute_metrics_from_arrays(np.asarray(case['doses']),case['voxel_volume'],case['max_dose'],case['rx'])
-        for key,value in case['metrics'].items():
-            if value is None:assert result[key] is None
-            else:assert struct.pack('!d',result[key])==struct.pack('!d',value),key
-        row=annotated(result,{'status':'fully_covered','fraction':1.})
-        for key in ['DmeanGy','DmaxGy','DminGy','D95Gy','D0.1ccGy']:
-            assert row[key]==result[key]
+        samples = np.asarray(case['doses'])
+        voxel_volume = case['voxel_volume']
+        result = dvh._compute_metrics_from_arrays(samples, voxel_volume, case['max_dose'], case['rx'])
+        for key, value in case['metrics'].items():
+            threshold = re.fullmatch(r'V(\d+)(Gy|%Rx) \((cm³|%)\)', key)
+            if threshold:
+                level, scale, unit = threshold.groups()
+                if scale == '%Rx' and case['rx'] is None:
+                    assert result[key] is None
+                    continue
+                dose = float(level) if scale == 'Gy' else float(level)/100. * case['rx']
+                count = np.count_nonzero(samples >= dose)
+                expected = count * voxel_volume if unit == 'cm³' else 100. * count / len(samples)
+                assert result[key] == pytest.approx(expected, abs=1e-12), key
+            elif not dvh_305_changes_metric(key):
+                if value is None:
+                    assert result[key] is None
+                else:
+                    assert struct.pack('!d', result[key]) == struct.pack('!d', value), key
+        row = annotated(result, {'status': 'fully_covered', 'fraction': 1.})
+        for key in ['DmeanGy', 'DmaxGy', 'DminGy', 'D95Gy', 'D0.1ccGy']:
+            assert row[key] == result[key]

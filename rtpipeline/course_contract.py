@@ -1114,6 +1114,44 @@ class CourseContract:
         return plan, dose
 
 
+def _beam_dose_coverage(dose: Dataset) -> list[tuple[str, int, int]]:
+    """Return explicitly referenced plan, fraction group and beam triples."""
+    return [
+        (str(plan.ReferencedSOPInstanceUID), int(group.ReferencedFractionGroupNumber),
+         int(beam.ReferencedBeamNumber))
+        for plan in getattr(dose, "ReferencedRTPlanSequence", []) or []
+        for group in getattr(plan, "ReferencedFractionGroupSequence", []) or []
+        for beam in getattr(group, "ReferencedBeamSequence", []) or []
+    ]
+
+
+def _beam_coverage_refusal(coverage: list[list[tuple[str, int, int]]], plan: Dataset) -> str | None:
+    """Verify that each intended fraction-group beam contributes exactly once."""
+    try:
+        expected = [
+            (str(plan.SOPInstanceUID), int(group.FractionGroupNumber), int(beam.ReferencedBeamNumber))
+            for group in getattr(plan, "FractionGroupSequence", []) or []
+            for beam in getattr(group, "ReferencedBeamSequence", []) or []
+        ]
+        observed = [item for entries in coverage for item in entries]
+        if len(observed) != len(set(observed)):
+            return "duplicate_beam_dose_coverage"
+        if (not all(coverage) or not expected or len(expected) != len(set(expected))
+                or set(observed) != set(expected)):
+            return "unresolved_beam_dose_coverage"
+    except (AttributeError, ValueError, TypeError):
+        return "unresolved_beam_dose_coverage"
+    return None
+
+
+def require_physical_gy_dose(dataset: Dataset) -> None:
+    """Require explicit physical dose in Gy before using an authoritative grid."""
+    units = str(getattr(dataset, "DoseUnits", "") or "").strip().upper()
+    dose_type = str(getattr(dataset, "DoseType", "") or "").strip().upper()
+    if units != "GY" or dose_type != "PHYSICAL":
+        raise CourseContractError("RTDOSE_NOT_PHYSICAL_GY: authoritative RTDOSE requires GY and PHYSICAL")
+
+
 def _validate_dicom_identity(
     contract: CourseContract,
     item: dict[str, Any],
@@ -1144,6 +1182,8 @@ def _validate_dicom_identity(
                 f"(Modality={sorted(modalities)!r}, SOPClassUID={sorted(sop_classes)!r}), "
                 f"found (Modality={actual_modality!r}, SOPClassUID={actual_sop_class!r})"
             )
+    if field == "dose_grid":
+        require_physical_gy_dose(dataset)
     if summation_type:
         expected_type = _nonempty_text(
             item.get("dose_summation_type"), f"{field}.dose_summation_type"
@@ -1567,6 +1607,7 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
 
     dose_uids: list[str] = []
     selected_types: list[str] = []
+    beam_coverages: list[list[tuple[str, int, int]]] = []
     for index, item in enumerate(selected_doses):
         field = f"selected_doses[{index}]"
         dose_path = _validate_dicom_identity(
@@ -1584,10 +1625,13 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             not isinstance(value, str) or not value.strip() for value in expected_references
         ):
             raise CourseContractError(f"{field}.referenced_plan_uids must be a list of nonempty strings")
-        actual_references = _referenced_sop_uids(
-            _read_header(dose_path, f"{field}.path"),
-            "ReferencedRTPlanSequence",
-        )
+        header = _read_header(dose_path, f"{field}.path")
+        if selected_types[-1] in BEAM_LEVEL_DOSE_SUMMATION_TYPES:
+            try:
+                beam_coverages.append(_beam_dose_coverage(header))
+            except (AttributeError, ValueError, TypeError):
+                raise CourseContractError("unresolved_beam_dose_coverage") from None
+        actual_references = _referenced_sop_uids(header, "ReferencedRTPlanSequence")
         if set(actual_references) != set(expected_references):
             raise CourseContractError(
                 f"stale course contract at {field}: referenced RTPLAN UIDs "
@@ -1623,6 +1667,10 @@ def validate_course_contract(contract: CourseContract) -> CourseContract:
             raise CourseContractError(
                 "BEAM RTDOSE sources require at least two components for exactly one selected RTPLAN"
             )
+        refusal = _beam_coverage_refusal(
+            beam_coverages, _read_header(treatment_plan_paths[0], "selected_plans[0].path"))
+        if refusal:
+            raise CourseContractError(refusal)
 
     should_sum_prescriptions = bool(
         data["dose_classification"].get("should_sum") and len(selected_doses) > 1

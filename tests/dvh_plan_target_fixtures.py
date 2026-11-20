@@ -8,6 +8,7 @@ near-zero dose, so a box ROI on either side has a predictable D95.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -42,6 +43,35 @@ DOSE_UID = f"{UID_ROOT}.3"
 RTSTRUCT_UID = f"{UID_ROOT}.4"
 OTHER_RTSTRUCT_UID = f"{UID_ROOT}.5"
 STUDY_UID = f"{UID_ROOT}.6"
+
+
+DVH_305_COLUMNS = {"roi_geometry_sha256", "row_status", "Prescription_Normalization_Gy"}
+
+
+def dvh_305_changes_metric(column):
+    """Metrics affected by exact thresholds, hot plateaus or sub-cGy samples."""
+    return bool(re.fullmatch(
+        r"V[0-9].*|D(?:98|95|50|2)(?:Gy|%)|D(?:1cc|0\.1cc|0\.03cc)Gy|HI%?", column))
+
+
+def assert_exact_vx_two_level_fixture(frame):
+    """The 0/20 Gy field has known Vx from its high-dose volume fraction."""
+    for row in frame.to_dict("records"):
+        mean = row["DmeanGy"]
+        high_fraction = (mean - .005) / HIGH_DOSE_GY if mean > 0. else 0.
+        for threshold in range(1, 61):
+            expected = high_fraction if threshold <= HIGH_DOSE_GY else 0.
+            np.testing.assert_allclose(row[f"V{threshold}Gy (%)"], 100.*expected, atol=1e-10, rtol=0)
+            np.testing.assert_allclose(row[f"V{threshold}Gy (cm³)"],
+                                       row["Volume (cm³)"]*expected, atol=1e-10, rtol=0)
+        if row["relative_metric_status"] == "computed":
+            assert row["Prescription_Normalization_Gy"] == row["Prescribed_Dose_Gy"]
+            for threshold in (95, 100):
+                actual = row[f"V{threshold}%Rx (%)"]
+                expected = high_fraction if threshold/100.*row["Prescribed_Dose_Gy"] <= HIGH_DOSE_GY else 0.
+                np.testing.assert_allclose(actual, 100.*expected, atol=1e-10, rtol=0)
+        else:
+            assert pd.isna(row["Prescription_Normalization_Gy"])
 
 
 def assert_d2cc_columns(frame):

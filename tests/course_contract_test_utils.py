@@ -90,6 +90,13 @@ def write_bound_aggregation_sentinels(
         stream = BytesIO()
         pd.read_excel(BytesIO(payloads["dvh_metrics.xlsx"])).to_parquet(stream, index=False)
         payloads["dvh_metrics.parquet"] = stream.getvalue()
+    if "dvh_metrics.parquet" in payloads:
+        frame = pd.read_parquet(BytesIO(payloads["dvh_metrics.parquet"]))
+        if not generation.measured_rows(frame).any():
+            qc = json.loads(payloads["metadata/dvh_qc.json"])
+            if qc["status"] == "ok":
+                qc["status"] = "degraded"
+                payloads["metadata/dvh_qc.json"] = json.dumps(qc).encode()
     for stage, status in statuses.items():
         definition = stage_definition(stage)
         dependency = materialize_stage_dependency(
@@ -267,6 +274,8 @@ def write_synthetic_plan_and_dose(
     dose = _file_dataset(dose_path, RTDoseStorage, generate_uid())
     dose.Modality = "RTDOSE"
     dose.PatientID = course_dir.parent.name
+    dose.DoseUnits = "GY"
+    dose.DoseType = "PHYSICAL"
     dose.DoseSummationType = "PLAN"
     plan_reference = Dataset()
     plan_reference.ReferencedSOPClassUID = RTPlanStorage

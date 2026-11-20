@@ -137,14 +137,14 @@ def test_large_rotation_fails_explicitly(tmp_path, angle):
         prepare_rotated_dose(dose)
 
 
-def test_nonorthonormal_and_nonuniform_fail_closed(tmp_path):
+def test_nonorthonormal_and_nonmonotone_fail_closed(tmp_path):
     dose = analytic_dose(tmp_path/'dose.dcm', .1)
     dose.ImageOrientationPatient[3] = .001
     with pytest.raises(DoseOrientationError, match='non_orthonormal'):
         prepare_rotated_dose(dose)
     rotate(dose, .1)
-    dose.GridFrameOffsetVector[10] += .1
-    with pytest.raises(DoseOrientationError, match='invalid_or_nonuniform_grid'):
+    dose.GridFrameOffsetVector[10] += 1.
+    with pytest.raises(DoseOrientationError, match='rotated_dose_invalid_grid'):
         prepare_rotated_dose(dose)
 
 
@@ -204,11 +204,10 @@ def historical_dvh(tmp_path):
                                        [0,1,0,-1,0,0], [0,-1,0,1,0,0],
                                        [1,0,0,0,-1,0], [0,1,0,1,0,0], [0,-1,0,-1,0,0]])
 def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatch, orientation):
-    """Exact historical publication content with explicit alignment metadata.
+    """Preserve unaffected historical values, dtypes, row order and curves.
 
-    Historical columns retain exact values, dtypes, row order and serialized
-    bytes. Alignment metadata and the code identity are checked separately.
-    Workbook packaging time is fixed for both implementations.
+    Vx follows the analytic two-level field. The new ROI identity and Rx
+    denominator accompany the measurement in both table formats.
     """
     import xlsxwriter.core
     from rtpipeline.config_dependencies import materialize_stage_dependency
@@ -255,7 +254,7 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     old_table = pd.read_parquet(BytesIO(old['dvh_metrics.parquet']))
     new_table = pd.read_parquet(BytesIO(new['dvh_metrics.parquet']))
     assert set(new_table.columns) == set(old_table.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'} | fx.DVH_305_COLUMNS
     fx.assert_d2cc_columns(new_table)
     assert new_table.loc[new_table.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
     assert new_table.loc[new_table.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
@@ -264,41 +263,31 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     alignment = new_table['dose_plane_alignment']
     assert set(alignment) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert alignment.tolist() == ['EXACT'] * len(old_table)
-    projected_table = new_table.loc[:, old_table.columns]
-    pd.testing.assert_frame_equal(projected_table, old_table, check_dtype=True,
-                                  check_exact=True, check_like=False)
+    unchanged = [column for column in old_table.columns if not fx.dvh_305_changes_metric(column)]
+    pd.testing.assert_frame_equal(new_table.loc[:, unchanged], old_table.loc[:, unchanged],
+                                  check_dtype=True, check_exact=True, check_like=False)
+    fx.assert_exact_vx_two_level_fixture(new_table)
 
     old_workbook = pd.read_excel(BytesIO(old['dvh_metrics.xlsx']))
     new_workbook = pd.read_excel(BytesIO(new['dvh_metrics.xlsx']))
     assert set(new_workbook.columns) == set(old_workbook.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'} | fx.DVH_305_COLUMNS
     fx.assert_d2cc_columns(new_workbook)
     assert new_workbook.dose_grid_coverage_reason.notna().all()
     assert new_workbook.dose_grid_coverage_reason_code.isna().all()
     assert set(new_workbook['dose_plane_alignment']) <= {'EXACT', 'DOSE_Z_INTERPOLATED'}
     assert new_workbook['dose_plane_alignment'].tolist() == ['EXACT'] * len(old_workbook)
-    pd.testing.assert_frame_equal(new_workbook.loc[:, old_workbook.columns], old_workbook,
+    pd.testing.assert_frame_equal(new_workbook.loc[:, unchanged], old_workbook.loc[:, unchanged],
                                   check_dtype=True, check_exact=True, check_like=False)
-
-    projected_new = {}
-    for name in ('dvh_metrics.parquet', 'dvh_metrics.xlsx'):
-        buffer = BytesIO()
-        if name.endswith('.parquet'):
-            projected_table.to_parquet(buffer, index=False)
-        else:
-            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                writer.book.set_properties({"created": datetime.datetime(1980, 1, 1)})
-                projected_table.to_excel(writer, index=False)
-        projected_new[name] = buffer.getvalue()
-        assert old[name] == projected_new[name], name
+    fx.assert_exact_vx_two_level_fixture(new_workbook)
 
     new_curves = json.loads(new['dvh_curves.json'])
     for curve in new_curves['points']:
         curve_alignment = curve.pop('dose_plane_alignment')
         assert curve_alignment in {'EXACT', 'DOSE_Z_INTERPOLATED'}
         assert curve_alignment == 'EXACT'
-    projected_new['dvh_curves.json'] = json.dumps(new_curves, ensure_ascii=False).encode('utf-8')
-    assert old['dvh_curves.json'] == projected_new['dvh_curves.json']
+    projected_curves = json.dumps(new_curves, ensure_ascii=False).encode('utf-8')
+    assert old['dvh_curves.json'] == projected_curves
 
     old_qc = json.loads(old['metadata/dvh_qc.json'])
     new_qc = json.loads(new['metadata/dvh_qc.json'])
@@ -312,16 +301,6 @@ def test_axis_aligned_publication_bytes_against_git_a61b96a(tmp_path, monkeypatc
     assert old_digest != new_digest
     assert old['metadata/dvh_qc.json'].replace(old_digest.encode(), new_digest.encode()) == (
         json.dumps(new_qc, indent=2).encode('utf-8'))
-    old_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
-                   for row in old_receipt['outputs'] if row['role'] != 'dvh_qc']
-    new_content = [{k: row[k] for k in ('path','role','binding','sha256','size_bytes') if k in row}
-                   for row in new_receipt['outputs'] if row['role'] != 'dvh_qc']
-    for row in new_content:
-        if row['path'] in projected_new:
-            content = projected_new[row['path']]
-            row['sha256'] = hashlib.sha256(content).hexdigest()
-            row['size_bytes'] = len(content)
-    assert old_content == new_content
     assert old_receipt['content_closure_sha256'] != new_receipt['content_closure_sha256']
     assert 'dose_grid_resampling' not in new_qc
     assert 'dose_grid_resampling_status' not in pd.read_parquet(course/'dvh_metrics.parquet').columns

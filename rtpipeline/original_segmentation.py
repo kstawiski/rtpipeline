@@ -11,15 +11,22 @@ ORIGINAL_PROVENANCE_SCHEMA = "rtpipeline-original-segmentation-provenance-v2"
 ORIGINAL_SEGMENTATION_SCHEMAS = {ORIGINAL_SEGMENTATION_SCHEMA, NUMBERED_ORIGINAL_SEGMENTATION_SCHEMA}
 
 
-def original_roi_filenames(entries):
-    """Retain released filenames outside the complete collision groups."""
+def roi_name_collision_groups(entries):
+    """Group ROI declarations by normalized names and sanitized filename stems."""
     from .organize import _sanitize_name
+
     stems = [_sanitize_name(name, "ROI") for _, name in entries]
     groups = {}
     for index, ((_, name), stem) in enumerate(zip(entries, stems)):
         for key in (("name", name.strip().casefold()), ("stem", stem.casefold())):
             groups.setdefault(key, []).append(index)
-    colliding = {index for group in groups.values() if len(group) > 1 for index in group}
+    return stems, [group for group in groups.values() if len(group) > 1]
+
+
+def original_roi_filenames(entries):
+    """Retain released filenames outside the complete collision groups."""
+    stems, groups = roi_name_collision_groups(entries)
+    colliding = {index for group in groups for index in group}
     # Include second-order collisions in the released counter-based scheme.
     counts, historical = {}, {}
     for index, stem in enumerate(stems):
@@ -164,13 +171,19 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
     source_rs = Path(metadata["source_rtstruct"])
     # Prefer course-relative copies during atomic localizer repair.
     contract_path = original.parent / "metadata/case_metadata.json"
-    if contract_path.exists() and not metadata.get("source_nifti_sidecar"):
-        contract = json.loads(contract_path.read_text())["course_contract"]
-        current = contract["planning_ct"]["nifti_provenance"]
-        source_rs = original.parent / contract["authoritative_rtstruct"]["path"]
-        nifti_path = contract["planning_ct"].get("nifti_path") or contract["planning_ct"].get("nifti")
-        if nifti_path:
-            source_nifti = original.parent / nifti_path
+    case_metadata = json.loads(contract_path.read_text()) if contract_path.is_file() else {}
+    if "course_contract" in case_metadata:
+        contract = case_metadata["course_contract"]
+        planning = contract.get("planning_ct") or {}
+        current = planning.get("nifti_provenance")
+        rs_path = (contract.get("authoritative_rtstruct") or {}).get("path")
+        nifti_path = planning.get("nifti_path") or planning.get("nifti")
+        if not current or not rs_path or not nifti_path:
+            raise ValueError("source inputs changed: contracted RTSTRUCT or planning CT is unavailable")
+        source_rs = original.parent / rs_path
+        source_nifti = original.parent / nifti_path
+        recorded_sidecar = current.get("sidecar_path")
+        sidecar = original.parent / recorded_sidecar if recorded_sidecar else None
     else:
         stem = source_nifti.name.removesuffix('.gz').removesuffix('.nii')
         sidecar = Path(metadata.get('source_nifti_sidecar') or source_nifti.with_name(stem + '.metadata.json'))
@@ -185,7 +198,7 @@ def _require_current_sources(directory: Path, metadata: dict, provenance: dict) 
     if not all(expected.values()) or any(provenance.get(k) != v for k, v in expected.items()):
         raise ValueError("source inputs changed")
     stem = source_nifti.name.removesuffix('.gz').removesuffix('.nii')
-    publication_path = Path(metadata.get('source_nifti_sidecar') or source_nifti.with_name(stem + '.metadata.json'))
+    publication_path = sidecar or source_nifti.with_name(stem + '.metadata.json')
     publication = json.loads(publication_path.read_text())
     for source_key, export_key in (
         ("nifti_generated_at", "source_nifti_generated_at"),

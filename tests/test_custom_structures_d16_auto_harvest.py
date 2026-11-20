@@ -569,17 +569,18 @@ def _break_reader(monkeypatch, roi_name, *, exception=None):
     """
     from rtpipeline import rtstruct_geometry
 
-    original = rtstruct_geometry.ScopedRTStruct.get_roi_mask_by_name
+    original = rtstruct_geometry.ScopedRTStruct.get_roi_mask_by_number
 
-    def patched(self, name):
+    def patched(self, number):
+        name = self.scopes[number].roi_name
         if name != roi_name:
-            return original(self, name)
+            return original(self, number)
         if exception is not None:
             raise exception
-        return np.zeros_like(original(self, name))
+        return np.zeros_like(original(self, number))
 
     monkeypatch.setattr(
-        rtstruct_geometry.ScopedRTStruct, "get_roi_mask_by_name", patched
+        rtstruct_geometry.ScopedRTStruct, "get_roi_mask_by_number", patched
     )
 
 

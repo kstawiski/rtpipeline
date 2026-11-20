@@ -24,21 +24,22 @@ def test_failed_manual_roi_is_not_replaced_by_same_name_auto_rtstruct(tmp_path, 
 
     def source_scoped_factory(ct_dir, source, *args, **kwargs):
         reader = original_factory(ct_dir, source, *args, **kwargs)
-        original_read = reader.get_roi_mask_by_name
+        original_read = reader.get_roi_mask_by_number
 
-        def read_roi(name):
+        def read_roi(number):
+            name = reader.scopes[number].roi_name
             if name == "PTV" and Path(source) == course.rs_manual:
                 failed_reads.append(name)
                 if failure == "exception":
                     raise RuntimeError("synthetic manual-only rasterizer failure")
-                return np.zeros_like(original_read(name))
-            result = original_read(name)
+                return np.zeros_like(original_read(number))
+            result = original_read(number)
             if name == "PTV" and Path(source) == auto_path:
                 auto_reads.append(name)
                 assert result.any(), "automatic source must be genuinely nonempty"
             return result
 
-        reader.get_roi_mask_by_name = read_roi
+        reader.get_roi_mask_by_number = read_roi
         return reader
 
     monkeypatch.setattr(rtstruct_geometry, "create_scoped_rtstruct", source_scoped_factory)

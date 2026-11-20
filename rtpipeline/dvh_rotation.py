@@ -3,7 +3,7 @@
 Exact supported axial orientations bypass this module's sampler. Other grids
 must be orthonormal (absolute Gram-matrix error <= 1e-6) and within 1 degree of
 one of the eight signed axial orientations supported by dicompyler-core.
-Uniform frame offsets are required (1e-5 mm absolute / 1e-6 relative tolerance).
+Frame positions follow the declared monotone Grid Frame Offset Vector.
 
 The destination is a canonical patient XYZ lattice with the original axis
 spacings and a node bounding box enclosing every original node. Dose is sampled
@@ -65,7 +65,7 @@ class _FloatDose(Dataset):
         return self._resampled_pixels
 
 
-def prepare_rotated_dose(dose):
+def prepare_rotated_dose(dose, *, source_grids=()):
     """Return None for exact axial grids, else a validated physical sampler."""
     try:
         orientation = np.asarray(dose.ImageOrientationPatient, dtype=float)
@@ -86,36 +86,127 @@ def prepare_rotated_dose(dose):
     angle = min(angles)
     if angle > MAX_ROTATION_DEGREES + 1e-9:
         raise DoseOrientationError("rotated_dose_rotation_exceeds_1_degree", angle)
-    return RotatedDoseGrid(dose, basis, nearest, angle)
+    return RotatedDoseGrid(dose, basis, nearest, angle, source_grids=source_grids)
 
 
-class RotatedDoseGrid:
-    def __init__(self, dose, basis, nearest, angle):
+class DoseGridCoordinates:
+    """Physical node coordinates, independent of the stored dose values."""
+
+    def __init__(self, dose):
+        from .organize import _validated_dose_grid_geometry
+        geometry = _validated_dose_grid_geometry(dose, "RTDOSE")
+        first_offset = geometry["offsets"][0]
+        self.origin = geometry["origin"] + first_offset * geometry["slice_cos"]
+        self.spacing = geometry["spacing"][::-1]
+        self.basis = np.column_stack((geometry["row_cos"], geometry["col_cos"], geometry["slice_cos"]))
+        self.inverse_basis = np.linalg.inv(self.basis)
+        self.offsets = geometry["offsets"] - first_offset
+        self.shape = np.array([geometry["cols"], geometry["rows"], geometry["frames"]])
+        self.frame_uid = geometry["frame_of_reference"]
+
+    def index(self, points, *, half_voxel_edges=False):
+        local = (np.asarray(points) - self.origin) @ self.inverse_basis.T
+        xy = local[..., :2] / self.spacing
+        z = local[..., 2]
+        lower_z, upper_z = self.offsets[[0, -1]]
+        tolerance = 1e-9
+        if half_voxel_edges:
+            # Preserve the NIfTI resampler's half-open edge-voxel support.
+            if len(self.offsets) > 1:
+                lower_z -= 0.5 * (self.offsets[1] - self.offsets[0])
+                upper_z += 0.5 * (self.offsets[-1] - self.offsets[-2])
+                z_supported = (z >= lower_z) & (z < upper_z)
+            else:
+                z_supported = abs(z-lower_z) <= tolerance
+            xy_supported = ((xy >= -0.5) & (xy < self.shape[:2]-0.5)).all(axis=-1)
+        else:
+            z_supported = (z >= lower_z-tolerance) & (z <= upper_z+tolerance)
+            xy_supported = ((xy >= -tolerance) & (xy <= self.shape[:2]-1+tolerance)).all(axis=-1)
+        support = xy_supported & z_supported
+        frames = np.interp(z, self.offsets, np.arange(len(self.offsets), dtype=float))
+        index = np.concatenate((xy, frames[..., None]), axis=-1)
+        index = np.clip(index, 0., self.shape-1)
+        # Do not treat roundoff at a node as dependence on an adjacent node.
+        rounded = np.rint(index)
+        return np.where(abs(index-rounded) <= tolerance, rounded, index), support
+
+
+class PatientDoseGrid(DoseGridCoordinates):
+    """Interpolate floating-point stored values on the original dose geometry."""
+
+    def __init__(self, dose, *, source_grids=()):
+        super().__init__(dose)
         self.original = dose
-        self.basis = basis
-        self.inverse_basis = np.linalg.inv(basis)
+        self.source_grids = tuple(source_grids)
+        if any(grid.frame_uid != self.frame_uid for grid in self.source_grids):
+            raise ValueError("COMPOSITE_DOSE_SOURCE_FRAME_MISMATCH")
+        values = dose.pixel_array
+        if self.shape[2] == 1 and values.ndim == 2:
+            values = values[None, ...]
+        if values.shape != tuple(self.shape[::-1]):
+            raise ValueError("RTDOSE pixel shape disagrees with the grid geometry")
+        if not np.isfinite(values).all() or (values < 0).any():
+            raise ValueError("Physical RTDOSE samples must be finite and nonnegative")
+        self.values = values.astype(np.float64)
+        self.node_support = self._composite_node_support() if self.source_grids else None
+        raw_offsets = np.atleast_1d(getattr(dose, "GridFrameOffsetVector", [0.]))
+        if len(raw_offsets) > 1 and float(raw_offsets[0]) > float(raw_offsets[-1]):
+            self.values = self.values[::-1]
+
+    def _composite_node_support(self):
+        x, y = np.meshgrid(np.arange(self.shape[0]), np.arange(self.shape[1]))
+        xy = self.origin + x[..., None] * self.spacing[0] * self.basis[:, 0]
+        xy = xy + y[..., None] * self.spacing[1] * self.basis[:, 1]
+        support = np.ones(tuple(self.shape[::-1]), dtype=bool)
+        for frame, offset in enumerate(self.offsets):
+            points = xy + offset * self.basis[:, 2]
+            for source in self.source_grids:
+                support[frame] &= source.index(points)[1]
+        return support
+
+    def support_at(self, points, *, half_voxel_edges=False):
+        index, support = self.index(points, half_voxel_edges=half_voxel_edges and self.node_support is None)
+        if self.node_support is not None:
+            # A physical sum requires all contributions at every interpolation
+            # node, absent independent proof of a zero contribution.
+            low, high = np.floor(index).astype(int), np.ceil(index).astype(int)
+            for side in product((False, True), repeat=3):
+                x, y, z = np.moveaxis(np.where(side, high, low), -1, 0)
+                support &= self.node_support[z, y, x]
+        return index, support
+
+    def sample(self, points, *, half_voxel_edges=False):
+        index, support = self.support_at(points, half_voxel_edges=half_voxel_edges)
+        sampled = map_coordinates(self.values, index[..., ::-1].reshape(-1, 3).T,
+                                  order=1, mode="nearest", prefilter=False).reshape(support.shape)
+        return np.ma.array(sampled, mask=~support)
+
+    def sample_image(self, reference, *, half_voxel_edges=False):
+        """Return interpolated Gy and independent support at CT voxel centres."""
+        size = reference.GetSize()
+        spacing = np.asarray(reference.GetSpacing())
+        direction = np.asarray(reference.GetDirection()).reshape(3, 3)
+        origin = np.asarray(reference.GetOrigin())
+        xx, yy = np.meshgrid(np.arange(size[0]), np.arange(size[1]))
+        values = np.empty(size[::-1], dtype=float)
+        support = np.empty(size[::-1], dtype=bool)
+        for z in range(size[2]):
+            points = np.stack((xx, yy, np.full_like(xx, z)), axis=-1)*spacing
+            sampled = self.sample(points @ direction.T + origin, half_voxel_edges=half_voxel_edges)
+            values[z] = sampled.filled(0.) * float(self.original.DoseGridScaling)
+            support[z] = ~np.ma.getmaskarray(sampled)
+        return values, support
+
+
+class RotatedDoseGrid(PatientDoseGrid):
+    def __init__(self, dose, basis, nearest, angle, *, source_grids=()):
         try:
-            self.origin = np.asarray(dose.ImagePositionPatient, float)
-            self.spacing = np.array([float(dose.PixelSpacing[1]), float(dose.PixelSpacing[0])])
-            self.offsets = np.asarray(dose.GridFrameOffsetVector, float)
-            self.shape = np.array([int(dose.Columns), int(dose.Rows), int(dose.NumberOfFrames)])
-            delta = np.diff(self.offsets)
-            valid = (self.origin.shape == (3,) and np.isfinite(self.origin).all()
-                     and np.isfinite(self.spacing).all() and (self.spacing > 0).all()
-                     and (self.shape >= 2).all() and len(self.offsets) == self.shape[2]
-                     and np.isfinite(self.offsets).all() and self.offsets[0] == 0
-                     and len(delta) > 0 and delta[0] != 0
-                     and np.allclose(delta, delta[0], atol=1e-5, rtol=1e-6))
-            if not valid:
-                raise ValueError
-            self.step = np.r_[self.spacing, (self.offsets[-1]-self.offsets[0])/(len(self.offsets)-1)]
-            self.values = dose.pixel_array.astype(np.float64)
-            if (self.values.shape != tuple(self.shape[::-1]) or not np.isfinite(self.values).all()
-                    or (self.values < 0).any() or not np.isfinite(float(dose.DoseGridScaling))
-                    or float(dose.DoseGridScaling) <= 0):
+            super().__init__(dose, source_grids=source_grids)
+            if (self.shape < 2).any():
                 raise ValueError
         except (AttributeError, TypeError, ValueError, IndexError) as exc:
-            raise DoseOrientationError("rotated_dose_invalid_or_nonuniform_grid") from exc
+            raise DoseOrientationError("rotated_dose_invalid_grid") from exc
+        self.step = np.r_[self.spacing, (self.offsets[-1]-self.offsets[0])/(len(self.offsets)-1)]
         corners = np.array(list(product(*[(0., float(n-1)) for n in self.shape]))) * self.step
         physical = self.origin + corners @ basis.T
         self.lower = physical.min(axis=0)
@@ -139,9 +230,9 @@ class RotatedDoseGrid:
             "max_node_displacement_mm": float(np.linalg.norm(corners @ (basis-nearest).T, axis=1).max()),
             "max_node_displacement_definition": "displacement_if_orientation_were_snapped_about_original_origin",
             "original_shape_xyz": self.shape.tolist(),
-            "original_origin_xyz_mm": self.origin.tolist(),
+            "original_origin_xyz_mm": [float(v) for v in dose.ImagePositionPatient],
             "original_step_column_row_frame_mm": self.step.tolist(),
-            "original_frame_offsets_mm": self.offsets.tolist(),
+            "original_frame_offsets_mm": [float(v) for v in dose.GridFrameOffsetVector],
             "nifti_sampling": "direct_trilinear_at_ct_voxel_centres",
             "resampled_shape_xyz": self.target_shape.tolist(),
             "resampled_spacing_xyz_mm": self.target_spacing.tolist(),
@@ -160,49 +251,16 @@ class RotatedDoseGrid:
         self.dataset.GridFrameOffsetVector = (np.arange(self.target_shape[2])*self.target_spacing[2]).tolist()
         self.dataset._resampled_pixels = self.values
 
-    def sample(self, points):
-        """Return float samples and independent closed-node-box support."""
-        local = (np.asarray(points) - self.origin) @ self.inverse_basis.T
-        index = local / self.step
-        support = ((index >= -1e-9) & (index <= self.shape-1+1e-9)).all(axis=-1)
-        # Honor every declared frame position, including tolerated decimal
-        # rounding of an otherwise uniform spacing. Original nodes stay exact.
-        frames = np.arange(len(self.offsets), dtype=float)
-        if self.step[2] > 0:
-            index[..., 2] = np.interp(local[..., 2], self.offsets, frames)
-        else:
-            index[..., 2] = np.interp(local[..., 2], self.offsets[::-1], frames[::-1])
-        # Clip only roundoff at the boundary; all outside values remain masked.
-        index = np.clip(index, 0., self.shape-1)
-        sampled = map_coordinates(self.values, index[..., ::-1].reshape(-1, 3).T,
-                                  order=1, mode="nearest", prefilter=False).reshape(support.shape)
-        return np.ma.array(sampled, mask=~support)
-
     def plane(self, z):
         xx, yy = np.meshgrid(self.x, self.y)
         return self.sample(np.stack((xx, yy, np.full_like(xx, float(z))), axis=-1))
-
-    def sample_image(self, reference):
-        """Sample CT voxel centres with the same transform and strict support."""
-        size = reference.GetSize()
-        spacing = np.asarray(reference.GetSpacing())
-        direction = np.asarray(reference.GetDirection()).reshape(3, 3)
-        origin = np.asarray(reference.GetOrigin())
-        xx, yy = np.meshgrid(np.arange(size[0]), np.arange(size[1]))
-        values = np.empty(size[::-1], dtype=float)
-        support = np.empty(size[::-1], dtype=bool)
-        for z in range(size[2]):
-            points = np.stack((xx, yy, np.full_like(xx, z)), axis=-1)*spacing
-            sampled = self.sample(points @ direction.T + origin)
-            values[z] = sampled.filled(0.) * float(self.original.DoseGridScaling)
-            support[z] = ~np.ma.getmaskarray(sampled)
-        return values, support
 
     def get_dvh(self, structure, roi, calculate_full_volume=True):
         # Both settings sample only supported points. The caller suppresses
         # whole-ROI values for incomplete coverage and labels covered metrics.
         # Import after dvh.py's compatibility initialization for pydicom >= 3.
-        from dicompylercore import dicomparser, dvh, dvhcalc
+        from dicompylercore import dicomparser
+        from .dvh_support import contour_slab_widths, weighted_plane_dvh
         sampler = self
 
         class PatientGridParser(dicomparser.DicomParser):
@@ -275,8 +333,7 @@ class RotatedDoseGrid:
         zs = np.array(sorted(planes), dtype=float)
         if len(zs) < 2:
             raise DoseOrientationError("rotated_dose_insufficient_contour_planes_for_volume")
-        intervals = np.diff(zs)
-        weights = np.r_[intervals[0], (intervals[:-1]+intervals[1:])/2, intervals[-1]]
+        weights = contour_slab_widths(zs)
         parser = PatientGridParser(self.dataset)
         dd, image = parser.GetDoseData(), parser.GetImageData()
         if axial:
@@ -291,40 +348,14 @@ class RotatedDoseGrid:
         dd.update(lut=(x, y), rows=len(y), columns=len(x))
         xx, yy = np.meshgrid(x, y)
         points = np.column_stack((xx.ravel(), yy.ravel()))
-        maxdose = int(dd["dosemax"] * dd["dosegridscaling"] * 100) + 1
-        histogram = np.zeros(maxdose)
-        # Retain dicompyler's polygon parity, pixel-centre rasterizer and cGy
-        # bins. Integrate physical slab volume separately for each plane;
-        # _calculate_dvh otherwise applies the MINIMUM spacing to every plane.
-        for z, weight in zip(zs, weights):
-            item["thickness"] = float(weight)
-            doseplane = (parser.GetDoseGrid(z) if axial else self.sample(
-                np.stack((xx, yy, np.full_like(xx, z)), axis=-1) @ frame.T))
-            counts, volume_mm3 = dvhcalc.calculate_plane_histogram(
-                planes[z], doseplane, points, maxdose, dd, image, item, np.zeros(maxdose))
-            if counts.sum():
-                histogram += counts * (volume_mm3 / counts.sum() / 1000.)
-        histogram = np.trim_zeros(histogram, trim="b")
-        if not histogram.size:
-            histogram = np.array([0.])
-        result = dvh.DVH(counts=histogram,
-                         bins=(np.arange(0, 2) if histogram.size == 1 else
-                               np.arange(histogram.size+1)/100),
-                         dvh_type="differential", dose_units="Gy", name=item["name"]).cumulative
-        result.notes = {"contour_plane_tilt_degrees": tilt,
-                        "contour_max_projection_mm": max_projection}
-        def unbinned_summary():
-            from .dvh_support import unbinned_plane_summary, combine_dose_summaries
+        def sampled_planes():
+            for z, weight in zip(zs, weights):
+                doseplane = (parser.GetDoseGrid(z) if axial else self.sample(
+                    np.stack((xx, yy, np.full_like(xx, z)), axis=-1) @ frame.T))
+                yield planes[z], doseplane, weight
 
-            def summaries():
-                for z, weight in zip(zs, weights):
-                    doseplane = (parser.GetDoseGrid(z) if axial else self.sample(
-                        np.stack((xx, yy, np.full_like(xx, z)), axis=-1) @ frame.T))
-                    yield unbinned_plane_summary(planes[z], doseplane, points, dd, image, weight)
-            return combine_dose_summaries(summaries())
-        # DVH reconstructs itself from __dict__ during differential/relative
-        # conversion. Keep the lazy sampler in its existing notes container.
-        result.notes['_unbinned_dose_summary'] = unbinned_summary
+        result = weighted_plane_dvh(item["name"], sampled_planes(), dd, image, points)
+        result.notes.update(contour_plane_tilt_degrees=tilt, contour_max_projection_mm=max_projection)
         return result
 
     def coverage(self, structure, roi, *, automatic_source=None):
@@ -356,31 +387,26 @@ def add_brachy_metrics(histogram, metrics):
     """Add requested absolute endpoints only on the new rotated-grid path."""
     if metrics is None:
         return None
-    from .dvh import _bounded_dose_at_fraction, _small_volume_dose
+    from .dvh import _bounded_dose_at_fraction, _sample_endpoint
     metrics["dose_grid_contour_plane_tilt_degrees"] = histogram.notes["contour_plane_tilt_degrees"]
     metrics["dose_grid_contour_max_projection_mm"] = histogram.notes["contour_max_projection_mm"]
-    metrics["D90Gy"] = _bounded_dose_at_fraction(
-        histogram.bincenters, histogram.counts, .90, histogram.min, histogram.max)
-    metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(
-        histogram.bincenters, histogram.counts, histogram.volume,
-        histogram.min, histogram.max, 2.)
-    if histogram.volume < 2.:
-        metrics["D2cc_status"] = "roi_below_2cc"
+    if metrics["dose_summary_basis"] == "unbinned_subcentigray":
+        doses, cumulative = histogram.notes['_unbinned_dose_summary']()["distribution"]
+        metrics["D90Gy"] = _sample_endpoint(doses, cumulative, .90*cumulative[0])
+    else:
+        metrics["D90Gy"] = _bounded_dose_at_fraction(
+            histogram.bincenters, histogram.counts, .90, histogram.min, histogram.max)
     return metrics
 
 
 def add_brachy_metrics_from_values(values, voxel_volume, max_dose, metrics):
     if metrics is None or not values.size:
         return metrics
-    from .dvh import _bounded_dose_at_fraction, _small_volume_dose
+    from .dvh import _bounded_dose_at_fraction
     count = max(int(np.ceil(max_dose/.01))+1, 2)
     edges = np.linspace(0, count*.01, count+1)
     hist, _ = np.histogram(values, bins=edges)
     cumulative = np.cumsum(hist[::-1])[::-1] * voxel_volume
     centers = (edges[:-1]+edges[1:])/2
     metrics["D90Gy"] = _bounded_dose_at_fraction(centers, cumulative, .9, values.min(), values.max())
-    metrics["D2ccGy"], metrics["D2cc_status"] = _small_volume_dose(
-        centers, cumulative, len(values)*voxel_volume, values.min(), values.max(), 2.)
-    if len(values)*voxel_volume < 2.:
-        metrics["D2cc_status"] = "roi_below_2cc"
     return metrics

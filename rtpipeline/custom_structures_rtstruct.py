@@ -779,6 +779,10 @@ def _create_custom_structures_rtstruct_unlocked(
             image_array_for_rtstruct,
             place_added_rois_on_planes,
             ROIContourDisposition,
+            ambiguous_roi_names,
+            rtstruct_roi_entries,
+            rtstruct_roi_mask,
+            rtstruct_roi_number,
         )
         rtstruct = create_scoped_rtstruct(ct_dir, base_rs)
         # Base ROIs are copied from the source unchanged; only ROIs added here
@@ -798,6 +802,7 @@ def _create_custom_structures_rtstruct_unlocked(
         # with the reason. These stay unavailable: recording them is what keeps a
         # degraded structure honestly partial instead of silently automatic.
         unread_source_rois: Dict[str, Dict[str, str]] = {}
+        ambiguous_dependencies: Dict[str, list[str]] = {}
 
         def _ensure_ct_image() -> Optional[sitk.Image]:
             nonlocal ct_image
@@ -920,19 +925,27 @@ def _create_custom_structures_rtstruct_unlocked(
             add_missing: bool = False,
         ) -> None:
             nonlocal existing_names, available_masks
-            roi_names = builder.get_roi_names()
+            dataset = getattr(builder, "ds", None)
+            entries = (rtstruct_roi_entries(builder) if hasattr(dataset, "StructureSetROISequence")
+                       else [(None, name) for name in builder.get_roi_names()])
+            by_name = {name: group for group in ambiguous_roi_names(dataset).values()
+                       for _, name in group}
             if label in {"base:manual", "manual"}:
-                # Authority follows the declared manual ROI, not whether its
-                # rasterisation succeeds. Reserve names before reading masks.
-                manual_roi_names.update(roi_names)
-            for roi_name in roi_names:
-                if label in {"base:auto", "auto"} and roi_name in manual_roi_names:
-                    # Keep the manual mask or its unread disposition; a healthy
-                    # same-name automatic contour cannot replace either one.
+                manual_roi_names.update(name.strip().casefold() for _, name in entries)
+            for roi_number, roi_name in entries:
+                if label in {"base:auto", "auto"} and roi_name.strip().casefold() in manual_roi_names:
+                    # A same-name automatic contour cannot displace manual authority.
+                    continue
+                if roi_name in by_name:
+                    candidates = [f"{name} (ROI {number})" for number, name in by_name[roi_name]]
+                    for alias in processor._alias_candidates(roi_name):
+                        ambiguous_dependencies[processor._normalize_name(alias)] = candidates
+                    _record_unread(roi_name, label, "CUSTOM_SOURCE_AMBIGUOUS_NAME", ", ".join(candidates))
+                    if label.startswith("base:"):
+                        existing_names.add(roi_name)
                     continue
                 try:
-                    from .rtstruct_geometry import rtstruct_roi_mask
-                    mask = rtstruct_roi_mask(builder, roi_name)
+                    mask = rtstruct_roi_mask(builder, roi_name, roi_number=roi_number)
                 except Exception as exc:
                     # A disposition is a statement about this ROI's own geometry
                     # and an unexpected error is a failure to read it. Neither is
@@ -1049,8 +1062,11 @@ def _create_custom_structures_rtstruct_unlocked(
                     if base_outcome.get("code") not in _FALLBACK_ELIGIBLE_BASE_CODES:
                         continue
                     try:
-                        from .rtstruct_geometry import rtstruct_roi_mask
-                        fallback_mask = rtstruct_roi_mask(fallback_builder, source_name)
+                        if hasattr(getattr(fallback_builder, "ds", None), "StructureSetROISequence"):
+                            number = rtstruct_roi_number(fallback_builder, source_name)
+                            fallback_mask = rtstruct_roi_mask(fallback_builder, roi_number=number)
+                        else:
+                            fallback_mask = rtstruct_roi_mask(fallback_builder, source_name)
                     except Exception as exc:
                         logger.debug(
                             "Fallback custom source %s unreadable from %s: %s",
@@ -1087,6 +1103,7 @@ def _create_custom_structures_rtstruct_unlocked(
                     source
                     for source in custom_config.source_structures
                     if source in unresolved_names and source not in available_masks
+                    and processor._normalize_name(source) not in ambiguous_dependencies
                 }
             )
             if unavailable:
@@ -1094,7 +1111,8 @@ def _create_custom_structures_rtstruct_unlocked(
                     "CUSTOM_SOURCE_GEOMETRY_UNRESOLVED: " + custom_config.name
                     + " (unavailable in every source: " + ", ".join(unavailable) + ")"
                 )
-        custom_masks = processor.process_all_custom_structures(available_masks)
+        custom_masks = processor.process_all_custom_structures(
+            available_masks, ambiguous_roi_names=ambiguous_dependencies)
         partial_map = getattr(processor, "partial_structures", {})
         structure_outcomes = {
             str(name): dict(value)

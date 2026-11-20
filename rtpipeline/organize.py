@@ -63,6 +63,8 @@ from .course_contract import (
     CourseContract,
     CourseContractError,
     _ct_provenance,
+    _beam_dose_coverage,
+    _beam_coverage_refusal,
     _is_treatment_summary_record,
     _record_delivery_session_evidence,
     _record_delivery_session_key,
@@ -1265,10 +1267,16 @@ def _extract_dose_metadata(dose_path: Path) -> dict:
 
         bbox = (x_min, y_min, z_min, x_max, y_max, z_max)
 
+        summation_type = str(getattr(ds, "DoseSummationType", "PLAN")).upper()
+        try:
+            beam_coverage = _beam_dose_coverage(ds) if summation_type == "BEAM" else []
+        except (AttributeError, ValueError, TypeError):
+            beam_coverage = []
         return {
             "path": dose_path,
             "sop_uid": str(getattr(ds, "SOPInstanceUID", "")),
-            "summation_type": str(getattr(ds, "DoseSummationType", "PLAN")).upper(),
+            "summation_type": summation_type,
+            "beam_coverage": beam_coverage,
             "frame_of_reference": str(getattr(ds, "FrameOfReferenceUID", "")),
             "referenced_plan_uids": ref_plan_uids,
             "creation_date": str(getattr(ds, "InstanceCreationDate", "")),
@@ -3740,6 +3748,17 @@ def _classify_approved_doses(
     plan_by_uid = {meta["sop_uid"]: meta for meta in plan_meta if meta.get("sop_uid")}
     delivery = _record_delivery_evidence(record_paths)
 
+    def refuse_dose_selection(classification: str, reason: str) -> DoseClassification:
+        return DoseClassification(
+            classification=classification, selected_doses=[], selected_plans=plan_paths,
+            excluded_doses=[meta["path"] for meta in dose_meta], should_sum=False,
+            warnings=warnings, reason=reason,
+        )
+
+    def largest_coverage(candidates: list[dict]) -> list[dict]:
+        largest = max(len(set(meta["referenced_plan_uids"])) for meta in candidates)
+        return [meta for meta in candidates if len(set(meta["referenced_plan_uids"])) == largest]
+
     multi_plan_doses = [meta for meta in dose_meta if meta["summation_type"] == "MULTI_PLAN"]
     if multi_plan_doses:
         delivered_uids = {
@@ -3756,13 +3775,10 @@ def _classify_approved_doses(
             if exact:
                 exact_candidates.append(candidate)
         if exact_candidates:
-            best_multi = max(
-                exact_candidates,
-                key=lambda meta: (
-                    len(meta["referenced_plan_uids"]),
-                    str(meta["path"]),
-                ),
-            )
+            tied = largest_coverage(exact_candidates)
+            if len(tied) != 1:
+                return refuse_dose_selection("ambiguous_dose_grid", "Multiple equally ranked MULTI_PLAN grids")
+            best_multi = tied[0]
             covered = set(best_multi["referenced_plan_uids"])
             selected_plans = [
                 meta["path"] for meta in plan_meta if meta.get("sop_uid") in covered
@@ -3800,10 +3816,10 @@ def _classify_approved_doses(
     prescription_components: List[dict] = []
     component_plausibility = False
     if plan_sum_doses:
-        best_sum = max(
-            plan_sum_doses,
-            key=lambda meta: (len(meta["referenced_plan_uids"]), str(meta["path"])),
-        )
+        tied = largest_coverage(plan_sum_doses)
+        if len(tied) != 1:
+            return refuse_dose_selection("ambiguous_dose_grid", "Multiple equally ranked PLAN_SUM grids")
+        best_sum = tied[0]
         covered = set(best_sum["referenced_plan_uids"])
         selected_plans = [
             meta["path"] for meta in plan_meta if meta.get("sop_uid") in covered
@@ -3893,6 +3909,10 @@ def _classify_approved_doses(
                 reason="RTRECORD does not support delivery of the BEAM-dose plan",
             )
         if len(referenced) == 1 and selected_plans and len(dose_meta) > 1:
+            beam_plan = read_dicom_header(selected_plans[0], stop_before_pixels=True)
+            refusal = _beam_coverage_refusal([meta["beam_coverage"] for meta in dose_meta], beam_plan)
+            if refusal:
+                return refuse_dose_selection(refusal, "BEAM grids must partition the plan's fraction-group beams")
             return DoseClassification(
                 classification="beam_doses_summed_to_plan",
                 selected_doses=[meta["path"] for meta in dose_meta],
@@ -3926,18 +3946,22 @@ def _classify_approved_doses(
 
     dose_for_plan: Dict[str, dict] = {}
     for uid, candidates in candidates_by_plan.items():
-        ordered = sorted(
-            candidates,
-            key=lambda meta: (
-                0 if meta["summation_type"] == "PLAN" else 1,
-                str(meta["path"]),
-            ),
-        )
-        dose_for_plan[uid] = ordered[0]
-        if len(ordered) > 1:
-            warnings.append(
-                f"Plan {uid} had {len(ordered)} candidate non-PLAN_SUM doses; selected {ordered[0]['path'].name} deterministically"
-            )
+        def rank(meta: dict) -> tuple[bool, bool]:
+            return meta["summation_type"] == "PLAN", set(meta["referenced_plan_uids"]) == {uid}
+
+        best = max(rank(meta) for meta in candidates)
+        tied = [meta for meta in candidates if rank(meta) == best]
+        if len(tied) > 1:
+            plan = read_dicom_header(plan_by_uid[uid]["path"], stop_before_pixels=True)
+            intended = {
+                str(getattr(item, "ReferencedSOPInstanceUID", ""))
+                for item in getattr(plan, "ReferencedDoseSequence", []) or []
+            }
+            referenced_doses = [meta for meta in tied if meta["sop_uid"] and meta["sop_uid"] in intended]
+            if len(referenced_doses) != 1:
+                return refuse_dose_selection("ambiguous_dose_grid", "Multiple equally ranked grids for one plan")
+            tied = referenced_doses
+        dose_for_plan[uid] = tied[0]
 
     paired_plans = [meta for meta in plan_meta if meta.get("sop_uid") in dose_for_plan]
     if not paired_plans:
@@ -4998,8 +5022,8 @@ def _validated_dose_grid_geometry(
             raise ValueError(f"{path} lacks GridFrameOffsetVector for a multiframe RTDOSE")
         offsets = np.asarray([0.0], dtype=float)
     else:
-        offsets = np.asarray(raw_offsets, dtype=float)
-        if offsets.size != frames or not np.all(np.isfinite(offsets)):
+        offsets = np.atleast_1d(np.asarray(raw_offsets, dtype=float))
+        if offsets.shape != (frames,) or not np.all(np.isfinite(offsets)):
             raise ValueError(f"{path} has invalid GridFrameOffsetVector")
     if offsets.size and not np.isclose(offsets[0], 0.0, atol=1e-3):
         axial_identity = np.allclose(
@@ -5048,10 +5072,17 @@ def _sum_doses_with_resample(
     if not plan_datasets or any(approval_status(ds) != "APPROVED" for ds in plan_datasets):
         raise ValueError("Dose accumulation requires APPROVED source RTPLANs")
     approved_uids = {str(getattr(ds, "SOPInstanceUID", "") or "") for ds in plan_datasets}
-    for path in dose_files:
-        refs = set(_extract_dose_metadata(path)["referenced_plan_uids"])
+    source_metadata = [_extract_dose_metadata(path) for path in dose_files]
+    for item in source_metadata:
+        refs = set(item["referenced_plan_uids"])
         if not refs or not refs <= approved_uids:
             raise ValueError("Dose accumulation includes a non-approved or unresolved plan reference")
+    if any(item["summation_type"] == "BEAM" for item in source_metadata):
+        refusal = (_beam_coverage_refusal([item.get("beam_coverage", []) for item in source_metadata],
+                                             plan_datasets[0])
+                   if len(plan_datasets) == 1 else "unresolved_beam_dose_coverage")
+        if refusal:
+            raise ValueError(refusal)
     explicit_delivered_weights = dose_weights is not None
     if dose_weights is None:
         dose_weights = [1.0] * len(dose_files)
@@ -5104,6 +5135,8 @@ def _sum_doses_with_resample(
     ref_geometry = dose_geometries[ref_idx]
     assert ref_geometry is not None
     ref_pixels = ds_ref.pixel_array
+    if ref_pixels.ndim == 2:
+        ref_pixels = ref_pixels[None, ...]
     expected_ref_shape = (
         int(ref_geometry["frames"]),
         int(ref_geometry["rows"]),
@@ -5217,11 +5250,6 @@ def _sum_doses_with_resample(
         * spacing_ref[1]
         * row_cosines_ref[None, None, :]
     )
-    ref_points = (
-        xy_ref[None, :, :, :]
-        + offsets_ref[:, None, None, None]
-        * slice_cosines_ref[None, None, None, :]
-    )
     source_dose_uids: list[str] = []
     for i, path in enumerate(dose_files):
         logger.debug("Resampling and adding dose %s with weight %.6g", path.name, dose_weights[i])
@@ -5233,6 +5261,8 @@ def _sum_doses_with_resample(
             geometry = dose_geometries[i]
             assert geometry is not None
             arr = ds.pixel_array.astype("float32")
+            if arr.ndim == 2:
+                arr = arr[None, ...]
             expected_shape = (
                 int(cast(int, geometry["frames"])),
                 int(cast(int, geometry["rows"])),
@@ -5240,37 +5270,20 @@ def _sum_doses_with_resample(
             )
             if arr.shape != expected_shape:
                 raise ValueError("pixel shape does not match validated RTDOSE geometry")
-            raw_offsets = getattr(ds, "GridFrameOffsetVector", None)
-            if raw_offsets is not None and len(raw_offsets) > 1 and np.all(
-                np.diff(np.asarray(raw_offsets, dtype=float)) < 0
-            ):
+            raw_offsets = np.atleast_1d(getattr(ds, "GridFrameOffsetVector", [0.]))
+            if len(raw_offsets) > 1 and float(raw_offsets[0]) > float(raw_offsets[-1]):
                 arr = arr[::-1, :, :]
             arr *= float(getattr(ds, "DoseGridScaling", 1.0)) * float(dose_weights[i])
-            source_geometry = geometry
-            origin = np.asarray(source_geometry["origin"], dtype=float)
-            row_cos_src = np.asarray(source_geometry["row_cos"], dtype=float)
-            col_cos_src = np.asarray(source_geometry["col_cos"], dtype=float)
-            slice_cos_src = np.asarray(source_geometry["slice_cos"], dtype=float)
-            spacing_src = np.asarray(source_geometry["spacing"], dtype=float)
-            offsets_src = np.asarray(source_geometry["offsets"], dtype=float)
-
-            delta = ref_points - origin[None, None, None, :]
-            row_idx = np.einsum("...i,i->...", delta, col_cos_src) / spacing_src[0]
-            col_idx = np.einsum("...i,i->...", delta, row_cos_src) / spacing_src[1]
-            offset_values = np.einsum("...i,i->...", delta, slice_cos_src)
-            frame_indices = np.arange(len(offsets_src), dtype=np.float64)
-            frame_idx = np.interp(
-                offset_values.ravel(), offsets_src, frame_indices, left=-1, right=-1
-            ).reshape(offset_values.shape)
-            frame_oob = (frame_idx < 0) | (frame_idx > len(offsets_src) - 1)
-            frame_idx = np.clip(frame_idx, 0, len(offsets_src) - 1)
-            coords = np.stack([frame_idx, row_idx, col_idx], axis=0)
-            resampled = map_coordinates(
-                arr, coords, order=1, mode="constant", cval=0.0
-            ).reshape((frames_ref, rows_ref, cols_ref))
-            resampled[frame_oob] = 0.0
-            accumulated += resampled
-            del ds, arr, resampled, coords, delta
+            from .dvh_rotation import DoseGridCoordinates
+            source = DoseGridCoordinates(ds)
+            for frame_index, offset in enumerate(offsets_ref):
+                points = xy_ref + offset * slice_cosines_ref
+                index, supported = source.index(points)
+                coords = np.moveaxis(index[..., ::-1], -1, 0)
+                resampled = map_coordinates(arr, coords, order=1, mode="nearest", prefilter=False)
+                resampled[~supported] = 0.0
+                accumulated[frame_index] += resampled
+            del ds, arr
         except Exception as exc:
             logger.error("Failed to resample dose %s: %s", path, exc)
             raise RuntimeError(f"Dose summation failed for {path}: {exc}") from exc

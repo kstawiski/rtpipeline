@@ -659,24 +659,36 @@ def rtstruct_roi_entries(builder):
 
 
 def ambiguous_roi_names(dataset):
-    """Declarations colliding under the stripped-name inventory convention."""
-    groups = {}
-    for roi in getattr(dataset, 'StructureSetROISequence', []) or []:
-        name = str(getattr(roi, 'ROIName', ''))
-        number = getattr(roi, 'ROINumber', None)
-        groups.setdefault(name.strip(), []).append((number, name))
-    return {name: entries for name, entries in groups.items() if len(entries) > 1}
+    """Return declarations sharing an original-export name or filename stem."""
+    from .original_segmentation import roi_name_collision_groups
+
+    entries = [(getattr(roi, 'ROINumber', None), str(getattr(roi, 'ROIName', '')))
+               for roi in getattr(dataset, 'StructureSetROISequence', []) or []]
+    _, groups = roi_name_collision_groups(entries)
+    connected = []
+    for group in groups:
+        merged = set(group)
+        for overlapping in [existing for existing in connected if existing & merged]:
+            merged.update(overlapping)
+            connected.remove(overlapping)
+        connected.append(merged)
+    return {entries[min(group)][1].strip(): [entries[i] for i in sorted(group)] for group in connected}
 
 
 def rtstruct_roi_number(builder, name):
-    """Resolve an exact display name only when it names one declaration."""
-    matches = [number for number, stored in rtstruct_roi_entries(builder) if stored == name]
-    if len(matches) > 1:
-        raise ROIIdentityError(f'RTSTRUCT_AMBIGUOUS_ROI_NAME: {name!r}; ROI numbers {matches}')
+    """Resolve a name only with a unique declaration under the inventory policy."""
+    entries = rtstruct_roi_entries(builder)
+    normalized = str(name).strip().casefold()
+    matches = [(number, stored) for number, stored in entries if stored.strip().casefold() == normalized]
     if not matches:
         error = getattr(type(builder), 'ROIException', ROIIdentityError)
         raise error(f"ROI of name `{name}` does not exist in RTStruct")
-    return matches[0]
+    collisions = ambiguous_roi_names(getattr(builder, 'ds', builder))
+    ambiguous = next((group for group in collisions.values()
+                      if any(stored.strip().casefold() == normalized for _, stored in group)), None)
+    if ambiguous:
+        raise ROIIdentityError(f'RTSTRUCT_AMBIGUOUS_ROI_NAME: {name!r}; ROI numbers {[n for n, _ in ambiguous]}')
+    return matches[0][0]
 
 
 def rtstruct_roi_mask(builder, name=None, *, roi_number=None):
@@ -692,18 +704,18 @@ def rtstruct_roi_mask(builder, name=None, *, roi_number=None):
             raise ROIIdentityError('RTSTRUCT_ROI_IDENTITY_UNAVAILABLE')
         return builder.get_roi_mask_by_name(name)
     declarations = rtstruct_roi_entries(builder)
-    if roi_number is None and any(number is None and stored == name for number, stored in declarations):
-        if sum(stored == name for _, stored in declarations) != 1:
-            raise ROIIdentityError(f'RTSTRUCT_AMBIGUOUS_ROI_NAME: {name!r}')
-        return builder.get_roi_mask_by_name(name)
     entries = dict(declarations)
     number = rtstruct_roi_number(builder, name) if roi_number is None else int(roi_number)
+    if number is None:
+        stored = next(stored for n, stored in declarations
+                      if n is None and stored.strip().casefold() == str(name).strip().casefold())
+        return builder.get_roi_mask_by_name(stored)
     if number not in entries:
         raise ROIIdentityError(f'RTSTRUCT_ROI_NUMBER_NOT_FOUND: {number}')
-    if name is not None and entries[number] != name:
+    if name is not None and entries[number].strip().casefold() != str(name).strip().casefold():
         raise ROIIdentityError(f'ROI_NAME_NUMBER_MISMATCH: {name!r}, ROI {number}')
     by_number = getattr(builder, 'get_roi_mask_by_number', None)
-    if by_number is not None and roi_number is not None:
+    if by_number is not None:
         return by_number(number)
     slices = getattr(builder, 'series_data', None)
     method = getattr(getattr(builder, 'get_roi_mask_by_name', None), '__func__', None)
@@ -924,11 +936,9 @@ class ScopedRTStruct:
             raise ValueError('RTSTRUCT_SCOPE_REQUIRES_ONE_CT_SERIES')
         rtstruct_roi_entries(dataset)
         self.scopes = resolve_roi_scopes(dataset, series_data)
-        self.by_name = {}
-        for result in self.scopes.values():
-            if result.roi_name in self.by_name:
-                raise ValueError('RTSTRUCT_DUPLICATE_ROI_NAME')
-            self.by_name[result.roi_name] = result
+        ambiguous = {name for group in ambiguous_roi_names(dataset).values() for _, name in group}
+        self.by_name = {result.roi_name: result for result in self.scopes.values()
+                        if result.roi_name not in ambiguous}
         # Only fully bound volumetric ROIs enter the rasterizer. The full source
         # and every rejected identity remain in ds/scopes, never in a clipped mask.
         # Area-less contour items (one or two points bounding no area) are also
@@ -975,7 +985,7 @@ class ScopedRTStruct:
         self.ds.save_as(file_path)
 
     def get_roi_names(self):
-        return list(self.by_name)
+        return [result.roi_name for result in self.scopes.values()]
 
     def get_roi_mask_by_number(self, number):
         result = self.scopes[int(number)]

@@ -294,37 +294,114 @@ def rtstruct_grid_coverage(rtstruct, roi_number, dose, *, automatic_source=None)
     return result
 
 
-def unbinned_plane_summary(plane, doseplane, dosegridpoints, dd, image, thickness):
-    """Summarize Gy samples with dicompyler's exact even/odd raster mask.
+def contour_slab_widths(positions):
+    """Use consecutive plane midpoints and half-interval extensions at the ends."""
+    intervals = np.diff(np.asarray(positions, dtype=float))
+    if not intervals.size:
+        return np.zeros(len(positions))
+    return np.r_[intervals[0], (intervals[:-1] + intervals[1:]) / 2., intervals[-1]]
 
-    Supported samples alone contribute. Physical voxel volume weights the mean
-    when the rotated adapter integrates unequal contour-plane intervals.
-    """
+
+def contour_geometry_volume(contours):
+    """Integrate the parity-filled area between contour planes, in cm³."""
+    if not contours:
+        return None
+    scatter = np.zeros((3, 3))
+    for points in contours:
+        centred = points - points.mean(axis=0)
+        scatter += centred.T @ centred
+    eigenvalues, axes = np.linalg.eigh(scatter)
+    if eigenvalues[1] <= 1e-18:
+        return None
+    frame = axes[:, [1, 2, 0]]
+    planes = {}
+    for points in contours:
+        local = points @ frame
+        z = float(np.mean(local[:, 2]))
+        if np.max(abs(local[:, 2] - z)) > .01:
+            return None
+        planes.setdefault(round(z, 3), []).append(local)
+    if len(planes) < 2:
+        return None
+    positions = sorted(planes)
+    areas = [_parity_plane_areas(planes[z], 0., 0.)[0] for z in positions]
+    return float(_trapezoid(areas, positions) / 1000.)
+
+
+def unbinned_plane_samples(plane, doseplane, dosegridpoints, dd, image):
+    """Sample Gy using dicompyler's even/odd raster mask and independent support."""
     from dicompylercore import dvhcalc
     mask = np.zeros((dd['rows'], dd['columns']), dtype=bool)
     for contour in plane:
         polygon = [p[:2] for p in contour['data']]
         mask ^= dvhcalc.get_contour_mask(dd, image, dosegridpoints, polygon).astype(bool)
     samples = np.ma.array(doseplane * dd['dosegridscaling'], mask=~mask).compressed()
-    if not samples.size:
-        return 0., 0., 0.
     if not np.isfinite(samples).all() or (samples < 0).any():
         raise ValueError('Unbinned in-mask dose samples must be finite and nonnegative')
-    voxel_volume = (abs(np.mean(np.diff(dd['lut'][0]))) *
-                    abs(np.mean(np.diff(dd['lut'][1]))) * thickness)
-    return float(samples.sum() * voxel_volume), float(samples.size * voxel_volume), float(samples.max())
+    return samples, samples.size == np.count_nonzero(mask)
+
+
+def plane_voxel_volume(dd, thickness):
+    return (abs(np.mean(np.diff(dd['lut'][0]))) *
+            abs(np.mean(np.diff(dd['lut'][1]))) * thickness / 1000.)
+
+
+def unbinned_plane_summary(plane, doseplane, dosegridpoints, dd, image, thickness):
+    samples, _ = unbinned_plane_samples(plane, doseplane, dosegridpoints, dd, image)
+    doses, counts = np.unique(samples, return_counts=True)
+    return doses, counts * plane_voxel_volume(dd, thickness)
+
+
+def dose_sample_distribution(doses, volumes):
+    """Sorted Gy, with reverse cumulative volume for exact threshold queries."""
+    unique, groups = np.unique(doses, return_inverse=True)
+    grouped = np.bincount(groups, weights=volumes, minlength=len(unique))
+    cumulative = np.cumsum(grouped[::-1])[::-1]
+    return unique, cumulative, grouped
 
 
 def combine_dose_summaries(summaries):
-    weighted_sum = volume = maximum = 0.
-    for subtotal, subvolume, submax in summaries:
-        weighted_sum += subtotal
-        volume += subvolume
-        maximum = max(maximum, submax)
-    if not np.isfinite(volume) or volume <= 0:
+    chunks = [(doses, volumes) for doses, volumes in summaries if len(doses)]
+    if not chunks:
         raise ValueError('No supported in-mask dose samples for the unbinned summary')
-    # A weighted sum can round a constant-field mean just above its maximum.
-    return {'mean': min(maximum, weighted_sum / volume), 'max': maximum}
+    doses, cumulative, volumes = dose_sample_distribution(
+        np.concatenate([doses for doses, _ in chunks]),
+        np.concatenate([volumes for _, volumes in chunks]))
+    if not np.isfinite(cumulative[0]) or cumulative[0] <= 0:
+        raise ValueError('No positive in-mask volume for the unbinned summary')
+    mean = float(np.dot(doses, volumes) / cumulative[0])
+    return {'mean': min(float(doses[-1]), mean), 'max': float(doses[-1]),
+            'distribution': (doses, cumulative)}
+
+
+def weighted_plane_dvh(name, planes, dd, image, points):
+    """Use each plane's physical volume with the existing 1 cGy binning."""
+    from dicompylercore import dvh
+    maxdose = int(dd['dosemax'] * dd['dosegridscaling'] * 100) + 1
+    histogram = np.zeros(maxdose)
+    summaries = []
+    complete = True
+    for contours, doseplane, thickness in planes:
+        samples, supported = unbinned_plane_samples(contours, doseplane, points, dd, image)
+        complete &= supported
+        doses, counts = np.unique(samples, return_counts=True)
+        voxel_volume = plane_voxel_volume(dd, thickness)
+        summaries.append((doses, counts * voxel_volume))
+        bins, _ = np.histogram(doses * 100., bins=maxdose, range=(0, maxdose), weights=counts)
+        histogram += bins * voxel_volume
+    histogram = np.trim_zeros(histogram, trim='b')
+    if not histogram.size:
+        histogram = np.array([0.])
+    bins = np.arange(2) if histogram.size == 1 else np.arange(histogram.size + 1) / 100.
+    result = dvh.DVH(counts=histogram, bins=bins, dvh_type='differential',
+                     dose_units='Gy', name=name).cumulative
+    @lru_cache(maxsize=1)
+    def summary():
+        return combine_dose_summaries(summaries)
+
+    result.notes = {'_unbinned_dose_summary': summary,
+                    'all_in_plane_samples_supported': complete}
+    return result
 
 
 def publish_derived_mask(directory, name, mask, ct_image, component_paths, config_path, definitions, outcomes, ct_files):

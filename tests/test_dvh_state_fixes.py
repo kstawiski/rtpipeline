@@ -14,7 +14,8 @@ import pytest
 import dvh_plan_target_fixtures as fx
 from legacy_source import legacy_show
 
-from rtpipeline import dvh, dvh_support
+from rtpipeline import dvh, dvh_generation, dvh_support
+from rtpipeline.durable_progress import DurableProgressError
 from rtpipeline.auto_rtstruct import _record_rs_auto_origin, RS_AUTO_ORIGIN_COPY
 from rtpipeline.dvh_rotation import RotatedDoseGrid, prepare_rotated_dose
 from test_dvh_coverage_dispositions import contour, structure
@@ -117,9 +118,11 @@ def test_sliver_publication_retains_evidence_without_dvh(tmp_path, monkeypatch, 
         else:
             assert evidence['automatic_source'] is None
     if provenance == 'matching':
-        assert dvh._is_dvh_up_to_date(course, course / 'dvh_metrics.xlsx')
+        settings = dvh_generation.effective_settings()
+        dvh_generation.current(course, dvh_generation.binding(course, settings))
         (course / 'metadata/rs_auto_origin.json').unlink()
-        assert not dvh._is_dvh_up_to_date(course, course / 'dvh_metrics.xlsx')
+        with pytest.raises(DurableProgressError, match='DVH_BINDING_INPUTS_CHANGED'):
+            dvh_generation.current(course, dvh_generation.binding(course, settings))
 
 
 @pytest.mark.parametrize('level', [0., .002, .009, .01, .02])
@@ -170,7 +173,7 @@ def test_axial_summary_uses_working_mask_samples(tmp_path, level, aligned):
 
 
 @pytest.mark.parametrize('level', [.01, .02, 20.])
-def test_multibin_summary_is_lazy_and_metric_bytes_stay_exact(tmp_path, level):
+def test_multibin_uses_exact_thresholds_and_preserves_binned_summary(tmp_path, level):
     course = fx.build_course(tmp_path, rois=[('Organ', 'ORGAN', fx.WHOLE_X)])
     dose_path = course / 'DICOM/RTDOSE/dose.dcm'
     dose = pydicom.dcmread(dose_path)
@@ -181,7 +184,11 @@ def test_multibin_summary_is_lazy_and_metric_bytes_stay_exact(tmp_path, level):
     histogram = dvh.dvhcalc.get_dvh(str(course / 'DICOM/RTSTRUCT/rs.dcm'),
                                     str(dose_path), 1)
     assert histogram.counts.size > 1
-    result = dvh._compute_metrics(histogram, 20., lambda: pytest.fail('Multibin summary was sampled'))
+    rs = pydicom.dcmread(course / 'DICOM/RTSTRUCT/rs.dcm')
+    result = dvh._compute_metrics(histogram, 20., lambda: dvh._rtstruct_dose_summary(rs, dose, 1))
+    expected_percent = 100. * (histogram.mean - .005) / level if level == 20. else 0.
+    assert result['V20Gy (%)'] == pytest.approx(expected_percent)
+    assert result['V100%Rx (%)'] == pytest.approx(expected_percent)
     # Execute the merge-head metric function against exactly the same histogram.
     source = legacy_show('2875df2', 'rtpipeline/dvh.py', cwd=Path(dvh.__file__).parents[1]).decode()
     original = next(node for node in ast.parse(source).body
@@ -192,6 +199,8 @@ def test_multibin_summary_is_lazy_and_metric_bytes_stay_exact(tmp_path, level):
     assert result.pop('dose_summary_basis') == 'binned'
     assert result.keys() == expected.keys()
     for key, value in expected.items():
+        if fx.dvh_305_changes_metric(key):
+            continue
         if isinstance(value, float):
             assert struct.pack('!d', result[key]) == struct.pack('!d', value), key
         else:

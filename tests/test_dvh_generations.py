@@ -194,11 +194,10 @@ def producer_string_inference():
         yield
 
 
-def test_measurement_bytes_match_unmodified_producer(tmp_path, producer_string_inference):
-    """Run the pinned producer with the same inputs, packages and inference policy."""
+def test_unaffected_measurements_match_unmodified_producer(tmp_path, producer_string_inference):
+    """Compare the unaffected fields and curves with the pinned producer."""
     import subprocess
     import types
-    import zipfile
     source = subprocess.check_output(["git", "show", "7e509c7:rtpipeline/dvh.py"],
                                      cwd=Path(__file__).resolve().parents[1], text=True)
     legacy = types.ModuleType("rtpipeline._dvh_before_generations")
@@ -210,28 +209,19 @@ def test_measurement_bytes_match_unmodified_producer(tmp_path, producer_string_i
     try:
         exec(compile(source, "7e509c7/rtpipeline/dvh.py", "exec"), legacy.__dict__)
         root = fx.build_course(tmp_path, rois=[("PTV1", "PTV", fx.DOSED_LEFT_X),
-            ("PTV2", "PTV", fx.UNDOSED_RIGHT_X), ("Organ", "ORGAN", fx.WHOLE_X)])
+            ("PTV2", "PTV", fx.UNDOSED_RIGHT_X), ("Organ", "ORGAN", fx.WHOLE_X)], low_dose_gy=0.)
         assert legacy.dvh_for_course(root, parallel_workers=1)
-        parquet = (root / "dvh_metrics.parquet").read_bytes()
         curves = (root / "dvh_curves.json").read_bytes()
-        frame = pd.read_parquet(root / "dvh_metrics.parquet")
-        with zipfile.ZipFile(root / "dvh_metrics.xlsx") as archive:
-            workbook = {name: archive.read(name) for name in archive.namelist() if name != "docProps/core.xml"}
-        workbook_cells = pd.read_excel(root / "dvh_metrics.xlsx")
+        readers = {"dvh_metrics.parquet": pd.read_parquet, "dvh_metrics.xlsx": pd.read_excel}
+        old = {name: read(root / name) for name, read in readers.items()}
         assert measure(root)
-        assert (root / "dvh_metrics.parquet").read_bytes() == parquet
         assert (root / "dvh_curves.json").read_bytes() == curves
-        pd.testing.assert_frame_equal(pd.read_parquet(root / "dvh_metrics.parquet"), frame, check_exact=True)
-        if int(pd.__version__.split(".")[0]) >= 3:
-            # The validated production pandas: the pinned plain-header layout
-            # equals the unmodified producer's workbook byte for byte.
-            with zipfile.ZipFile(root / "dvh_metrics.xlsx") as archive:
-                assert {name: archive.read(name) for name in archive.namelist() if name != "docProps/core.xml"} == workbook
-        else:
-            # pandas 2 (the only pandas on Python 3.10) bolds the unmodified
-            # producer's default headers, while the producer pins the production
-            # layout; the measured cells must still be identical.
-            pd.testing.assert_frame_equal(pd.read_excel(root / "dvh_metrics.xlsx"), workbook_cells, check_exact=True)
+        for name, read in readers.items():
+            current = read(root / name)
+            assert set(current) == set(old[name]) | fx.DVH_305_COLUMNS
+            columns = [column for column in old[name] if not fx.dvh_305_changes_metric(column)]
+            pd.testing.assert_frame_equal(current[columns], old[name][columns], check_exact=True)
+            fx.assert_exact_vx_two_level_fixture(current)
     finally:
         sys.modules.pop(legacy.__name__, None)
 

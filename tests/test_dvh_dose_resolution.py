@@ -32,7 +32,7 @@ def test_cli_dvh_does_not_forward_a_duplicate_explicit_prescription(
 ) -> None:
     """A stale CourseOutput copy cannot disagree with the authoritative contract."""
 
-    from rtpipeline import cli, course_contract, dvh
+    from rtpipeline import cli, course_contract, dvh, dvh_generation
 
     captured: dict[str, object] = {}
     output = tmp_path / "dvh_metrics.xlsx"
@@ -40,6 +40,9 @@ def test_cli_dvh_does_not_forward_a_duplicate_explicit_prescription(
     def fake_dvh_for_course(*_args, **kwargs):
         captured.update(kwargs)
         output.write_bytes(b"result")
+        (tmp_path / ".dvh_done").write_text(json.dumps({
+            "schema": dvh_generation.SCHEMA, "measurement_outcome": "computed",
+        }))
         return output
 
     monkeypatch.setattr(dvh, "dvh_for_course", fake_dvh_for_course)
@@ -415,6 +418,31 @@ def test_classifier_sums_same_plan_beam_doses_when_no_plan_dose_exists(tmp_path)
     plan = _mk_plan(tmp_path / "RP.dcm", plan_uid)
     beam_1 = _mk_dose(tmp_path / "001_BEAM.dcm", generate_uid(), plan_uid, "BEAM")
     beam_2 = _mk_dose(tmp_path / "002_BEAM.dcm", generate_uid(), plan_uid, "BEAM")
+
+    dataset = pydicom.dcmread(plan)
+    fraction_group = dataset.FractionGroupSequence[0]
+    fraction_group.NumberOfBeams = 2
+    original = fraction_group.ReferencedBeamSequence[0]
+    original.BeamDose = float(original.BeamDose) / 2
+    reference = Dataset()
+    reference.ReferencedBeamNumber = 2
+    reference.BeamDose = original.BeamDose
+    reference.BeamDoseType = "PHYSICAL"
+    fraction_group.ReferencedBeamSequence.append(reference)
+    beam = Dataset()
+    beam.BeamNumber = 2
+    beam.TreatmentDeliveryType = "TREATMENT"
+    dataset.BeamSequence.append(beam)
+    dataset.save_as(plan, enforce_file_format=True)
+    for number, path in enumerate((beam_1, beam_2), start=1):
+        dose = pydicom.dcmread(path)
+        group = Dataset()
+        group.ReferencedFractionGroupNumber = int(fraction_group.FractionGroupNumber)
+        beam_ref = Dataset()
+        beam_ref.ReferencedBeamNumber = number
+        group.ReferencedBeamSequence = Sequence([beam_ref])
+        dose.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence = Sequence([group])
+        dose.save_as(path, enforce_file_format=True)
 
     classified = _classify_doses([plan], [beam_1, beam_2])
 

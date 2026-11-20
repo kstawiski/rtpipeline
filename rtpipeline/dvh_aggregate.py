@@ -82,6 +82,8 @@ DVH_NUMERIC_COLUMNS = (
     "V100%Rx (%)",
     "Volume (cm³)",
     "Prescribed_Dose_Gy",
+    "Prescription_Normalization_Gy",
+    "Source_Prescribed_Dose_Gy",
     "Delivered_Dose_Gy",
     "zero_dose_trigger_value_gy",
     "Course_Treatment_Plan_Count",
@@ -113,6 +115,7 @@ DVH_STRING_COLUMNS = (
     *DVH_PROVENANCE_COLUMNS,
     *DVH_QC_COLUMNS,
     "Unrepresented_Treatment_Plan_UIDs",
+    "roi_geometry_sha256",
     "row_status",
     "failure_reason",
     "aggregate_schema_version",
@@ -235,20 +238,19 @@ def _same_mask_group_key(frame: pd.DataFrame) -> pd.Series:
         + _optional_text_column(frame, "ROI_Name").astype("string").fillna("<NA>").astype(str)
         + "\x1f"
         + _optional_text_column(frame, "ROI_OriginalName").astype("string").fillna("<NA>").astype(str)
+        + "\x1f"
+        + _optional_text_column(frame, "rtstruct_sop_instance_uid").astype("string")
+        + "\x1f"
+        + _optional_text_column(frame, "roi_geometry_sha256").astype("string")
     )
 
 
 def _deduplicate_same_mask_measurements(combined: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """Collapse same-mask double measurements to one census row.
 
-    A support ROI copied from the automatic structure set into the
-    published custom set is measured once per source file, producing two
-    rows with identical values. Keeping both double-counts the ROI in any
-    pooled summary (observed: 20 such pairs with 458/458 numeric fields
-    identical). When every numeric dose column agrees exactly (NaN counts
-    as equal), retain the Merged published-set row and drop the copy;
-    pairs whose values differ are kept so the readiness gate still flags
-    them under row identity. Rows without a usable identity never collapse.
+    A shared RTSTRUCT SOP identity and producer-recorded contour geometry
+    are required. Preserve conflicting values for identity review and prefer
+    the Merged label among redundant rows.
     Returns the frame and the dropped-row count.
     """
     if combined.empty or "row_status" not in combined:
@@ -258,7 +260,10 @@ def _deduplicate_same_mask_measurements(combined: pd.DataFrame) -> tuple[pd.Data
     names_ok = names.notna() & (names.astype(str).str.strip() != "")
     numbers = pd.to_numeric(_optional_text_column(combined, "ROI_Number"), errors="coerce")
     numbers_ok = numbers.notna() & (numbers >= 0)
-    eligible = measurable & names_ok & numbers_ok
+    uid = _optional_text_column(combined, "rtstruct_sop_instance_uid").astype("string")
+    geometry = _optional_text_column(combined, "roi_geometry_sha256").astype("string")
+    eligible = (measurable & names_ok & numbers_ok & uid.str.strip().ne("").fillna(False)
+                & geometry.str.fullmatch(r"[0-9a-f]{64}").fillna(False))
     if not bool(eligible.any()):
         return combined, 0
     numeric_columns = [
@@ -376,10 +381,15 @@ def build_dvh_aggregate(
                 )
         # A published row may explicitly represent contour nonmeasurement.
         # Table presence alone must not turn that row into a measurement.
+        from .dvh_generation import measured_rows
+        measured = measured_rows(current)
+        inferred = pd.Series("not_computed", index=current.index, dtype="string")
+        inferred.loc[measured] = "computed"
         if "row_status" not in current:
-            current["row_status"] = "computed"
+            current["row_status"] = inferred
         else:
-            current["row_status"] = current["row_status"].fillna("computed")
+            status = current["row_status"].astype("string").fillna(inferred)
+            current["row_status"] = status.mask(status.eq("computed") & ~measured, "not_computed")
         if "failure_reason" not in current:
             current["failure_reason"] = pd.NA
         current["aggregate_schema_version"] = DVH_AGGREGATE_SCHEMA_VERSION

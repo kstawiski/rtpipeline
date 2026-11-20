@@ -2,7 +2,56 @@
 
 ## Unreleased
 
-No changes since 3.0.4.
+- DVH reuse now checks the bytes of the authoritative RTPLAN, RTDOSE and
+  RTSTRUCT, including course-root copies and derived grids, and binds the
+  treatment records used to establish course membership.
+- D2cc uses the minimum dose to the hottest qualifying 2 cm³. At an exact
+  cumulative-volume plateau it selects the hotter end. Other Dx endpoints
+  use the same rule.
+- Axial RTSTRUCT DVHs weight each contour plane by its own slab thickness.
+  Slab boundaries lie midway between consecutive contours. The first and
+  last slabs extend by half their adjacent interval.
+- Each ROI must explicitly reference the dose frame of reference. A missing
+  or different ROI frame produces a row with no dose measurement.
+- Cohort DVH aggregation requires a shared RTSTRUCT SOP identity and ROI
+  geometry binding before collapsing duplicate measurements.
+- NIfTI DVHs interpolate at the frame positions declared in RTDOSE, including
+  nonuniform frame spacing.
+- Covered contours with no DVH volume get explicit rows. The row distinguishes
+  a structure with fewer than two contour planes from a structure that misses
+  every sampling point. ROI number 0 is retained.
+- Vx measures the sampled volume receiving at least the threshold. It is zero
+  when every sampled dose is below the threshold.
+- Dose selection refuses equally ranked grids with `ambiguous_dose_grid`
+  when the course evidence does not identify one.
+- BEAM dose accumulation requires complete, disjoint fraction-group and beam
+  coverage. Duplicate beam exports are refused.
+- A composite dose requires support from all component grids at the
+  interpolation nodes. A gap between component grids has no dose measurement.
+- The authoritative RTDOSE must declare physical dose in Gy when read.
+- Original-mask re-export into a contracted course requires that course's
+  authoritative RTSTRUCT and planning CT. Consumers check the same identity.
+- A DVH table containing only refused rows has degraded QC and a
+  `not_measured` receipt. Its ROI rows remain available with their dispositions.
+- Prescription-relative DVH metrics use the nominal total reported in the
+  row. An unresolved target or dose scope leaves these metrics unavailable.
+- Manual DVH rows take precedence over matching merged and custom rows
+  for the same patient and course.
+- NIfTI DVHs interpolate stored integer dose samples in floating point before
+  applying dose scaling.
+- When a histogram collapses into the first centigray bin, unbinned
+  samples determine all reported dose endpoints and homogeneity. Otherwise
+  the RTSTRUCT histogram uses 0.01 Gy bins with mean doses at bin centres,
+  minimum and maximum at populated upper bin edges, and interpolated
+  Dx values between bin centres. When only a histogram is available, Vx includes
+  bins whose lower edge meets the threshold.
+- A partially covered RTSTRUCT ROI reports its contour-derived volume
+  between the first and last contour planes. Dose metrics for its covered
+  samples and their volume appear separately.
+- Name-based ROI matching uses the original-mask collision rules for case,
+  whitespace and sanitized names. Custom structures with ambiguous
+  dependencies record a refusal. Independent custom structures can still
+  be produced.
 
 ## 3.0.4 — 2026-11-17
 

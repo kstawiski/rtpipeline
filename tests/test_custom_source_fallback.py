@@ -120,15 +120,15 @@ def test_read_failure_is_never_completed_from_auto(tmp_path, monkeypatch):
     rs_manual, rs_auto, config = _vessel_course(
         tmp_path, monkeypatch, break_manual_b=False
     )
-    original = rtstruct_geometry.ScopedRTStruct.get_roi_mask_by_name
+    original = rtstruct_geometry.ScopedRTStruct.get_roi_mask_by_number
 
-    def patched(self, name):
-        if name == "VES_B":
+    def patched(self, number):
+        if self.scopes[number].roi_name == "VES_B":
             return np.zeros((12, 12, 4), dtype=bool)
-        return original(self, name)
+        return original(self, number)
 
     monkeypatch.setattr(
-        rtstruct_geometry.ScopedRTStruct, "get_roi_mask_by_name", patched
+        rtstruct_geometry.ScopedRTStruct, "get_roi_mask_by_number", patched
     )
     out = custom._create_custom_structures_rtstruct_unlocked(
         tmp_path, config, rs_manual, rs_auto

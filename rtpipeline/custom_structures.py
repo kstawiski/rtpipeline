@@ -250,7 +250,9 @@ class CustomStructureProcessor:
     def process_custom_structure(
         self,
         config: CustomStructureConfig,
-        available_masks: Dict[str, np.ndarray]
+        available_masks: Dict[str, np.ndarray],
+        *,
+        ambiguous_roi_names: dict[str, list[str]] | None = None,
     ) -> Optional[np.ndarray]:
         """
         Process a single custom structure configuration.
@@ -278,8 +280,10 @@ class CustomStructureProcessor:
         for source_name in config.source_structures:
             actual_key = None
 
-            # Try exact match first
-            if source_name in available_masks:
+            blocked = (ambiguous_roi_names or {}).get(self._normalize_name(source_name))
+            if blocked:
+                ambiguous_sources[source_name] = blocked
+            elif source_name in available_masks:
                 actual_key = source_name
             # Try normalized match
             elif self._normalize_name(source_name) in normalization_map:
@@ -454,7 +458,9 @@ class CustomStructureProcessor:
 
     def process_all_custom_structures(
         self,
-        available_masks: Dict[str, np.ndarray]
+        available_masks: Dict[str, np.ndarray],
+        *,
+        ambiguous_roi_names: dict[str, list[str]] | None = None,
     ) -> Dict[str, np.ndarray]:
         """
         Process all configured custom structures.
@@ -470,7 +476,8 @@ class CustomStructureProcessor:
         self.structure_outcomes.clear()
 
         for config in self.custom_configs:
-            mask = self.process_custom_structure(config, available_masks)
+            mask = self.process_custom_structure(
+                config, available_masks, ambiguous_roi_names=ambiguous_roi_names)
             if mask is not None:
                 custom_masks[config.name] = mask
                 # Add to available masks for use in subsequent operations
