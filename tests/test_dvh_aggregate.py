@@ -305,16 +305,16 @@ def _dvh_row(**overrides: object) -> dict[str, object]:
 
 
 def test_dvh_aggregate_collapses_identical_same_mask_double_measurement() -> None:
-    """A support ROI copied into the published custom set is measured once
-    per source file with identical values (observed: 20 such pairs with
-    458/458 numeric fields identical). The census keeps one row."""
+    """One RTSTRUCT and one ROI geometry measured under two source labels."""
     auto = _dvh_row(
         Segmentation_Source="AutoRTS",
         rtstruct_path="Output/P1/C1/RS_auto.dcm",
+        rtstruct_sop_instance_uid="1.2.3", roi_geometry_sha256="a" * 64,
     )
     merged = _dvh_row(
         Segmentation_Source="Merged",
         rtstruct_path="Output/P1/C1/RS_custom.dcm",
+        rtstruct_sop_instance_uid="1.2.3", roi_geometry_sha256="a" * 64,
     )
     aggregate = build_dvh_aggregate(
         [pd.DataFrame([auto, merged])], [("P1", "C1", Path("P1/C1"))]
@@ -328,10 +328,10 @@ def test_dvh_aggregate_collapses_identical_same_mask_double_measurement() -> Non
 
 
 def test_dvh_aggregate_keeps_same_identity_rows_with_differing_values() -> None:
-    """Pairs whose measured values differ are genuinely different masks and
-    stay for the readiness gate to flag under row identity (fail-closed)."""
-    auto = _dvh_row(Segmentation_Source="AutoRTS", DmeanGy=10.0)
-    merged = _dvh_row(Segmentation_Source="Merged", DmeanGy=11.0)
+    """Conflicting measurements with the same recorded binding remain visible."""
+    binding = dict(rtstruct_sop_instance_uid="1.2.3", roi_geometry_sha256="a" * 64)
+    auto = _dvh_row(Segmentation_Source="AutoRTS", DmeanGy=10.0, **binding)
+    merged = _dvh_row(Segmentation_Source="Merged", DmeanGy=11.0, **binding)
     aggregate = build_dvh_aggregate(
         [pd.DataFrame([auto, merged])], [("P1", "C1", Path("P1/C1"))]
     )

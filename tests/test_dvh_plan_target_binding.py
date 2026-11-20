@@ -47,14 +47,15 @@ def _baseline_rows(path: Path) -> dict[str, dict]:
 
 
 def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
-    """Keep the stored values, dtypes and row order exact on historical columns."""
+    """Keep the unaffected historical columns exact and check corrected Vx."""
     baseline_text = path.read_text(encoding="utf-8")
     baseline = json.loads(baseline_text)
     current = json.loads(fx.canonical_dvh_table(course))
     assert set(current["columns"]) == set(baseline["columns"]) | {"dose_plane_alignment", "D2ccGy", "D2cc_status",
-                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code", "dose_summary_basis"}
+                                                                              "dose_grid_coverage_reason", "dose_grid_coverage_reason_code", "dose_summary_basis"} | fx.DVH_305_COLUMNS
     fx.assert_d2cc_columns(pd.read_parquet(course / "dvh_metrics.parquet"))
     summaries = pd.read_parquet(course / "dvh_metrics.parquet")
+    fx.assert_exact_vx_two_level_fixture(summaries)
     assert summaries.loc[summaries.DmaxGy.eq(0), 'dose_summary_basis'].eq('unbinned_subcentigray').all()
     assert summaries.loc[summaries.DmaxGy.gt(0), 'dose_summary_basis'].eq('binned').all()
     for row in current["rows"]:
@@ -71,7 +72,12 @@ def _assert_historical_table_with_alignment(course: Path, path: Path) -> None:
         "dtypes": [current["dtypes"][i] for i in positions],
         "rows": [[row[i] for i in positions] for row in current["rows"]],
     }
-    assert json.dumps(projected, indent=1, ensure_ascii=False, sort_keys=False) + "\n" == baseline_text
+    assert projected["columns"] == baseline["columns"]
+    assert projected["dtypes"] == baseline["dtypes"]
+    keep = [i for i, column in enumerate(projected["columns"]) if not fx.dvh_305_changes_metric(column)]
+    assert [[row[i] for i in keep] for row in projected["rows"]] == [
+        [row[i] for i in keep] for row in baseline["rows"]
+    ]
     alignment_index = current["columns"].index("dose_plane_alignment")
     alignment = [row[alignment_index] for row in current["rows"]]
     assert set(alignment) <= {"EXACT", "DOSE_Z_INTERPOLATED"}
@@ -119,7 +125,8 @@ def test_site_description_binding_excludes_only_unbound_near_zero_targets(tmp_pa
     baseline = _baseline_rows(QUARANTINE_BASELINE)
     for name, row in rows.items():
         for column in baseline[name]:
-            if _is_dose_derived_metric_column(column) and column not in RELATIVE_DVH_METRIC_COLUMNS:
+            if (_is_dose_derived_metric_column(column) and column not in RELATIVE_DVH_METRIC_COLUMNS
+                    and not fx.dvh_305_changes_metric(column)):
                 expected = baseline[name][column]
                 actual = row[column]
                 assert (expected is None and pd.isna(actual)) or repr(float(actual)) == expected
