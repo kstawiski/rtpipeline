@@ -4306,7 +4306,10 @@ def _compute_dvh_for_course(
         row["Prescribed_Dose_Reason"] = (
             "Prescription total is available for the complete course plan set."
             if dose_plan_scope.complete and rx_est is not None
-            else "The prescription is resolved for the selected dose plan scope."
+            else (
+                "The prescription is resolved for the selected dose plan scope, but the "
+                "dose grid does not represent the complete course treatment plan set."
+            )
             if rx_est is not None else "Prescription is present but its course total is unresolved."
             if nominal_source is not None else "Prescription is absent from the authoritative course contract."
         )
