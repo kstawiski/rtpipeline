@@ -720,6 +720,388 @@ def test_two_course_production_invalidation_is_local(tmp_path, mutation):
         evidence_log.write_text(log)
 
 
+_HISTORICAL_DISPOSITION_ADDED_KEYS = frozenset({
+    "extraction_parameters_binding",
+    "translation_realizations",
+    "ct_source_binding",
+    "baseline_ct_publication",
+})
+_HISTORICAL_DISPOSITION_CODE_SOURCES_ADDED = frozenset({
+    "extraction_progress.py",
+    "durable_progress.py",
+    "acquisition_scale.py",
+    "ibsi_preprocessing.py",
+    "radiomics_params.yaml",
+    "roi_class_map_v1.yaml",
+})
+_HISTORICAL_ROBUSTNESS_ADDED_COLUMNS = (
+    "requested_translation_mm",
+    "realized_translation_mm",
+)
+_HISTORICAL_DVH_ADDED_COLUMNS = (
+    "Prescription_Normalization_Gy",
+    "roi_geometry_sha256",
+    "row_status",
+)
+_HISTORICAL_BASE_REVISION = "3f94c631d44d9452b0299341fa8fb01e93d1fd3c"
+
+
+def _dvh_roi_set(frame, *, allow_legacy_missing_status=False):
+    assert {"ROI_Number", "ROI_Name"} <= set(frame.columns)
+    if "row_status" in frame.columns:
+        statuses = frame["row_status"]
+        if not allow_legacy_missing_status:
+            assert statuses.notna().all()
+        statuses = statuses.fillna("computed")
+    else:
+        assert allow_legacy_missing_status
+        statuses = pd.Series("computed", index=frame.index)
+    return {
+        (int(roi_num), str(roi_name), str(status))
+        for roi_num, roi_name, status in zip(frame["ROI_Number"], frame["ROI_Name"], statuses)
+    }
+
+
+def _assert_dvh_table_matches_base(left_df, right_df, *, is_aggregate):
+    # 3.0.5 changes DVH values and schema by design: inclusive Vx thresholds,
+    # contour slab weighting, nominal-prescription normalisation, ROI binding
+    # columns (Prescription_Normalization_Gy, roi_geometry_sha256, row_status),
+    # absolute course-local source paths, and _RESULTS row order (manual
+    # precedence). DVH correctness is covered by the dose regression tests
+    # (tests/test_ws570_dose_identity.py, tests/test_dvh_*.py) and the V1a
+    # benchmark (validation/dvh_accuracy, validation/dvh_extension).
+    expected_added = {"Prescription_Normalization_Gy", "roi_geometry_sha256"}
+    if "row_status" not in right_df.columns:
+        expected_added.add("row_status")
+    assert expected_added <= set(_HISTORICAL_DVH_ADDED_COLUMNS)
+    assert set(left_df.columns) - set(right_df.columns) == expected_added
+    assert not (set(right_df.columns) - set(left_df.columns))
+    assert _dvh_roi_set(left_df) == _dvh_roi_set(
+        right_df, allow_legacy_missing_status=not is_aggregate
+    )
+
+
+def _assert_uninterrupted_matches_base(
+    *,
+    candidate_dispositions,
+    base_dispositions,
+    candidate_parquets,
+    base_parquets,
+    candidate_books,
+    base_books,
+    nonmeasurement,
+    candidate_version=None,
+    base_version=None,
+    evidence_dir=None,
+):
+    from io import BytesIO
+
+    assert set(candidate_dispositions) == set(base_dispositions)
+    assert set(candidate_parquets) <= set(base_parquets)
+    assert all(
+        path.endswith("/metadata/radiomics_ct_checkpoint.parquet")
+        for path in (set(base_parquets) - set(candidate_parquets))
+    ), sorted(set(base_parquets) - set(candidate_parquets))
+    assert set(candidate_books) == set(base_books)
+
+    if candidate_version is None:
+        import rtpipeline
+        candidate_version = rtpipeline.__version__
+    if base_version is None:
+        base_init = subprocess.check_output(
+            ["git", "show", f"{_HISTORICAL_BASE_REVISION}:rtpipeline/__init__.py"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+        )
+        base_version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', base_init).group(1)
+
+    evidence = {
+        "base": _HISTORICAL_BASE_REVISION,
+        "parquet": {},
+        "workbooks": {},
+        "dispositions": {},
+    }
+    disposition_hashes = {}
+    excluded_disposition_keys = _HISTORICAL_DISPOSITION_ADDED_KEYS | {
+        "code_identity",
+        "measured_output",
+    }
+    for name, expected in sorted(candidate_dispositions.items()):
+        actual = base_dispositions[name]
+        left, right = json.loads(expected), json.loads(actual)
+        if evidence_dir:
+            prefix = ("with-disposition__" if nonmeasurement else "") + name.replace("/", "__")
+            Path(evidence_dir, prefix + ".candidate.json").write_bytes(expected)
+            Path(evidence_dir, prefix + ".base.json").write_bytes(actual)
+        assert left.keys() - right.keys() == _HISTORICAL_DISPOSITION_ADDED_KEYS, (
+            name,
+            left.keys() - right.keys(),
+        )
+        assert not (right.keys() - left.keys()), (name, right.keys() - left.keys())
+        changed_fields = sorted(field for field in right if left[field] != right[field])
+        assert changed_fields == ["code_identity", "measured_output"], (name, changed_fields)
+        course_prefix = name.split("/metadata/")[0]
+        assert left["measured_output"]["path"] == right["measured_output"]["path"]
+        rob_rel = f"{course_prefix}/{left['measured_output']['path']}"
+        assert left["measured_output"] == {
+            "path": right["measured_output"]["path"],
+            "sha256": hashlib.sha256(candidate_parquets[rob_rel]).hexdigest(),
+            "size_bytes": len(candidate_parquets[rob_rel]),
+        }
+        assert right["measured_output"] == {
+            "path": right["measured_output"]["path"],
+            "sha256": hashlib.sha256(base_parquets[rob_rel]).hexdigest(),
+            "size_bytes": len(base_parquets[rob_rel]),
+        }
+        assert left["rows"] == right["rows"]  # Every disposition, in publication order.
+        assert bool(left["rows"]) == nonmeasurement
+        assert left["rows_sha256"] == right["rows_sha256"]
+        left_shared = {k: v for k, v in left.items() if k not in excluded_disposition_keys}
+        right_shared = {k: v for k, v in right.items() if k not in excluded_disposition_keys}
+        assert left_shared == right_shared
+        # Serialization outside code_identity, measured_output, and the 3.0.5 binding keys
+        # must also retain identical canonical JSON bytes.
+        assert expected == (json.dumps(left, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        assert actual == (json.dumps(right, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        assert (
+            json.dumps(left_shared, indent=2, sort_keys=True)
+            == json.dumps(right_shared, indent=2, sort_keys=True)
+        )
+        sources_left = {item["path"]: item["sha256"] for item in left["code_identity"]["sources"]}
+        sources_right = {item["path"]: item["sha256"] for item in right["code_identity"]["sources"]}
+        assert sources_left.keys() - sources_right.keys() == _HISTORICAL_DISPOSITION_CODE_SOURCES_ADDED
+        assert not (sources_right.keys() - sources_left.keys())
+        # Each side reports its own declared package version (a release label).
+        assert left["code_identity"]["pipeline_version"] == candidate_version
+        assert right["code_identity"]["pipeline_version"] == base_version
+        code_changes = {
+            path: {"candidate_sha256": sources_left[path], "base_sha256": sources_right.get(path)}
+            for path in sources_left
+            if sources_left[path] != sources_right.get(path)
+        }
+        disposition_hashes[course_prefix] = (
+            hashlib.sha256(expected).hexdigest(),
+            hashlib.sha256(actual).hexdigest(),
+        )
+        evidence["dispositions"][name] = {
+            "added_fields": sorted(_HISTORICAL_DISPOSITION_ADDED_KEYS),
+            "changed_fields": changed_fields,
+            "records_equal_in_order": True,
+            "record_count": len(left["rows"]),
+            "serialization_outside_intended_keys_byte_equal": True,
+            "code_changes": code_changes,
+            "candidate_code_identity": left["code_identity"],
+            "base_code_identity": right["code_identity"],
+            "candidate_sha256": hashlib.sha256(expected).hexdigest(),
+            "base_sha256": hashlib.sha256(actual).hexdigest(),
+        }
+
+    robustness_table_hashes = {}
+    for name, expected in sorted(candidate_parquets.items()):
+        actual = base_parquets[name]
+        if (
+            name.endswith("/radiomics_robustness_ct.parquet")
+            or name == "_RESULTS/radiomics_robustness_summary_raw_values.parquet"
+        ):
+            left_df = pd.read_parquet(BytesIO(expected))
+            right_df = pd.read_parquet(BytesIO(actual))
+            assert set(_HISTORICAL_ROBUSTNESS_ADDED_COLUMNS) <= set(left_df.columns), (name, left_df.columns)
+            assert set(left_df.columns) - set(right_df.columns) == set(_HISTORICAL_ROBUSTNESS_ADDED_COLUMNS), name
+            assert not (set(right_df.columns) - set(left_df.columns)), name
+            pd.testing.assert_frame_equal(
+                left_df.drop(columns=list(_HISTORICAL_ROBUSTNESS_ADDED_COLUMNS)),
+                right_df,
+                check_exact=True,
+            )
+            if name.endswith("/radiomics_robustness_ct.parquet"):
+                course_prefix = name.rsplit("/radiomics_robustness_ct.parquet", 1)[0]
+                robustness_table_hashes[course_prefix] = (
+                    hashlib.sha256(expected).hexdigest(),
+                    hashlib.sha256(actual).hexdigest(),
+                )
+            evidence["parquet"][name] = {
+                "byte_equal": actual == expected,
+                "frame_equal_after_dropping_translation_realization_columns": True,
+                "candidate_sha256": hashlib.sha256(expected).hexdigest(),
+                "base_sha256": hashlib.sha256(actual).hexdigest(),
+            }
+            continue
+        if Path(name).name == "dvh_metrics.parquet":
+            _assert_dvh_table_matches_base(
+                pd.read_parquet(BytesIO(expected)),
+                pd.read_parquet(BytesIO(actual)),
+                is_aggregate=(name == "_RESULTS/dvh_metrics.parquet"),
+            )
+            evidence["parquet"][name] = {
+                "byte_equal": actual == expected,
+                "excluded_305_dvh_changes_schema_and_roi_set_verified": True,
+                "candidate_sha256": hashlib.sha256(expected).hexdigest(),
+                "base_sha256": hashlib.sha256(actual).hexdigest(),
+            }
+            continue
+        if actual != expected:
+            pd.testing.assert_frame_equal(
+                pd.read_parquet(BytesIO(expected)),
+                pd.read_parquet(BytesIO(actual)),
+                check_exact=True,
+            )
+        evidence["parquet"][name] = {
+            "byte_equal": actual == expected,
+            "candidate_sha256": hashlib.sha256(expected).hexdigest(),
+            "base_sha256": hashlib.sha256(actual).hexdigest(),
+        }
+        assert actual == expected, name
+
+    for name, expected in sorted(candidate_books.items()):
+        actual = base_books[name]
+        if Path(name).name == "dvh_metrics.xlsx":
+            with pd.ExcelFile(BytesIO(expected)) as first, pd.ExcelFile(BytesIO(actual)) as second:
+                assert first.sheet_names == second.sheet_names
+                for sheet in first.sheet_names:
+                    _assert_dvh_table_matches_base(
+                        first.parse(sheet),
+                        second.parse(sheet),
+                        is_aggregate=(name == "_RESULTS/dvh_metrics.xlsx"),
+                    )
+            evidence["workbooks"][name] = {
+                "file_byte_equal": actual == expected,
+                "excluded_305_dvh_changes_schema_and_roi_set_verified": True,
+            }
+            continue
+
+        is_robustness_summary = name == "_RESULTS/radiomics_robustness_summary.xlsx"
+        allowed_cells = {}
+        with pd.ExcelFile(BytesIO(expected)) as first, pd.ExcelFile(BytesIO(actual)) as second:
+            assert first.sheet_names == second.sheet_names
+            for sheet_num, sheet in enumerate(first.sheet_names, start=1):
+                left, right = first.parse(sheet), second.parse(sheet)
+                assert list(left.columns) == list(right.columns), (name, sheet)
+                assert len(left) == len(right), (name, sheet)
+                sheet_allowed = set()
+                drop_cols = []
+                # These columns explicitly report producing table/disposition hashes;
+                # changed implementation or added binding fields necessarily change them.
+                if is_robustness_summary and sheet == "course_outcomes":
+                    for column, expected_map in (
+                        ("table_sha256", robustness_table_hashes),
+                        ("source_dispositions_sha256", disposition_hashes),
+                    ):
+                        assert column in left.columns, (name, sheet, column)
+                        col_1based = left.columns.get_loc(column) + 1
+                        for pos, index in enumerate(left.index):
+                            course_key = f"{left.at[index, 'patient_id']}/{left.at[index, 'course_id']}"
+                            assert right.at[index, "patient_id"] == left.at[index, "patient_id"]
+                            assert right.at[index, "course_id"] == left.at[index, "course_id"]
+                            first_hash = left.at[index, column]
+                            second_hash = right.at[index, column]
+                            assert (first_hash, second_hash) == expected_map[course_key], (
+                                name,
+                                sheet,
+                                column,
+                                index,
+                            )
+                            if first_hash != second_hash:
+                                sheet_allowed.add((pos + 2, col_1based))
+                        drop_cols.append(column)
+                elif "source_dispositions_sha256" in left.columns:
+                    col_1based = left.columns.get_loc("source_dispositions_sha256") + 1
+                    for pos, index in enumerate(left.index):
+                        first_hash = left.at[index, "source_dispositions_sha256"]
+                        second_hash = right.at[index, "source_dispositions_sha256"]
+                        if pd.isna(first_hash) and pd.isna(second_hash):
+                            continue
+                        assert (first_hash, second_hash) in disposition_hashes.values(), (
+                            name,
+                            sheet,
+                            index,
+                        )
+                        if first_hash != second_hash:
+                            sheet_allowed.add((pos + 2, col_1based))
+                    drop_cols.append("source_dispositions_sha256")
+
+                if is_robustness_summary and "robustness_label" in left.columns:
+                    label_equal = (
+                        left["robustness_label"].eq(right["robustness_label"])
+                        | (left["robustness_label"].isna() & right["robustness_label"].isna())
+                    )
+                    changed_mask = ~label_equal
+                    if changed_mask.any():
+                        # 3.0.5 reports undefined (NaN) ICC as not_evaluable rather than poor.
+                        assert "icc" in left.columns and "icc" in right.columns, (name, sheet)
+                        assert (left.loc[changed_mask, "robustness_label"] == "not_evaluable").all(), (
+                            name,
+                            sheet,
+                        )
+                        assert (right.loc[changed_mask, "robustness_label"] == "poor").all(), (
+                            name,
+                            sheet,
+                        )
+                        assert left.loc[changed_mask, "icc"].isna().all(), (name, sheet)
+                        assert right.loc[changed_mask, "icc"].isna().all(), (name, sheet)
+                        label_col_1based = left.columns.get_loc("robustness_label") + 1
+                        for pos, is_changed in enumerate(changed_mask.tolist()):
+                            if is_changed:
+                                sheet_allowed.add((pos + 2, label_col_1based))
+                        drop_cols.append("robustness_label")
+
+                pd.testing.assert_frame_equal(
+                    left.drop(columns=drop_cols),
+                    right.drop(columns=drop_cols),
+                    check_exact=True,
+                )
+                if sheet_allowed:
+                    allowed_cells[sheet_num] = sheet_allowed
+        with zipfile.ZipFile(BytesIO(expected)) as left_zip, zipfile.ZipFile(BytesIO(actual)) as right_zip:
+            assert set(left_zip.namelist()) == set(right_zip.namelist())
+            changed = []
+            for part in left_zip.namelist():
+                left_part, right_part = left_zip.read(part), right_zip.read(part)
+                if left_part == right_part:
+                    continue
+                changed.append(part)
+                if part == "docProps/core.xml":
+                    def normalize(raw):
+                        tree = ET.fromstring(raw)
+                        for element in list(tree):
+                            if element.tag.rsplit("}", 1)[-1] in {"created", "modified"}:
+                                tree.remove(element)
+                        return ET.tostring(tree)
+                else:
+                    match = re.fullmatch(r"xl/worksheets/sheet(\d+)\.xml", part)
+                    assert match and allowed_cells.get(int(match[1])), (name, part)
+                    cells = allowed_cells[int(match[1])]
+
+                    def normalize(raw):
+                        tree = ET.fromstring(raw)
+                        for cell in tree.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"):
+                            address = cell.attrib.get("r", "")
+                            letters = re.match(r"([A-Z]+)(\d+)", address)
+                            if not letters:
+                                continue
+                            row_num = int(letters[2])
+                            col_num = 0
+                            for letter in letters[1]:
+                                col_num = col_num * 26 + ord(letter) - 64
+                            if (row_num, col_num) in cells:
+                                for element in cell.iter():
+                                    if element.text:
+                                        element.text = "CODE_DISPOSITION_HASH"
+                        return ET.tostring(tree)
+                assert normalize(left_part) == normalize(right_part), (name, part)
+        evidence["workbooks"][name] = {
+            "all_scientific_cells_exact": True,
+            "file_byte_equal": actual == expected,
+            "changed_zip_parts": changed,
+            "differences_limited_to_packaging_time_and_documented_305_fields": True,
+        }
+    if evidence_dir:
+        Path(
+            evidence_dir,
+            "base-byte-equality" + ("-with-disposition" if nonmeasurement else "") + ".json",
+        ).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    return evidence
+
+
 @pytest.mark.integration
 @pytest.mark.requires_snakemake
 @pytest.mark.parametrize('nonmeasurement', [False, True], ids=['measured', 'with-disposition'])
@@ -738,7 +1120,7 @@ def test_uninterrupted_scientific_bytes_match_base(tmp_path, nonmeasurement):
         contour.ContourData = [-4., -2., 5.]
         dataset.ROIContourSequence[-1].ContourSequence = [contour]
         dataset.save_as(source, enforce_file_format=True)
-    course = pipeline.organize()
+    pipeline.organize()
     clean = tmp_path / "organized"
     shutil.copytree(pipeline.output, clean, symlinks=True)
     pipeline.run("all")
@@ -800,115 +1182,27 @@ if sys.prefix in {os.environ.get("WS515_RUNTIME_PREFIX"), os.environ.get("RTPIPE
     for progress in pipeline.output.glob('*/*/NIFTI/.conversion-progress'):
         shutil.rmtree(progress)
     pipeline.run("all")
-    evidence = {"base": "3f94c631d44d9452b0299341fa8fb01e93d1fd3c", "parquet": {}, "workbooks": {}, 'dispositions': {}}
-    disposition_hashes = {}
-    for name, expected in candidate_dispositions.items():
-        actual = (pipeline.output / name).read_bytes()
-        left, right = json.loads(expected), json.loads(actual)
-        destination = os.environ.get('WS516_EVIDENCE_DIR')
-        if destination:
-            prefix = ('with-disposition__' if nonmeasurement else '') + name.replace('/', '__')
-            Path(destination, prefix + '.candidate.json').write_bytes(expected)
-            Path(destination, prefix + '.base.json').write_bytes(actual)
-        assert left.keys() == right.keys()
-        changed_fields = [field for field in left if left[field] != right[field]]
-        assert changed_fields == ['code_identity'], (name, changed_fields)
-        assert left['rows'] == right['rows']  # Every disposition, in publication order.
-        assert bool(left['rows']) == nonmeasurement
-        assert left['rows_sha256'] == right['rows_sha256']
-        assert {k: v for k, v in left.items() if k != 'code_identity'} == {
-            k: v for k, v in right.items() if k != 'code_identity'}
-        # Serialization outside code identity must also retain exact bytes.
-        def without_code(raw):
-            return re.sub(rb'  "code_identity": \{.*?\n  \},\n', b'', raw, flags=re.S)
-        assert without_code(expected) == without_code(actual)
-        sources_left = {item['path']: item['sha256'] for item in left['code_identity']['sources']}
-        sources_right = {item['path']: item['sha256'] for item in right['code_identity']['sources']}
-        assert sources_left.keys() - sources_right.keys() == {'extraction_progress.py', 'durable_progress.py'}
-        assert not sources_right.keys() - sources_left.keys()
-        # Each side reports its own declared package version (a release label).
-        import rtpipeline
-        base_init = subprocess.check_output(
-            ['git', 'show', evidence['base'] + ':rtpipeline/__init__.py'],
-            cwd=Path(__file__).resolve().parents[1], text=True)
-        base_version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', base_init).group(1)
-        assert left['code_identity']['pipeline_version'] == rtpipeline.__version__
-        assert right['code_identity']['pipeline_version'] == base_version
-        code_changes = {path: {'candidate_sha256': sources_left[path], 'base_sha256': sources_right.get(path)}
-            for path in sources_left if sources_left[path] != sources_right.get(path)}
-        disposition_hashes[name.split('/metadata/')[0]] = (hashlib.sha256(expected).hexdigest(), hashlib.sha256(actual).hexdigest())
-        evidence['dispositions'][name] = {'changed_fields': changed_fields,
-            'records_equal_in_order': True, 'record_count': len(left['rows']),
-            'serialization_outside_code_identity_byte_equal': True,
-            'code_changes': code_changes, 'candidate_code_identity': left['code_identity'],
-            'base_code_identity': right['code_identity'],
-            'candidate_sha256': hashlib.sha256(expected).hexdigest(), 'base_sha256': hashlib.sha256(actual).hexdigest()}
-    for name, expected in candidate.items():
-        actual = (pipeline.output / name).read_bytes()
-        if actual != expected:
-            pd.testing.assert_frame_equal(pd.read_parquet(BytesIO(expected)),
-                                          pd.read_parquet(BytesIO(actual)), check_exact=True)
-        evidence["parquet"][name] = {"byte_equal": actual == expected,
-            "candidate_sha256": hashlib.sha256(expected).hexdigest(),
-            "base_sha256": hashlib.sha256(actual).hexdigest()}
-        assert actual == expected, name
-    for name, expected in candidate_books.items():
-        actual = (pipeline.output / name).read_bytes()
-        provenance_columns = {}
-        with pd.ExcelFile(BytesIO(expected)) as first, pd.ExcelFile(BytesIO(actual)) as second:
-            assert first.sheet_names == second.sheet_names
-            for sheet in first.sheet_names:
-                left, right = first.parse(sheet), second.parse(sheet)
-                # These columns explicitly report producing code/receipt hashes;
-                # changed implementation bytes necessarily change those hashes.
-                provenance = [c for c in left if c in {"source_dispositions_sha256"}]
-                for column in provenance:
-                    assert right.columns.get_loc(column) == left.columns.get_loc(column)
-                    for index in left.index:
-                        first_hash, second_hash = left.at[index, column], right.at[index, column]
-                        if pd.isna(first_hash) and pd.isna(second_hash):
-                            continue
-                        assert (first_hash, second_hash) in disposition_hashes.values(), (name, sheet, index)
-                provenance_columns[first.sheet_names.index(sheet) + 1] = {
-                    left.columns.get_loc(c) + 1 for c in provenance}
-                pd.testing.assert_frame_equal(left.drop(columns=provenance),
-                    right.drop(columns=provenance), check_exact=True)
-        with zipfile.ZipFile(BytesIO(expected)) as left_zip, zipfile.ZipFile(BytesIO(actual)) as right_zip:
-            assert set(left_zip.namelist()) == set(right_zip.namelist())
-            changed = []
-            for part in left_zip.namelist():
-                left, right = left_zip.read(part), right_zip.read(part)
-                if left == right:
-                    continue
-                changed.append(part)
-                if part == "docProps/core.xml":
-                    def normalize(raw):
-                        tree = ET.fromstring(raw)
-                        for element in list(tree):
-                            if element.tag.rsplit("}", 1)[-1] in {"created", "modified"}:
-                                tree.remove(element)
-                        return ET.tostring(tree)
-                else:
-                    match = re.fullmatch(r"xl/worksheets/sheet(\d+)\.xml", part)
-                    assert match and provenance_columns[int(match[1])], (name, part)
-                    columns = provenance_columns[int(match[1])]
-                    def normalize(raw):
-                        tree = ET.fromstring(raw)
-                        for cell in tree.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c"):
-                            address = cell.attrib.get("r", "")
-                            letters = re.match(r"([A-Z]+)(\d+)", address)
-                            if not letters or int(letters[2]) == 1:
-                                continue
-                            index = 0
-                            for letter in letters[1]: index = index * 26 + ord(letter) - 64
-                            if index in columns:
-                                for element in cell.iter():
-                                    if element.text: element.text = "CODE_DISPOSITION_HASH"
-                        return ET.tostring(tree)
-                assert normalize(left) == normalize(right), (name, part)
-        evidence["workbooks"][name] = {"all_scientific_cells_exact": True,
-            "file_byte_equal": actual == expected, "changed_zip_parts": changed,
-            "differences_limited_to_packaging_time_and_declared_code_hash": True}
-    destination = os.environ.get("WS516_EVIDENCE_DIR")
-    if destination:
-        Path(destination, 'base-byte-equality' + ('-with-disposition' if nonmeasurement else '') + '.json').write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+    base_parquets = {
+        p.relative_to(pipeline.output).as_posix(): p.read_bytes()
+        for p in pipeline.output.rglob("*.parquet")
+        if not any(part.startswith(".") for part in p.relative_to(pipeline.output).parts)
+    }
+    base_books = {
+        p.relative_to(pipeline.output).as_posix(): p.read_bytes()
+        for p in pipeline.output.rglob("*.xlsx")
+        if not any(part.startswith(".") for part in p.relative_to(pipeline.output).parts)
+    }
+    base_dispositions = {
+        p.relative_to(pipeline.output).as_posix(): p.read_bytes()
+        for p in pipeline.output.rglob("radiomics_robustness_source_dispositions.json")
+    }
+    _assert_uninterrupted_matches_base(
+        candidate_dispositions=candidate_dispositions,
+        base_dispositions=base_dispositions,
+        candidate_parquets=candidate,
+        base_parquets=base_parquets,
+        candidate_books=candidate_books,
+        base_books=base_books,
+        nonmeasurement=nonmeasurement,
+        evidence_dir=os.environ.get("WS516_EVIDENCE_DIR"),
+    )
