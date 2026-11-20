@@ -2217,6 +2217,10 @@ def main(argv: list[str] | None = None) -> int:
                     raise ConfigValidationError(
                         f"radiomics.skip_rois must be a string or list, not {type(raw_skip).__name__}"
                     )
+            if radiomics_yaml.get("thread_limit") is not None:
+                cfg.radiomics_thread_limit = _coerce_radiomics_int(
+                    radiomics_yaml["thread_limit"], "radiomics.thread_limit"
+                )
             if radiomics_yaml.get("sequential") is not None:
                 seq_val = radiomics_yaml.get("sequential")
                 if not isinstance(seq_val, bool):

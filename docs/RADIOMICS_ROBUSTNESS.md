@@ -489,7 +489,24 @@ The course command fails and writes no parquet if any configured perturbation
 or feature extraction is missing, times out, is non-finite, or has a different
 feature set. Cohort statistics are created only by the aggregate command.
 
+RTpipeline applies its native ROI gate before resampling. It admits masks
+with at least `radiomics.min_voxels` voxels. The default is 120 when the setting
+is omitted, and the shipped `config.yaml` sets 64. PyRadiomics applies
+`minimumROISize: 64` separately and requires more than 64 voxels on the
+resampled mask.
+
+The robustness sidecar binds the exact planning CT files selected for the
+read and records the digests of the baseline `radiomics_ct.parquet` and its
+`.radiomics_done` receipt. Resume and aggregation recheck these against the
+current course. Earlier results without the CT binding require re-extraction.
+
 ### Aggregated Excel file
+
+The package workbook reports exploratory fixed-grid stability. Study analysis
+O7 uses a separate specification and implementation. A geometric nonmeasurement
+makes the affected ROI/source/arm group `not_evaluable` for fixed-grid metrics.
+Subjects remain in the group denominator. Features with undefined ICC also
+receive the `not_evaluable` label.
 
 Multiple sheets for easy filtering:
 1. **global_summary**: Backward-compatible primary table with one row per structure/source/feature; no cross-ROI pooling

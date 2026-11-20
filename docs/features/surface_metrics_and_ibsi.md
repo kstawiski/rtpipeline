@@ -93,14 +93,10 @@ parameter hashes and extraction diagnostics.
 | D | [2, 2, 2] mm | Linear | Within 3 population SDs | 32 bins |
 | E | [2, 2, 2] mm | Cubic B-spline | [−1000, 400] HU and within 3 population SDs | 32 bins |
 
-The option is implemented for the native CT extractor constructed by
-`rtpipeline.radiomics._extractor`, including native CT dual-arm extraction.
-It requires a NumPy 1.x/PyRadiomics environment. Conda helper and isolated
-robustness factories that construct PyRadiomics directly do not support the
-additional YAML block. NumPy 2.x delegation explicitly rejects an IBSI request;
-direct PyRadiomics YAML parsing also rejects the additional block. MR extraction
-does not support this CT option. Whole-image resampling can require more memory
-than the native cropped-grid procedure.
+The shared CT extractor supports IBSI preprocessing for radiomics and
+robustness in a NumPy 1.x environment with PyRadiomics. A NumPy 2.x CT entry
+point reports an explicit compatibility error when IBSI is selected. Whole-image
+resampling can require more memory than the native cropped-grid procedure.
 
 On the public IBSI CT phantom, all 735 tested feature outputs across A–E and
 the two aggregation modes matched the retained `ibsi_preprocessed` outputs

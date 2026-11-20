@@ -201,13 +201,13 @@ The following table summarizes the default perturbation parameters used by rtpip
 **Algorithm details:**
 
 - **Volume adaptation**: Voxels are ranked with a spacing-aware signed distance map. Erosion retains the deepest interior voxels and dilation adds the nearest exterior voxels until the exact rounded target voxel count is reached.
-- **Contour randomization**: Reproducible random inward or outward offsets between 50% and 100% of `contour_randomization_mm` (or `max_translation_mm / 2` when unset), applied in physical space. Duplicate/original realizations fail closed.
-- **Translation**: Rigid shifts applied via SimpleITK `ResampleImageFilter` with nearest-neighbor interpolation
+- **Contour randomization**: Reproducible random inward or outward offsets between 50% and 100% of `contour_randomization_mm` (defaulting to `max_translation_mm / 2` when `max_translation_mm > 0`, or `2.0 mm` when `max_translation_mm == 0`), applied in physical space. Outward realizations that clip the image boundary (`contour_outside_image`) or fail to yield a distinct mask within 16 attempts (`contour_realization_unavailable`) emit explicit geometric non-measurements.
+- **Translation**: Rigid shifts applied via SimpleITK `ResampleImageFilter` with nearest-neighbor interpolation. Both `requested_translation_mm` and `realized_translation_mm` are recorded; coarse slice spacings where physical shifts round to 0 voxels or deviate beyond half a voxel diagonal fail closed with `translation_not_realizable`.
 
 ### Reproducibility: Random Seed
 
 For deterministic, reproducible perturbations, rtpipeline uses independent
-fixed seed keys for the noise and contour factors:
+fixed seed keys for the noise and contour factors by default (`course_specific_seeds: false`):
 
 ```python
 noise_seed = SeedSequence([42, 0, noise_level_milli_hu])
@@ -215,9 +215,10 @@ contour_seed = SeedSequence([42, 1, translation_index, contour_index])
 ```
 
 This makes each noise draw depend only on its noise level and each contour draw
-depend only on its translation and contour indices. The same sampled factor is
-therefore reused across the other Cartesian axes. The base seed is fixed and is
-not currently user-configurable.
+depend only on its translation and contour indices, ensuring identical seed
+draws across courses by default for cross-version reproducibility. Set
+`radiomics_robustness.segmentation_perturbation.course_specific_seeds: true` to
+opt in to deterministic per-course seed differentiation.
 
 ## Quick Start
 
@@ -515,7 +516,24 @@ any configured perturbation or extraction arm is missing, times out, is
 non-finite, or has a different feature set. Cohort statistics are created only
 by the aggregate command.
 
+RTpipeline applies its native ROI gate before resampling. It admits masks
+with at least `radiomics.min_voxels` voxels. The default is 120 when the setting
+is omitted, and the shipped `config.yaml` sets 64. PyRadiomics applies
+`minimumROISize: 64` separately and requires more than 64 voxels on the
+resampled mask.
+
+The robustness sidecar binds the exact planning CT files selected for the
+read and records the digests of the baseline `radiomics_ct.parquet` and its
+`.radiomics_done` receipt. Resume and aggregation recheck these against the
+current course. Earlier results without the CT binding require re-extraction.
+
 ### Aggregated Excel file
+
+The package workbook reports exploratory fixed-grid stability. Study analysis
+O7 uses a separate specification and implementation. A geometric nonmeasurement
+makes the affected ROI/source/arm group `not_evaluable` for fixed-grid metrics.
+Subjects remain in the group denominator. Features with undefined ICC also
+receive the `not_evaluable` label.
 
 Multiple sheets for easy filtering:
 1. **global_summary**: Backward-compatible primary table with one row per structure/source/feature; no cross-ROI pooling

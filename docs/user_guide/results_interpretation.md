@@ -81,7 +81,8 @@ Sub-centigray mean and maximum retain positive sample values below 0.01 Gy. An u
 ## 3. Radiomics Outputs
 
 ### CT (`radiomics_ct.xlsx`)
-* Parameters from `rtpipeline/radiomics_params.yaml`.
+* CT extraction uses `rtpipeline/radiomics_params.yaml` unless a parameter file is configured.
+* RTpipeline admits an ROI with at least `radiomics.min_voxels` native voxels. The default is 120 when omitted, and the shipped `config.yaml` sets 64. PyRadiomics separately requires more than 64 resampled mask voxels under `minimumROISize: 64`.
 * Includes manual, TotalSegmentator, custom structures, and nnUNet outputs.
 * Important columns: `roi_name`, `segmentation_source`, `structure_cropped`, feature columns (GLCM, GLRLM, etc.).
 

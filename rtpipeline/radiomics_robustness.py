@@ -4098,23 +4098,31 @@ def extract_features_for_masks(
         return _extract_features_for_masks_uncached(image, masks, config, modality,
             structure_name, patient_id, course_id, perturbed_images,
             segmentation_source, run_identifier, source_identity)
+    from .acquisition_scale import image_hu_verification_status
     from .extraction_progress import (BoundItem, image_identity, radiomics_settings,
         pack_frame, unpack_frame, restamp, code_manifest)
+    progress_payload = (
+        progress_context
+        if progress_context is not None
+        else getattr(config, "radiomics_robustness_config", None)
+    )
+    settings = radiomics_settings(config)
     frames, failures, declarations = [], {}, {}
     for condition, mask in masks.items():
         current_image = (perturbed_images or {}).get(condition, image)
         item = BoundItem(progress_root,
             [source_identity.as_dict() if source_identity else [patient_id, course_id,
              segmentation_source, structure_name], condition, "paired_ct_arms"],
-            {"configuration": radiomics_settings(config), "source": progress_context},
-            {"image": image_identity(current_image), "mask": image_identity(mask)},
+            {"configuration": settings, "source": progress_payload},
+            {"image": image_identity(current_image), "mask": image_identity(mask),
+             "ct_hu": image_hu_verification_status(current_image)},
             code=code_manifest(("radiomics_robustness.py",)))
         cached = item.load()
         if cached is None:
             from copy import copy
             extraction_config = copy(config)
             extraction_config._robustness_progress_root = progress_root
-            extraction_config._robustness_progress_context = progress_context
+            extraction_config._robustness_progress_context = progress_payload
             frame = _extract_features_for_masks_uncached(image, {condition: mask},
                 extraction_config, modality, structure_name, patient_id, course_id,
                 {condition: current_image}, segmentation_source, run_identifier, source_identity,
@@ -4122,9 +4130,14 @@ def extract_features_for_masks(
             if not frame.attrs.get("identity_failures"):
                 item.commit(pack_frame(frame))
         else:
-            frame = unpack_frame(cached)
-            if "run_identifier" in frame and run_identifier:
-                frame["run_identifier"] = run_identifier
+            from .radiomics_ct_contract import current_code_revision
+
+            current = {"code_revision": current_code_revision()}
+            if run_identifier:
+                current["run_identifier"] = run_identifier
+            frame = unpack_frame(restamp(cached, current))
+            for column in current.keys() & set(frame.columns):
+                frame[column] = current[column]
         failures.update(frame.attrs.get("identity_failures", {}))
         for pid, arm, declaration in frame.attrs.get("feature_declarations", []):
             declarations[(pid, arm)] = declaration
@@ -4287,12 +4300,19 @@ def _extract_features_for_masks_uncached(
                 )
             tmp_dir = tempfile.mkdtemp(prefix="rtpipe_robust_batch_")
             try:
+                from .acquisition_scale import image_hu_verification_status
+
+                hu_cache: Dict[int, Dict[str, Any]] = {}
                 batch_tasks = []
                 for perturbation_id, mask in masks.items():
                     current_image = (
                         perturbed_images.get(perturbation_id, image)
                         if perturbed_images else image
                     )
+                    ct_hu = hu_cache.get(id(current_image))
+                    if ct_hu is None:
+                        ct_hu = image_hu_verification_status(current_image)
+                        hu_cache[id(current_image)] = ct_hu
                     image_path = Path(tmp_dir) / f"image_{len(batch_tasks)}.nrrd"
                     mask_path = Path(tmp_dir) / f"mask_{len(batch_tasks)}.nrrd"
                     sitk.WriteImage(current_image, str(image_path))
@@ -4317,6 +4337,9 @@ def _extract_features_for_masks_uncached(
                             **source_identity.as_dict(),
                             "roi_name": structure_name,
                             "modality": "CT",
+                            "_ct_hu_verified": bool(ct_hu["hu_verified"]),
+                            "_ct_hu_status": str(ct_hu["status"]),
+                            "_ct_hu_detail": str(ct_hu["detail"]),
                         },
                         "run_identifier": shared_run_id,
                         "code_revision": current_code_revision(),
@@ -4367,15 +4390,10 @@ def _extract_features_for_masks_uncached(
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
-            from radiomics import featureextractor
             from .radiomics import build_ct_extractor_from_params
 
             def _factory():
-                return build_ct_extractor_from_params(
-                    params_path,
-                    modality="CT",
-                    featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
-                )
+                return build_ct_extractor_from_params(params_path, modality="CT")
 
             for perturbation_id, mask in masks.items():
                 current_image = (
@@ -5928,6 +5946,9 @@ def robustness_for_course(
     invalidate_robustness_source_dispositions(course_dir)
     robustness_failed_evidence_path(output_path).unlink(missing_ok=True)
 
+    from .radiomics import _validate_ct_preprocessing_runtime
+
+    _validate_ct_preprocessing_runtime(config)
     # Capture the deciding code before any source is read, so the binding
     # describes the code this run started under rather than whatever the files
     # happen to contain by the time it publishes.
@@ -6890,26 +6911,51 @@ def robustness_for_course(
         )
 
     def condition_context(roi_name, source):
-        return {"configuration": getattr(config, "radiomics_robustness_config", None),
+        return {
+            "configuration": effective_robustness_configuration(
+                rob_config, output_name=output_path.name
+            ),
             "seed": ([42, course_seed_key] if course_seed_key else 42),
             "sources": [binding for binding in
                 [*rtstruct_source_bindings, *voxel_source_bindings]
                 if binding.get("segmentation_source") == source
                 and binding.get("roi_name", roi_name) == roi_name]}
     def generated_nonmeasurement(roi_name, source, pert_id, outcome):
-        from .extraction_progress import BoundItem, image_identity, restamp
+        from .extraction_progress import (
+            BoundItem,
+            image_identity,
+            radiomics_settings,
+            restamp,
+        )
+        from .radiomics_ct_contract import current_code_revision
+
         identity = identity_catalog[(source, roi_name)].as_dict()
-        item = BoundItem(course_dir / ".robustness-progress/nonmeasurements",
+        item = BoundItem(
+            course_dir / ".robustness-progress/nonmeasurements",
             [identity, pert_id, "paired_ct_arms", ([42, course_seed_key] if course_seed_key else 42)],
-            rob_config,
-            {"image": image_identity(ct_image),
-             "source_mask": hashlib.sha256(all_masks[(roi_name, source)].tobytes()).hexdigest()})
+            {
+                "robustness": effective_robustness_configuration(
+                    rob_config, output_name=output_path.name
+                ),
+                "radiomics": radiomics_settings(config),
+            },
+            {
+                "image": image_identity(ct_image),
+                "source_mask": hashlib.sha256(all_masks[(roi_name, source)].tobytes()).hexdigest(),
+            },
+        )
         rows = item.load()
         if rows is None:
             rows = nonmeasurement_rows(outcome, identity, pert_id, robustness_run_identifier)
             item.commit(rows)
         else:
-            rows = restamp(rows, {"run_identifier": robustness_run_identifier})
+            rows = restamp(
+                rows,
+                {
+                    "run_identifier": robustness_run_identifier,
+                    "code_revision": current_code_revision(),
+                },
+            )
         return pd.DataFrame(rows)
     # robustness_run_identifier was generated before mask collection so the
     # source-disposition sidecar and the published table share one identity.

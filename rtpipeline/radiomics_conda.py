@@ -980,16 +980,11 @@ def resolve_ct_params_file(params_or_config: Any = None) -> str:
 
 def make_extractor(params_file: Any = None, large_roi: bool = False):
     """Build a CT PyRadiomics extractor from params_file or packaged defaults."""
-    from radiomics import featureextractor
     from .radiomics import build_ct_extractor_from_params
 
     resolved = resolve_ct_params_file(params_file)
     # large_roi is retained for compatibility, not as a method override.
-    return build_ct_extractor_from_params(
-        resolved,
-        modality="CT",
-        featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
-    )
+    return build_ct_extractor_from_params(resolved, modality="CT")
 
 
 @lru_cache(maxsize=64)
@@ -3014,6 +3009,9 @@ def radiomics_for_course(
     (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
+        from .radiomics import _validate_ct_preprocessing_runtime
+
+        _validate_ct_preprocessing_runtime(config)
         return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
 
     course_dir = Path(course_dir)

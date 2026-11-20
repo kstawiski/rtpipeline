@@ -2,7 +2,36 @@
 
 ## Unreleased
 
-No changes since 3.0.4.
+- Robustness keeps conditions rejected by worker identity checks in the requested
+  grid. It writes technical-failure evidence and withholds measured completion.
+- Robustness records the requested and realized translations in millimetres.
+  Shifts that round to zero or exceed the tolerance receive a geometric disposition.
+- Clipped contour offsets and unavailable contour realizations receive geometric
+  dispositions. The grid supports zero translation and keeps distinct identifiers
+  for fractional perturbations.
+- Robustness binds the planning CT bytes and upstream CT radiomics publication
+  to the run. Resume and aggregation require those bindings to match the current inputs.
+- CT radiomics refuses HU-dependent features and HU noise when the DICOM rescale
+  is non-HU or cannot be verified. Eligible shape features remain available.
+- CT image caching uses the requested series UID and the ordered series content.
+  A missing requested UID causes the read to fail.
+- Optional IBSI preprocessing accepts preserved spacing axes and counts the prepared
+  mask at its binary label. NumPy 2 entry points report an explicit compatibility error.
+- The exploratory package summary marks groups with geometric nonmeasurements
+  and features with undefined ICC as `not_evaluable`. Study analysis O7 follows
+  its own specification.
+- `--stage radiomics` uses the settings from the `radiomics` configuration
+  block. The conda backend uses the packaged CT parameters when no file is configured.
+- The Snakemake robustness rule loads libraries from the selected radiomics
+  environment and requires an interpreter there. ICC computation errors propagate
+  to the caller.
+- RTpipeline admits native ROIs at `radiomics.min_voxels` or above. The default
+  is 120 when the setting is omitted, and the shipped `config.yaml` sets 64.
+  PyRadiomics separately requires more than `minimumROISize: 64` voxels on the
+  resampled mask. Sequential robustness resume binds the extraction parameters,
+  ROI map and effective perturbation settings.
+- Set `radiomics_robustness.segmentation_perturbation.course_specific_seeds` to `true` to
+  derive noise and contour seeds per course. The default preserves the shared seed sequence.
 
 ## 3.0.4 — 2026-11-17
 

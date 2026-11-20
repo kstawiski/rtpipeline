@@ -15,7 +15,6 @@ mocked tests so they do not rewrite the host thread environment.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 import types
@@ -48,12 +47,6 @@ setting:
   interpolator: sitkBSpline
 """
 HELPER = Path(__file__).with_name("native_radiomics_parameter_fidelity_helper.py")
-CONDA_ENV = "rtpipeline-radiomics"
-_CONDA_EXE_AVAILABLE = bool(shutil.which(rc.CONDA_EXE) or Path(rc.CONDA_EXE).is_file())
-requires_radiomics_env = pytest.mark.skipif(
-    not _CONDA_EXE_AVAILABLE,
-    reason=f"conda-compatible executable {rc.CONDA_EXE!r} is not available",
-)
 
 
 class _ConfiguredExtractor:
@@ -254,7 +247,7 @@ def _reconcile(features, voxels, *, full_shape_class=False):
     assert features["square_firstorder_Mean"] != pytest.approx(features["original_firstorder_Mean"])
 
 
-@requires_radiomics_env
+@pytest.mark.requires_radiomics_env
 def test_actual_helper_native_and_isolated_factories_keep_configured_method(generated_case, tmp_path, monkeypatch):
     image, mask, params, voxels = generated_case
     spec = tmp_path / "spec.json"
@@ -269,8 +262,7 @@ def test_actual_helper_native_and_isolated_factories_keep_configured_method(gene
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("PYTHONPATH", str(Path(rtpipeline.__file__).resolve().parents[1]))
-    command = [rc.CONDA_EXE, "run", "-n", CONDA_ENV, "python", "-c",
-               HELPER.read_text(encoding="utf-8"), str(spec)]
+    command = rc._radiomics_env_command("-c", HELPER.read_text(encoding="utf-8"), str(spec))
     completed = subprocess.run(command, cwd=str(tmp_path), env=rc._conda_subprocess_env(),
                                capture_output=True, text=True, timeout=600)
     print("helper stdout:", completed.stdout[-2000:])

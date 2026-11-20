@@ -168,7 +168,10 @@ def _resolve_env_python(env_name: str) -> str:
     envs_cfg = config.get("environments", {}) if isinstance(config.get("environments"), dict) else {}
     rad_prefix = os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX")
     if rad_prefix and env_name == envs_cfg.get("radiomics", "rtpipeline-radiomics"):
-        candidates.append(Path(rad_prefix) / "bin" / "python")
+        explicit = Path(rad_prefix) / "bin" / "python"
+        if explicit.is_file() and os.access(explicit, os.X_OK):
+            return str(explicit)
+        raise FileNotFoundError(f"Configured radiomics interpreter is unavailable: {explicit}")
     # Try CONDA_PREFIX-based sibling envs
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
@@ -195,9 +198,9 @@ def _resolve_env_python(env_name: str) -> str:
         home / "miniconda3" / "envs",
     ]:
         candidates.append(base / env_name / "bin" / "python")
-    for c in candidates:
-        if c.exists():
-            return str(c)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     tried = ", ".join(str(c) for c in candidates) if candidates else "<none>"
     raise FileNotFoundError(
         f"Requested environment '{env_name}' python executable not found; tried: {tried}"

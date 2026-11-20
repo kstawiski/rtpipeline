@@ -716,6 +716,23 @@ def _resolve_resampled_spacing_xyz(
     )
 
 
+def _validate_ct_preprocessing_runtime(config: PipelineConfig) -> None:
+    """Refuse opt-in IBSI before a NumPy 2 process delegates CT extraction."""
+    from .radiomics_runtime import needs_radiomics_process
+
+    if not needs_radiomics_process():
+        return
+    params_file = getattr(config, "radiomics_params_file", None)
+    if params_file:
+        from .ibsi_preprocessing import preprocessing_options
+
+        if preprocessing_options(_load_radiomics_params_dict(Path(params_file)) or {}):
+            raise ValueError(
+                "IBSI preprocessing requires the native CT extractor in a "
+                "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
+            )
+
+
 def build_ct_extractor_from_params(
     params_file: Optional[str | Path] = None,
     *,
@@ -732,12 +749,12 @@ def build_ct_extractor_from_params(
     """
     import numpy as np
 
-    if featureextractor_cls is None:
-        from radiomics.featureextractor import RadiomicsFeatureExtractor as featureextractor_cls
-
     path_obj: Optional[Path] = None
     if params_file not in (None, ""):
         path_obj = Path(params_file)
+    params_dict: Optional[Dict[str, Any]] = None
+    explicit_radiomics = False
+    preprocessing: Optional[Dict[str, Any]] = None
     if path_obj is not None and path_obj.is_file():
         params_dict = _load_radiomics_params_dict(path_obj)
         from .ibsi_preprocessing import preprocessing_options
@@ -753,21 +770,24 @@ def build_ct_extractor_from_params(
                     "IBSI preprocessing requires the native CT extractor in a "
                     "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
                 )
-            from .ibsi_preprocessing import extractor_class
 
-            ext = extractor_class()()
-            if params_dict is not None:
-                _apply_params_to_extractor(ext, params_dict)
-            ext.settings.update(preprocessing)
-        elif explicit_radiomics and params_dict is not None:
+    if preprocessing:
+        from .ibsi_preprocessing import extractor_class
+
+        ext = extractor_class()()
+        if params_dict is not None:
+            _apply_params_to_extractor(ext, params_dict)
+        ext.settings.update(preprocessing)
+    else:
+        if featureextractor_cls is None:
+            from radiomics.featureextractor import RadiomicsFeatureExtractor as featureextractor_cls
+        if explicit_radiomics and params_dict is not None:
             ext = featureextractor_cls()
             _apply_params_to_extractor(ext, params_dict)
-        else:
+        elif path_obj is not None:
             ext = featureextractor_cls(str(path_obj))
-    elif path_obj is not None:
-        ext = featureextractor_cls(str(params_file))
-    else:
-        ext = featureextractor_cls()
+        else:
+            ext = featureextractor_cls()
 
     if (modality or "CT").upper() == "MR":
         try:
@@ -1804,6 +1824,7 @@ def radiomics_for_course(
     (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
+        _validate_ct_preprocessing_runtime(config)
         output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
         return (outcome_from_output(output) if output is not None
                 else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))

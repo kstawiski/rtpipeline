@@ -1095,6 +1095,9 @@ def parallel_radiomics_for_course(
     """Parallel CT radiomics for one course (process isolation)."""
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
+        from .radiomics import _validate_ct_preprocessing_runtime
+
+        _validate_ct_preprocessing_runtime(config)
         output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
         return (outcome_from_output(output) if output is not None
                 else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
@@ -2288,18 +2291,13 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
     import logging as _logging
     _logging.getLogger("radiomics").setLevel(_logging.ERROR)
 
-    from radiomics import featureextractor  # type: ignore
     from .radiomics_ct_contract import RoiClassDecision, extract_ct_roi_arms
 
     def _factory():
         from .radiomics import build_ct_extractor_from_params
         from .robustness_watchdog import observed_extractor
 
-        candidate = build_ct_extractor_from_params(
-            params_file,
-            modality="CT",
-            featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
-        )
+        candidate = build_ct_extractor_from_params(params_file, modality="CT")
         return observed_extractor(candidate)
 
     try:

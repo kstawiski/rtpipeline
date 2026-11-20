@@ -15,6 +15,12 @@ from rtpipeline.radiomics_outcomes import resume_identity_pairs
 
 
 class _FakeExtractor:
+    _FEATURE_MAP = {
+        "shape": ["VoxelVolume", "SurfaceArea"],
+        "firstorder": ["Mean"],
+        "glcm": ["Contrast"],
+    }
+
     def __init__(self) -> None:
         self.settings = {
             "minimumROISize": 64,
@@ -24,7 +30,7 @@ class _FakeExtractor:
             "interpolator": "sitkBSpline",
         }
         self.enabledImagetypes = {"Original": {}}
-        self.enabledFeatures = {"shape": [], "firstorder": [], "glcm": []}
+        self.enabledFeatures = {k: list(v) for k, v in self._FEATURE_MAP.items()}
 
     def disableAllImageTypes(self) -> None:
         self.enabledImagetypes = {}
@@ -36,7 +42,7 @@ class _FakeExtractor:
         self.enabledFeatures = {}
 
     def enableFeatureClassByName(self, name: str) -> None:
-        self.enabledFeatures[name] = []
+        self.enabledFeatures[name] = list(self._FEATURE_MAP.get(name, []))
 
     def execute(self, _image, _mask):
         if set(self.enabledFeatures) == {"shape"}:
