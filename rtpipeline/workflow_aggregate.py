@@ -878,20 +878,17 @@ def _write_dvh(
         combined.insert(len(combined.columns), "ROI_Name", roi_series)
     combined["_roi_key"] = roi_series.fillna("").str.strip().str.lower()
     computed = combined["row_status"].astype("string") == "computed"
-    manual_keys = set(
-        combined.loc[
-            computed
-            & combined["Segmentation_Source"].astype("string").str.lower().eq("manual"),
-            "_roi_key",
-        ].dropna()
-    )
+    group_keys = ["patient_id", "course_id", "_roi_key"]
+    manual_rows = computed & combined["Segmentation_Source"].astype("string").str.lower().eq("manual")
+    manual_keys = pd.MultiIndex.from_frame(combined.loc[manual_rows, group_keys].dropna())
+    roi_keys = pd.MultiIndex.from_frame(combined[group_keys])
     drop_mask = (
         computed
         & combined["Segmentation_Source"]
         .astype("string")
         .str.lower()
         .isin({"custom", "merged"})
-        & combined["_roi_key"].isin(manual_keys)
+        & roi_keys.isin(manual_keys)
     )
     if drop_mask.any():
         combined = combined.loc[~drop_mask].copy()

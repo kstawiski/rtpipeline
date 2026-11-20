@@ -212,7 +212,26 @@ def contracted_source_prescription(
         for reference in references
         if reference.get("structure_type") == "SITE"
     ]
-    return site_references[0] if site_references else references[0]
+    candidates = site_references or references
+    if len(candidates) == 1:
+        return candidates[0]
+
+    beam_bindings = []
+    for group in getattr(ds_plan, "FractionGroupSequence", []) or []:
+        for beam in getattr(group, "ReferencedBeamSequence", []) or []:
+            if getattr(beam, "BeamDose", None) in (None, ""):
+                continue
+            uids = {_text(getattr(beam, "ReferencedDoseReferenceUID", None))}
+            uids.update(_text(getattr(ref, "ReferencedDoseReferenceUID", None))
+                        for ref in getattr(beam, "ReferencedDoseReferenceSequence", []) or [])
+            beam_bindings.append(uids - {""})
+    if beam_bindings and len(beam_bindings[0]) == 1 and all(
+        binding == beam_bindings[0] for binding in beam_bindings
+    ):
+        matches = [reference for reference in candidates if reference["uid"] in beam_bindings[0]]
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def within_five_percent(candidate: Decimal, source: Decimal) -> bool:

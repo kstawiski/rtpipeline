@@ -125,7 +125,8 @@ def input_manifest(course, *, include_derived=True):
     if any(not (course / name).is_file() for name in _pending_upstream(course)):
         raise DurableProgressError("DVH_UPSTREAM_RECOMPUTE_REQUIRED")
     files = set()
-    for name in ("DICOM", "CT", "NIFTI", "Segmentation_TotalSegmentator", "Segmentation_CustomModels"):
+    for name in ("DICOM", "CT", "NIFTI", "Segmentation_TotalSegmentator",
+                 "Segmentation_CustomModels", "metadata/composite_course_dose"):
         root = course / name
         if root.exists():
             files.update(p for p in root.rglob("*") if p.is_file() and p.suffix != ".age")
@@ -133,12 +134,29 @@ def input_manifest(course, *, include_derived=True):
         root = course / "metadata/dvh_derived_masks"
         if root.exists():
             files.update(p for p in root.rglob("*") if p.is_file() and p.suffix != ".age")
-    for name in ("RS_auto.dcm", "RS_auto_cropped.dcm", "cropping_metadata.json",
+    for name in ("RP.dcm", "RD.dcm", "RS.dcm", "RS_auto.dcm", "RS_auto_cropped.dcm", "cropping_metadata.json",
                  "metadata/case_metadata.json", "metadata/rs_auto_origin.json",
                  "metadata/planning_dose_selection.json", "metadata/composite_course_dose.json"):
         path = course / name
         if path.is_file():
             files.add(path)
+    metadata = course / "metadata/case_metadata.json"
+    if metadata.is_file():
+        payload = _read(metadata)
+        if not isinstance(payload, dict):
+            raise DurableProgressError("DVH_BINDING_UNREADABLE")
+        contract = payload.get("course_contract") or {}
+        paths = [(contract.get(role) or {}).get("path")
+                 for role in ("plan_artifact", "dose_grid", "authoritative_rtstruct")]
+        for item in (contract.get("delivery") or {}).get("per_plan") or []:
+            paths.extend(item.get("record_paths") or [])
+        for path in paths:
+            if isinstance(path, str) and path:
+                relative = Path(path)
+                if not relative.is_absolute() and ".." not in relative.parts and relative.suffix != ".age":
+                    artifact = course / relative
+                    if artifact.is_file():
+                        files.add(artifact)
     manifest = [{"path": p.relative_to(course).as_posix(), "sha256": file_sha256(p)}
                 for p in sorted(files) if not is_operational_path(p.relative_to(course))]
     # The upstream generation identity binds content, code, configuration and
@@ -362,15 +380,19 @@ def verify(directory, expected=None):
     receipt = _read(directory / ".dvh_done")
     if not isinstance(receipt, dict):
         raise DurableProgressError("DVH_GENERATION_RECEIPT_INVALID")
-    outcome = "computed" if artifacts["dvh_metrics.parquet"] else "not_measured"
+    outcome = "not_measured"
+    if artifacts["dvh_metrics.parquet"]:
+        import pandas as pd
+        frame = pd.read_parquet(directory / "dvh_metrics.parquet")
+        outcome = "computed" if measured_rows(frame).any() else "not_measured"
+        if outcome == "not_measured" and _read(directory / "metadata/dvh_qc.json").get("status") != "degraded":
+            raise DurableProgressError("DVH_GENERATION_OUTCOME_INVALID")
+        for row in frame.to_dict("records"):
+            validate_row_sources(row)
     if receipt.get("measurement_outcome") != outcome:
         raise DurableProgressError("DVH_GENERATION_OUTCOME_INVALID")
     if receipt.get("binding") != saved.as_dict() or receipt.get("generation_id") != marker["generation_id"]:
         raise DurableProgressError("DVH_GENERATION_RECEIPT_INVALID")
-    if artifacts["dvh_metrics.parquet"]:
-        import pandas as pd
-        for row in pd.read_parquet(directory / "dvh_metrics.parquet").to_dict("records"):
-            validate_row_sources(row)
     return marker
 
 
@@ -574,16 +596,34 @@ def reconcile_ledger(course, marker):
                                       "state": "committed", "reason_code": None})
 
 
+def measured_rows(frame):
+    """Identify whole-ROI dose measurements, including older bound tables."""
+    import pandas as pd
+
+    measured = pd.Series(False, index=frame.index, dtype=bool)
+    for name in ("DmeanGy", "D95Gy", "DmaxGy"):
+        if name in frame:
+            values = pd.to_numeric(frame[name], errors="coerce")
+            measured |= values.notna() & values.abs().lt(float("inf"))
+    if "row_status" in frame:
+        measured &= frame["row_status"].astype("string").fillna("computed").eq("computed")
+    return measured
+
+
 def _validate_products(course, destination):
     import pandas as pd
     qc = _read(destination / "metadata/dvh_qc.json")
     parquet = destination / "dvh_metrics.parquet"
+    outcome = "not_measured"
     if parquet.exists():
         frame = pd.read_parquet(parquet)
         workbook = pd.read_excel(destination / "dvh_metrics.xlsx")
         if len(frame) != len(workbook) or list(frame.columns) != list(workbook.columns):
             raise DurableProgressError("DVH_TABLE_READBACK_FAILED")
-        if not len(frame) or qc.get("status") not in {"ok", "degraded"}:
+        if measured_rows(frame).any():
+            outcome = "computed"
+        allowed_qc = {"ok", "degraded"} if outcome == "computed" else {"degraded"}
+        if not len(frame) or qc.get("status") not in allowed_qc:
             raise DurableProgressError("DVH_OUTCOME_INVALID")
     else:
         from .course_contract import load_course_contract
@@ -605,6 +645,7 @@ def _validate_products(course, destination):
         require_rtstruct_identity(rs, require_derived=True)
         if _read(destination / "metadata/rs_custom_meta.json")["rs_custom_sha256"] != file_sha256(rs):
             raise DurableProgressError("DVH_RS_CUSTOM_READBACK_FAILED")
+    return outcome
 
 
 
@@ -719,7 +760,7 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                         final_result_writer(attempt_path, {**attempt, "state": "failed", "reason_code": "DVH_GOVERNED_REFUSAL"})
                         _event(journal, "refused", reason_code="DVH_GOVERNED_REFUSAL", attempt_id=identity)
                         return None
-                _validate_products(course, destination)
+                outcome = _validate_products(course, destination)
                 finalized = binding(course, settings, custom_config)
                 if finalized != expected:
                     _event(journal, "derived_inputs_finalized",
@@ -727,7 +768,6 @@ def run(course, settings, custom_config, compute, *, retry_failed=False):
                     attempt = {**attempt, "launch_binding": expected.as_dict(), "binding": finalized.as_dict()}
                     expected = finalized
                     final_result_writer(attempt_path, attempt)
-                outcome = "computed" if (destination / "dvh_metrics.parquet").exists() else "not_measured"
                 product_hashes = {name: file_sha256(destination / name) if (destination / name).is_file() else None
                                   for name in ARTIFACTS}
                 generation_id = hashlib.sha256(json.dumps(
