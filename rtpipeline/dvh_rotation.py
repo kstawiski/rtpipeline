@@ -109,13 +109,20 @@ class DoseGridCoordinates:
         xy = local[..., :2] / self.spacing
         z = local[..., 2]
         lower_z, upper_z = self.offsets[[0, -1]]
-        edge = 0.5 if half_voxel_edges else 0.
-        if edge and len(self.offsets) > 1:
-            lower_z -= edge * (self.offsets[1] - self.offsets[0])
-            upper_z += edge * (self.offsets[-1] - self.offsets[-2])
         tolerance = 1e-9
-        support = (((xy >= -edge-tolerance) & (xy <= self.shape[:2]-1+edge+tolerance)).all(axis=-1)
-                   & (z >= lower_z-tolerance) & (z <= upper_z+tolerance))
+        if half_voxel_edges:
+            # Preserve the NIfTI resampler's half-open edge-voxel support.
+            if len(self.offsets) > 1:
+                lower_z -= 0.5 * (self.offsets[1] - self.offsets[0])
+                upper_z += 0.5 * (self.offsets[-1] - self.offsets[-2])
+                z_supported = (z >= lower_z) & (z < upper_z)
+            else:
+                z_supported = abs(z-lower_z) <= tolerance
+            xy_supported = ((xy >= -0.5) & (xy < self.shape[:2]-0.5)).all(axis=-1)
+        else:
+            z_supported = (z >= lower_z-tolerance) & (z <= upper_z+tolerance)
+            xy_supported = ((xy >= -tolerance) & (xy <= self.shape[:2]-1+tolerance)).all(axis=-1)
+        support = xy_supported & z_supported
         frames = np.interp(z, self.offsets, np.arange(len(self.offsets), dtype=float))
         index = np.concatenate((xy, frames[..., None]), axis=-1)
         index = np.clip(index, 0., self.shape-1)

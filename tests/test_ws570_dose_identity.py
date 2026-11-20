@@ -205,6 +205,11 @@ def test_c6_nifti_uses_declared_nonuniform_frame_offsets(tmp_path, monkeypatch):
                          lambda shape: np.array(offsets)[:, None, None], (2., 2., 10.))
     assert value == pytest.approx(10.)
 
+    from rtpipeline.dvh_rotation import PatientDoseGrid
+    grid = PatientDoseGrid(pydicom.dcmread(tmp_path / "SYNTH_P" / "SYNTH_C" / RD))
+    samples = grid.sample(np.array([[-1., 2., 10.], [39., 2., 10.]]), half_voxel_edges=True)
+    assert np.ma.getmaskarray(samples).tolist() == [False, True]
+
 
 def test_a2_nifti_interpolates_stored_integers_in_float(tmp_path, monkeypatch):
     value = _nifti_probe(tmp_path, monkeypatch, [0, 2, 4], .5,
