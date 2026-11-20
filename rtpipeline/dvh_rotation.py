@@ -402,11 +402,19 @@ def add_brachy_metrics(histogram, metrics):
 def add_brachy_metrics_from_values(values, voxel_volume, max_dose, metrics):
     if metrics is None or not values.size:
         return metrics
-    from .dvh import _bounded_dose_at_fraction
-    count = max(int(np.ceil(max_dose/.01))+1, 2)
-    edges = np.linspace(0, count*.01, count+1)
+    from .dvh import _bounded_dose_at_fraction, _sample_endpoint
+    minimum, maximum = float(values.min()), float(values.max())
+    bin_width = .01
+    if maximum < bin_width:
+        doses, counts = np.unique(values, return_counts=True)
+        cumulative = np.cumsum(counts[::-1])[::-1]
+        metrics["D90Gy"] = _sample_endpoint(doses, cumulative, .90 * cumulative[0])
+        return metrics
+
+    count = max(int(np.ceil(max_dose / bin_width)) + 1, 2)
+    edges = np.linspace(0, count * bin_width, count + 1)
     hist, _ = np.histogram(values, bins=edges)
     cumulative = np.cumsum(hist[::-1])[::-1] * voxel_volume
     centers = (edges[:-1]+edges[1:])/2
-    metrics["D90Gy"] = _bounded_dose_at_fraction(centers, cumulative, .9, values.min(), values.max())
+    metrics["D90Gy"] = _bounded_dose_at_fraction(centers, cumulative, .9, minimum, maximum)
     return metrics

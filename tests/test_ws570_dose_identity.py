@@ -529,3 +529,15 @@ def test_z_partial_vx_counts_only_the_sampled_hot_volume(tmp_path):
         assert legacy == pytest.approx((4., 50.))
         assert row[f"covered_{threshold} (cm³)"] == pytest.approx(4.)
         assert row[f"covered_{threshold} (%)"] == pytest.approx(100.)
+
+
+@pytest.mark.parametrize("grid_max_gy", [.008, 20.])
+def test_rotated_nifti_subcentigray_d90_uses_exact_roi_samples(grid_max_gy):
+    from rtpipeline.dvh_rotation import add_brachy_metrics_from_values
+
+    values = np.array([.001, .001] + [.008] * 8)
+    voxel_volume = .1
+    metrics = dvh._compute_metrics_from_arrays(values, voxel_volume, grid_max_gy)
+    assert metrics["D95Gy"] == pytest.approx(.001)
+    result = add_brachy_metrics_from_values(values, voxel_volume, grid_max_gy, metrics)
+    assert result["D90Gy"] == pytest.approx(.001)
