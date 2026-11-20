@@ -274,6 +274,8 @@ def write_synthetic_plan_and_dose(
     dose = _file_dataset(dose_path, RTDoseStorage, generate_uid())
     dose.Modality = "RTDOSE"
     dose.PatientID = course_dir.parent.name
+    dose.DoseUnits = "GY"
+    dose.DoseType = "PHYSICAL"
     dose.DoseSummationType = "PLAN"
     plan_reference = Dataset()
     plan_reference.ReferencedSOPClassUID = RTPlanStorage

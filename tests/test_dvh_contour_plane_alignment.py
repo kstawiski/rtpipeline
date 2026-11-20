@@ -371,7 +371,7 @@ def test_alignment_helper_participates_in_measurement_identity():
 
 @pytest.mark.parametrize('quarantine', [False, True])
 def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tmp_path, quarantine):
-    """Additive alignment, D2cc and coverage evidence preserve existing values and dtypes."""
+    """Preserve alignment, coverage evidence and unaffected historical fields."""
     from pathlib import Path
     kwargs = ({'references':[fx.dose_reference(number=1, description='PTV1'),
                             fx.dose_reference(number=2, description='ptv2 ')]} if quarantine
@@ -383,8 +383,9 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
                 else 'ae60f01_no_near_zero_targets.json')
     baseline = json.loads((Path(fx.__file__).parent/'synthetic_dvh_plan_target'/filename).read_text())
     assert set(table) - set(baseline['columns']) == {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                  'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+                                                                  'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'} | fx.DVH_305_COLUMNS
     fx.assert_d2cc_columns(table)
+    fx.assert_exact_vx_two_level_fixture(table)
     assert table.dose_grid_coverage_reason.notna().all()
     assert table.dose_grid_coverage_reason_code.isna().all()
     projected = table[baseline['columns']]
@@ -414,4 +415,7 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
             return int(value)
         return str(value).replace(str(course), '<COURSE>')
 
-    assert [[cell(v) for v in row] for row in projected.itertuples(index=False)] == baseline['rows']
+    keep = [i for i, column in enumerate(baseline['columns']) if not fx.dvh_305_changes_metric(column)]
+    assert [[cell(row[i]) for i in keep] for row in projected.itertuples(index=False)] == [
+        [row[i] for i in keep] for row in baseline['rows']
+    ]
