@@ -2031,11 +2031,7 @@ def _extract_ct_roi_arms_impl(
     hu_verified = True if hu_verification is None else bool(hu_verification.get("hu_verified", True))
     hu_refusal_status = str((hu_verification or {}).get("status") or "non_hu_rescale_units")
     hu_refusal_detail = str((hu_verification or {}).get("detail") or "")
-    raw_uses_hu = bool(
-        isinstance(getattr(raw_extractor, "settings", None), Mapping)
-        and raw_extractor.settings.get("binWidth") not in (None, 0, False)
-        and not raw_extractor.settings.get("normalize")
-    )
+    raw_uses_hu = not raw_extractor.settings.get("normalize")
 
     if not hu_verified and raw_uses_hu:
         raw_expected = set(shape_expected)

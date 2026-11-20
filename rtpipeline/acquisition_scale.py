@@ -560,15 +560,16 @@ def describe_planning_ct(
 
         hu_check = verify_dicom_datasets_hu_units(datasets)
         mapping_complete = rescale_complete and storage_mapping_complete
-        observed_min = min(observed_mins) if rescale_complete else None
-        observed_max = max(observed_maxs) if rescale_complete else None
+        non_hu = hu_check["status"] == "non_hu_rescale_units"
+        observed_min = min(observed_mins) if rescale_complete and not non_hu else None
+        observed_max = max(observed_maxs) if rescale_complete and not non_hu else None
         status = (
             "non_hu_rescale_units"
-            if hu_check["status"] == "non_hu_rescale_units"
+            if non_hu
             else ("ok" if mapping_complete else "mapping_metadata_missing")
         )
         detail = None
-        if hu_check["status"] == "non_hu_rescale_units":
+        if non_hu:
             detail = hu_check["detail"]
         if not mapping_complete:
             missing_groups = []
@@ -651,10 +652,10 @@ def describe_planning_ct(
                 "acq_bits_stored": _uniform(bits_values),
                 "acq_pixel_representation": _uniform(representation_values),
                 "acq_representable_hu_min": (
-                    min(representable_mins) if mapping_complete else None
+                    min(representable_mins) if mapping_complete and not non_hu else None
                 ),
                 "acq_representable_hu_max": (
-                    max(representable_maxs) if mapping_complete else None
+                    max(representable_maxs) if mapping_complete and not non_hu else None
                 ),
                 "acq_observed_hu_min": observed_min,
                 "acq_observed_hu_max": observed_max,

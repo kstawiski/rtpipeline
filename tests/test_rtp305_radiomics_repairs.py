@@ -702,6 +702,10 @@ def test_c5_non_hu_rescale_type_refuses_hu_extraction_and_noise(tmp_path):
     _write_ct_series_custom(ct_dir, rescale_type="US")
     desc = acquisition_scale.describe_planning_ct(ct_dir)
     assert desc["acq_provenance_status"] == "non_hu_rescale_units"
+    assert desc["acq_scale_class"] == "unknown"
+    for bounds in ("representable", "observed", "effective"):
+        for endpoint in ("min", "max"):
+            assert desc[f"acq_{bounds}_hu_{endpoint}"] is None
 
     img = rm._load_series_image(ct_dir)
     assert img is not None
@@ -952,7 +956,9 @@ def test_c9_opt_in_course_specific_seeds_and_default_unchanged():
     assert not np.array_equal(sitk.GetArrayFromImage(m_p1["ntcv_n10_c1_v0"]), sitk.GetArrayFromImage(m_p2["ntcv_n10_c1_v0"]))
 
 
-def test_c5_dual_arm_ct_refuses_hu_texture_on_non_hu_rescale(monkeypatch):
+@pytest.mark.parametrize("bin_settings", [{"binWidth": 25}, {}, {"binCount": 32}])
+@pytest.mark.parametrize("normalize", [False, True])
+def test_c5_dual_arm_ct_refuses_hu_texture_on_non_hu_rescale(monkeypatch, bin_settings, normalize):
     from rtpipeline.radiomics_ct_contract import extract_ct_roi_arms, PRIMARY_ARM, SENSITIVITY_ARM
     from test_radiomics_ct_dual_arm import _FakeExtractor, _common_identity, _qc, _versions
 
@@ -966,10 +972,16 @@ def test_c5_dual_arm_ct_refuses_hu_texture_on_non_hu_rescale(monkeypatch):
     img.SetMetaData("rtpipeline_hu_detail", "RescaleType='US'")
     mask = sitk.GetImageFromArray(np.ones((8, 8, 8), dtype=np.uint8))
 
+    def factory():
+        extractor = _FakeExtractor()
+        extractor.settings.pop("binWidth")
+        extractor.settings.update(bin_settings, normalize=normalize)
+        return extractor
+
     rows = extract_ct_roi_arms(
         img,
         mask,
-        factory=_FakeExtractor,
+        factory=factory,
         decision=classify_ct_roi("Manual", "PTV"),
         common_metadata=_common_identity(),
         run_identifier="run-non-hu",
@@ -981,10 +993,12 @@ def test_c5_dual_arm_ct_refuses_hu_texture_on_non_hu_rescale(monkeypatch):
     by_arm = {r["extraction_arm"]: r for r in rows}
     assert by_arm[PRIMARY_ARM]["shape_disposition"] == "success"
     assert by_arm[PRIMARY_ARM]["intensity_texture_disposition"] == "non_hu_rescale_units"
-    assert by_arm[SENSITIVITY_ARM]["intensity_texture_disposition"] == "non_hu_rescale_units"
     assert "original_shape_VoxelVolume" in by_arm[PRIMARY_ARM]
     assert "original_firstorder_Mean" not in by_arm[PRIMARY_ARM]
-    assert "original_firstorder_Mean" not in by_arm[SENSITIVITY_ARM]
+    raw = by_arm[SENSITIVITY_ARM]
+    assert raw["shape_disposition"] == "success"
+    assert raw["intensity_texture_disposition"] == ("success" if normalize else "non_hu_rescale_units")
+    assert ("original_firstorder_Mean" in raw) == normalize
 
 
 def test_c5_sequential_conda_robustness_propagates_ct_hu_metadata(monkeypatch):
