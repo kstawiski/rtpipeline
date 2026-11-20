@@ -38,6 +38,8 @@
 - `radiomics_robustness`, `radiomics_robustness_aggregate`: Record geometric nonmeasurements and classify undefined ICC as `not_evaluable` in the exploratory package summary. Study analysis O7 follows its own specification.
 - `cli`, `radiomics_conda`: Apply YAML settings for `--stage radiomics` with explicit flags taking precedence and default to the packaged CT parameter file.
 - `Snakefile`, `radiomics_robustness`: Require the named radiomics interpreter and libraries and propagate ICC computation errors.
+- `radiomics_conda`: Use the radiomics environment probe timeout to materialize CT extraction parameters.
+- `radiomics_robustness`: Require the configured perturbation count in stability summaries and report ICC as not evaluable with fewer than five non-missing values.
 - `config`, `radiomics`: Apply the native ROI gate at `radiomics.min_voxels`. The shipped configuration selects 64 and an omitted setting defaults to 120. PyRadiomics separately requires more than 64 resampled voxels under `minimumROISize: 64`.
 - `extraction_progress`, `radiomics_robustness`: Bind sequential resume to extraction parameters, the ROI map, verified HU status and effective perturbation settings.
 - `radiomics_robustness`: Support course-specific noise and contour seeds with `radiomics_robustness.segmentation_perturbation.course_specific_seeds` while preserving the default seed sequence.

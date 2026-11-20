@@ -239,6 +239,13 @@ def test_contour_randomization_uses_physical_distance_and_is_reproducible():
     assert np.flatnonzero(first_array.any(axis=(1, 2))).tolist() == [2, 3, 4]
 
 
+def _four_condition_config() -> RobustnessConfig:
+    return RobustnessConfig(perturbation=robustness.PerturbationConfig(
+        max_translation_mm=0.0, n_random_contour_realizations=0,
+        small_volume_changes=[0.0], noise_levels=[0.0, 10.0, 20.0, 30.0],
+    ))
+
+
 def _stable_subject_frame() -> pd.DataFrame:
     rows = []
     for patient_id, value in (("P1", 1.0), ("P2", 100.0)):
@@ -308,7 +315,7 @@ def _publish_course_tables(
 
 def test_cov_is_computed_within_subject_not_across_subjects():
     summary = robustness.summarize_feature_stability(
-        _stable_subject_frame(), RobustnessConfig(enabled=True)
+        _stable_subject_frame(), _four_condition_config()
     )
     assert len(summary) == 1
     assert summary.loc[0, "cov_pct"] == pytest.approx(0.0)
@@ -332,7 +339,7 @@ def test_ineligible_relative_dispersion_is_not_misclassified_as_poor():
     frame = _stable_subject_frame()
     frame["value"] = -frame["value"]
     summary = robustness.summarize_feature_stability(
-        frame, RobustnessConfig(enabled=True)
+        frame, _four_condition_config()
     )
     assert summary.loc[0, "n_subjects_cov"] == 0
     assert summary.loc[0, "n_subjects_qcd"] == 0
@@ -348,7 +355,7 @@ def test_incomplete_subject_grid_fails_closed():
         ~((frame["patient_id"] == "P2") & (frame["perturbation_id"] == "d"))
     ]
     with pytest.raises(ValueError, match="incomplete perturbation grid"):
-        robustness.summarize_feature_stability(frame, RobustnessConfig(enabled=True))
+        robustness.summarize_feature_stability(frame, _four_condition_config())
 
 
 def test_aggregate_keeps_structure_source_rows_separate(tmp_path, monkeypatch):
@@ -356,7 +363,7 @@ def test_aggregate_keeps_structure_source_rows_separate(tmp_path, monkeypatch):
     second = first.copy()
     second["structure"] = "OTHER_ROI"
     second["value"] = second["value"] * 10
-    rob_config = RobustnessConfig(enabled=True)
+    rob_config = _four_condition_config()
     tables = _publish_course_tables(
         tmp_path / "courses",
         pd.concat([first, second], ignore_index=True),
@@ -377,7 +384,7 @@ def test_aggregate_rejects_missing_course_input(tmp_path):
         robustness.aggregate_robustness_results(
             [tmp_path / "missing.parquet"],
             tmp_path / "summary.xlsx",
-            RobustnessConfig(enabled=True),
+            _four_condition_config(),
         )
 
 
@@ -392,7 +399,7 @@ def test_aggregate_rejects_feature_missing_from_one_subject(tmp_path, monkeypatc
             & (combined["feature_name"] == "second_feature")
         )
     ]
-    rob_config = RobustnessConfig(enabled=True)
+    rob_config = _four_condition_config()
     tables = _publish_course_tables(tmp_path / "courses", combined, rob_config, monkeypatch)
 
     with pytest.raises(ValueError, match="inconsistent feature sets across subjects"):

@@ -329,6 +329,15 @@ _ENV_PROBE_TIMEOUT_ENV = "RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT"
 _DEFAULT_ENV_PROBE_TIMEOUT = 180
 
 
+def _env_probe_timeout(timeout: Optional[int] = None) -> int:
+    if timeout is None:
+        try:
+            timeout = int(os.environ.get(_ENV_PROBE_TIMEOUT_ENV, _DEFAULT_ENV_PROBE_TIMEOUT))
+        except (TypeError, ValueError):
+            return _DEFAULT_ENV_PROBE_TIMEOUT
+    return timeout if timeout > 0 else _DEFAULT_ENV_PROBE_TIMEOUT
+
+
 class RadiomicsEnvironmentProbeTimeout(RuntimeError):
     """The isolated radiomics import probe exhausted its time budget."""
 
@@ -1024,7 +1033,7 @@ print(json.dumps(effective_parameter_hashes_for_arms(factory, decision)))
         _radiomics_env_command("-c", script, payload),
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=_env_probe_timeout(),
         env=_conda_subprocess_env(),
     )
     if result.returncode != 0:
@@ -1064,14 +1073,7 @@ def check_radiomics_env(timeout: Optional[int] = None, retries: int = 1) -> bool
     with _ENV_CHECK_LOCK:
         if _ENV_CHECK_OK:
             return True
-        configured_timeout = timeout
-        if configured_timeout is None:
-            try:
-                configured_timeout = int(os.environ.get(_ENV_PROBE_TIMEOUT_ENV, _DEFAULT_ENV_PROBE_TIMEOUT))
-            except (TypeError, ValueError):
-                configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
-        if configured_timeout <= 0:
-            configured_timeout = _DEFAULT_ENV_PROBE_TIMEOUT
+        configured_timeout = _env_probe_timeout(timeout)
 
         # Built inside the attempt loop on purpose (NB3): a set-but-broken
         # override raises ValueError here and folds into a closed False

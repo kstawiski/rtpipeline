@@ -4866,6 +4866,29 @@ def summarize_feature_stability(
             parts.append(frame_part["segmentation_source"].astype(str))
         return list(zip(*(part.tolist() for part in parts)))
 
+    perturbation = getattr(config, "perturbation", None)
+    expected_conditions = (
+        expected_ntcv_perturbation_count(perturbation) if perturbation is not None else None
+    )
+
+    def _validate_rater_grid(icc_df, context):
+        rater_sets = icc_df.groupby("subject")["rater"].agg(
+            lambda values: frozenset(values.astype(str))
+        )
+        all_raters = frozenset().union(*rater_sets)
+        incomplete_subjects = int((rater_sets != all_raters).sum())
+        if incomplete_subjects:
+            raise ValueError(
+                f"incomplete perturbation grid for {incomplete_subjects} subject(s) "
+                f"in robustness group {context}"
+            )
+        if expected_conditions is not None and len(all_raters) != expected_conditions:
+            raise ValueError(
+                f"incomplete perturbation grid in robustness group {context}: "
+                f"expected {expected_conditions} NTCV conditions, found {len(all_raters)}"
+            )
+        return len(all_raters)
+
     impossible_scopes: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
     possible_features = df_long.loc[~impossible_rows & df_long["feature_name"].notna()]
     if impossible_rows.any():
@@ -4884,13 +4907,18 @@ def summarize_feature_stability(
             ) if "reason_code" in scope_df.columns else []
             if not reasons:
                 reasons = ["geometrically_impossible"]
-            all_subjs = set(_subject_series(scope_df))
+            subjects = _subject_series(scope_df)
+            n_perturbations = _validate_rater_grid(
+                pd.DataFrame({"subject": subjects, "rater": scope_df["perturbation_id"]}),
+                scope_key,
+            )
+            all_subjs = set(subjects)
             imp_subjs = set(_subject_series(scope_df.loc[scope_imp]))
             impossible_scopes[scope_key] = {
                 "reasons": reasons,
                 "all_subjects": all_subjs,
                 "imp_subjects": imp_subjs,
-                "n_perturbations": int(scope_df["perturbation_id"].nunique()) if "perturbation_id" in scope_df.columns else 0,
+                "n_perturbations": n_perturbations,
                 "n_courses": (
                     len(scope_df[["patient_id", "course_id"]].astype(str).drop_duplicates())
                     if "course_id" in scope_df.columns else np.nan
@@ -4961,16 +4989,7 @@ def summarize_feature_stability(
             ))
             continue
 
-        rater_sets = icc_df.groupby("subject")["rater"].agg(
-            lambda values: frozenset(values.astype(str))
-        )
-        all_raters = frozenset().union(*rater_sets.tolist()) if len(rater_sets) else frozenset()
-        incomplete_subjects = int((rater_sets != all_raters).sum())
-        if incomplete_subjects:
-            raise ValueError(
-                f"incomplete perturbation grid for {incomplete_subjects} subject(s) "
-                f"in robustness group {row_data}"
-            )
+        n_raters = _validate_rater_grid(icc_df, row_data)
 
         if bool(group_not_evaluable.any()):
             if "reason_code" not in group.columns or group.loc[
@@ -5025,10 +5044,10 @@ def summarize_feature_stability(
         # of the subject-level metrics.
         subject_metric_frame = icc_df[["subject", "value"]]
         subject_cov = subject_metric_frame.groupby("subject")["value"].apply(
-            lambda values: compute_cov(values.to_numpy(dtype=float))
+            lambda values: compute_cov(values.to_numpy(dtype=float, na_value=np.nan))
         )
         subject_qcd = subject_metric_frame.groupby("subject")["value"].apply(
-            lambda values: compute_qcd(values.to_numpy(dtype=float))
+            lambda values: compute_qcd(values.to_numpy(dtype=float, na_value=np.nan))
         )
         finite_cov = subject_cov[np.isfinite(subject_cov.to_numpy(dtype=float))]
         finite_qcd = subject_qcd[np.isfinite(subject_qcd.to_numpy(dtype=float))]
@@ -5054,9 +5073,7 @@ def summarize_feature_stability(
         )
 
         n_subjects = icc_df["subject"].nunique()
-        n_raters = icc_df["rater"].nunique()
-
-        if n_subjects < 2 or n_raters < 2:
+        if n_subjects < 2 or n_raters < 2 or icc_df["value"].count() < 5:
             icc_info = {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
         else:
             icc_info = compute_icc_pingouin(icc_df, config.metrics.icc)

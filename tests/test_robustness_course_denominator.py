@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rtpipeline.radiomics_robustness import RobustnessConfig, summarize_feature_stability
+from rtpipeline.radiomics_robustness import PerturbationConfig, RobustnessConfig, summarize_feature_stability
+
+
+_CONFIG = RobustnessConfig(perturbation=PerturbationConfig(
+    max_translation_mm=0.0, n_random_contour_realizations=0,
+    small_volume_changes=[0.0], noise_levels=[0.0, 10.0, 20.0],
+))
 
 
 def _values(identities):
@@ -33,7 +39,7 @@ def _values(identities):
 ])
 def test_summary_counts_distinct_patient_course_pairs(identities):
     frame = _values(identities)
-    row = summarize_feature_stability(frame, RobustnessConfig()).iloc[0]
+    row = summarize_feature_stability(frame, _CONFIG).iloc[0]
     assert row["n_courses"] == len(set(identities))
     assert row["n_subjects"] == len(set(identities))
     assert row["n_subjects_dropped"] == 0
@@ -43,7 +49,7 @@ def test_summary_counts_distinct_patient_course_pairs(identities):
     relabelled = frame.copy()
     labels = {identity: f"unique_{index}" for index, identity in enumerate(identities)}
     relabelled["course_id"] = [labels[(p, c)] for p, c in zip(frame.patient_id, frame.course_id)]
-    control = summarize_feature_stability(relabelled, RobustnessConfig()).iloc[0]
+    control = summarize_feature_stability(relabelled, _CONFIG).iloc[0]
     for field in ("icc", "icc_ci95_low", "icc_ci95_high", "cov_pct", "qcd"):
         assert row[field] == pytest.approx(control[field], nan_ok=True), field
     assert row["robustness_label"] == control["robustness_label"]
@@ -51,6 +57,6 @@ def test_summary_counts_distinct_patient_course_pairs(identities):
 
 def test_legacy_no_course_identity_does_not_invent_course_count():
     frame = _values([("P1", "C1"), ("P2", "C1")]).drop(columns="course_id")
-    row = summarize_feature_stability(frame, RobustnessConfig()).iloc[0]
+    row = summarize_feature_stability(frame, _CONFIG).iloc[0]
     assert np.isnan(row["n_courses"])
     assert row["n_subjects"] == 2

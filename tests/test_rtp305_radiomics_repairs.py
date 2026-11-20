@@ -998,7 +998,11 @@ def test_a1_aggregator_gives_geometrically_impossible_disposition_and_nan_icc_no
             "value": [42.0] * 6,
         }
     )
-    const_summary = rr.summarize_feature_stability(const_df, rob)
+    const_config = rr.RobustnessConfig(perturbation=rr.PerturbationConfig(
+        max_translation_mm=0.0, n_random_contour_realizations=0,
+        small_volume_changes=[0.0], noise_levels=[0.0, 10.0],
+    ))
+    const_summary = rr.summarize_feature_stability(const_df, const_config)
     assert len(const_summary) == 1
     assert np.isnan(const_summary.loc[0, "icc"])
     assert const_summary.loc[0, "cov_status"] == "complete"
@@ -1355,3 +1359,76 @@ def test_a7_sequential_bound_item_invalidated_by_rob_config_and_packaged_yaml(
     )
     assert len(calls) == 3
     assert df4["value"].iloc[0] == 3.0
+
+
+@pytest.mark.parametrize("setting, expected", [("271", 271), ("invalid", 180)])
+def test_r3_materialized_arm_probe_uses_configured_timeout(monkeypatch, setting, expected):
+    from dataclasses import asdict
+
+    monkeypatch.setenv("RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT", setting)
+    monkeypatch.setattr(rc, "_radiomics_env_command", lambda *args: list(args))
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(kwargs["timeout"])
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({arm: f"hash-{arm}" for arm in CT_EXTRACTION_ARMS}),
+        )
+
+    monkeypatch.setattr(rc.subprocess, "run", run)
+    rc._materialized_ct_arm_hashes.cache_clear()
+    try:
+        decision = json.dumps(asdict(classify_ct_roi("Manual", "PTV")))
+        assert set(rc._materialized_ct_arm_hashes("", False, decision)) == set(CT_EXTRACTION_ARMS)
+        assert seen == [expected]
+    finally:
+        rc._materialized_ct_arm_hashes.cache_clear()
+
+
+@pytest.mark.parametrize("conditions, values", [
+    (["ntcv_v0", "ntcv_n10_v0"], [1., 2., 3., 4.]),
+    (["ntcv_v0", "ntcv_n10_v0", "ntcv_n20_v0"], [1., 2., np.nan, 3., 4., np.nan]),
+    (["ntcv_v0", "ntcv_n10_v0", "ntcv_n20_v0"], [1., 2., pd.NA, 3., 4., pd.NA]),
+])
+def test_r3_icc_with_fewer_than_five_observations_is_not_evaluable(conditions, values):
+    config = rr.RobustnessConfig(perturbation=rr.PerturbationConfig(
+        max_translation_mm=0.0, n_random_contour_realizations=0,
+        small_volume_changes=[0.0], noise_levels=[0., 10., 20.][:len(conditions)],
+    ))
+    frame = pd.DataFrame({
+        "patient_id": np.repeat(["P1", "P2"], len(conditions)),
+        "structure": "PTV",
+        "perturbation_id": conditions * 2,
+        "feature_name": "original_firstorder_Mean",
+        "value": values,
+    })
+    row = rr.summarize_feature_stability(frame, config).iloc[0]
+    assert row["n_subjects"] == 2
+    assert row["n_perturbations"] == len(conditions)
+    assert row["robustness_label"] == "not_evaluable"
+    assert np.isnan(row["icc"])
+    assert not row["pass_seg_perturb"]
+
+
+@pytest.mark.parametrize("geometric", [False, True])
+def test_r3_summary_refuses_a_condition_missing_from_every_subject(geometric):
+    config = rr.RobustnessConfig(perturbation=rr.PerturbationConfig(
+        max_translation_mm=0.0, n_random_contour_realizations=0,
+        small_volume_changes=[0.0], noise_levels=[0., 10., 20.],
+    ))
+    frame = pd.DataFrame({
+        "patient_id": ["P1", "P1", "P2", "P2", "P3", "P3"],
+        "structure": "PTV",
+        "perturbation_id": ["ntcv_v0", "ntcv_n10_v0"] * 3,
+        "feature_name": "original_firstorder_Mean",
+        "value": [1., 2., 3., 4.1, 5., 6.2],
+    })
+    if geometric:
+        frame["robustness_status"] = "measured"
+        frame.loc[frame["perturbation_id"].eq("ntcv_n10_v0"),
+                  ["feature_name", "value", "robustness_status", "reason_code"]] = [
+            None, np.nan, "geometrically_impossible", "contour_outside_image"
+        ]
+    with pytest.raises(ValueError, match="expected 3 NTCV conditions"):
+        rr.summarize_feature_stability(frame, config)
