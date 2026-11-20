@@ -183,7 +183,7 @@ class _DVHTask:
 
 @dataclass(frozen=True, slots=True)
 class _DVHStageOutcome:
-    """A successful computed or contract-declared no-metrics DVH outcome."""
+    """A committed DVH measurement or governed nonmeasurement."""
 
     status: str
     output_path: Path | None
@@ -305,9 +305,11 @@ def _execute_crop_task(task: _CropTask) -> bool:
 def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
     from .course_contract import load_course_contract
     from .dvh import dvh_for_course
+    from .dvh_generation import SCHEMA
 
+    root = task.course.dirs.root
     output = dvh_for_course(
-        task.course.dirs.root,
+        root,
         task.custom_structures,
         parallel_workers=task.parallel_workers,
         use_cropped=task.use_cropped,
@@ -317,16 +319,29 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
         rx_dose_gy=None,
         max_total_dose_gy=task.max_total_dose_gy,
     )
-    contract = load_course_contract(task.course.dirs.root)
+    contract = load_course_contract(root)
     decision = contract.data["dvh"]
     if output is not None:
         output_path = Path(output)
         if not output_path.is_file():
             return None
+        try:
+            receipt = json.loads((root / ".dvh_done").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(receipt, dict) or receipt.get("schema") != SCHEMA:
+            return None
+        measurement = receipt.get("measurement_outcome")
+        if measurement == "computed":
+            outcome = _DVHStageOutcome(status="computed", output_path=output_path)
+        elif measurement == "not_measured":
+            outcome = _DVHStageOutcome(status="not_computed", output_path=output_path,
+                                       reason_code="no_measured_dvh_rows")
+        else:
+            return None
         if decision.get("metrics_status") != "computed":
             # DVH-only planning fallback leaves organize's decision unchanged.
             from .planning_dose_selection import BASIS, SIDECAR, _sha256, load_planning_dose_sidecar
-            root = task.course.dirs.root
             selection = load_planning_dose_sidecar(root)
             try:
                 qc = json.loads((root / "metadata/dvh_qc.json").read_text())
@@ -342,7 +357,7 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
                         or qc.get("composite_dose_sidecar_sha256") != _sha256(root / composite.SIDECAR)
                         or (qc.get("dose_resolution") or {}).get("dvh", {}).get("metrics_status") != "computed"):
                     return None
-                return _DVHStageOutcome(status="computed", output_path=output_path)
+                return outcome
             if not selection.accepted:
                 return None
             if (qc.get("planning_dose_basis") != BASIS
@@ -350,7 +365,7 @@ def _execute_dvh_task(task: _DVHTask) -> _DVHStageOutcome | None:
                     or qc.get("planning_dose_selection_sha256") != _sha256(root / SIDECAR)
                     or (qc.get("dose_resolution") or {}).get("dvh", {}).get("metrics_status") != "computed"):
                 return None
-        return _DVHStageOutcome(status="computed", output_path=output_path)
+        return outcome
 
     if (
         contract.dose_qc.get("pass") is not True

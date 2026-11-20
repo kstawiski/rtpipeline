@@ -357,6 +357,17 @@ def test_c14_refused_only_table_is_a_nonmeasurement_in_receipt_qc_and_aggregate(
     result = build_dvh_aggregate([legacy], [("SYNTH_P", "SYNTH_C", course)])
     assert result.row_status.tolist() == ["not_computed"]
 
+    from rtpipeline import cli
+    from rtpipeline.config import DEFAULT_MAX_TOTAL_DOSE_GY
+    task = cli._DVHTask(
+        course=SimpleNamespace(dirs=SimpleNamespace(root=course)),
+        custom_structures=None, use_cropped=True, parallel_workers=1,
+        max_total_dose_gy=DEFAULT_MAX_TOTAL_DOSE_GY,
+    )
+    outcome = cli._execute_dvh_task(task)
+    assert outcome.status == "not_computed"
+    assert outcome.output_path == course / "dvh_metrics.xlsx"
+
 
 def test_c15_metrics_use_the_nominal_total_shown_in_the_row(tmp_path):
     course = _course(tmp_path, delivered=False)

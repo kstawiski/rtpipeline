@@ -32,7 +32,7 @@ def test_cli_dvh_does_not_forward_a_duplicate_explicit_prescription(
 ) -> None:
     """A stale CourseOutput copy cannot disagree with the authoritative contract."""
 
-    from rtpipeline import cli, course_contract, dvh
+    from rtpipeline import cli, course_contract, dvh, dvh_generation
 
     captured: dict[str, object] = {}
     output = tmp_path / "dvh_metrics.xlsx"
@@ -40,6 +40,9 @@ def test_cli_dvh_does_not_forward_a_duplicate_explicit_prescription(
     def fake_dvh_for_course(*_args, **kwargs):
         captured.update(kwargs)
         output.write_bytes(b"result")
+        (tmp_path / ".dvh_done").write_text(json.dumps({
+            "schema": dvh_generation.SCHEMA, "measurement_outcome": "computed",
+        }))
         return output
 
     monkeypatch.setattr(dvh, "dvh_for_course", fake_dvh_for_course)
