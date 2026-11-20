@@ -22,7 +22,7 @@ from .dvh_generation import _encode_row, _decode_row
 
 OPERATIONAL = frozenset({"max_workers", "workers", "threads", "thread_limit",
     "max_workers_override", "radiomics_thread_limit", "max_parallel_courses",
-    "env_probe_timeout", "radiomics_env_probe_timeout", "sequential"})
+    "env_probe_timeout", "radiomics_env_probe_timeout", "sequential", "radiomics_sequential"})
 VOLATILE = frozenset({"run_identifier", "code_revision", "__task_index__"})
 
 

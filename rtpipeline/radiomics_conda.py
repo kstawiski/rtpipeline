@@ -946,6 +946,45 @@ def _conda_subprocess_env() -> Dict[str, str]:
     return multiprocessing_subprocess_env(env)
 
 
+def resolve_ct_params_file(params_or_config: Any = None) -> str:
+    """Resolve CT PyRadiomics YAML path to configured file or packaged default.
+
+    Preserves an explicit path string/Path (even if missing, so callers fail
+    closed) and falls back to packaged ``rtpipeline/radiomics_params.yaml`` via
+    ``_get_params_file`` when unset rather than PyRadiomics library defaults.
+    """
+    cfg_obj = None
+    if params_or_config is not None:
+        if isinstance(params_or_config, (str, Path)):
+            text = str(params_or_config).strip()
+            if text:
+                return text
+        elif hasattr(params_or_config, "radiomics_params_file") or hasattr(
+            params_or_config, "logs_root"
+        ):
+            cfg_obj = params_or_config
+            candidate = getattr(params_or_config, "radiomics_params_file", None)
+            if candidate not in (None, ""):
+                return str(candidate)
+    from .radiomics import _get_params_file
+
+    resolved = _get_params_file(cfg_obj, "CT")
+    if resolved is None:
+        raise FileNotFoundError(
+            "Packaged rtpipeline/radiomics_params.yaml could not be resolved"
+        )
+    return str(resolved)
+
+
+def make_extractor(params_file: Any = None, large_roi: bool = False):
+    """Build a CT PyRadiomics extractor from params_file or packaged defaults."""
+    from radiomics import featureextractor
+
+    resolved = resolve_ct_params_file(params_file)
+    # large_roi is retained for compatibility, not as a method override.
+    return featureextractor.RadiomicsFeatureExtractor(resolved)
+
+
 @lru_cache(maxsize=64)
 def _materialized_ct_arm_hashes(
     params_file: str,
@@ -953,9 +992,10 @@ def _materialized_ct_arm_hashes(
     decision_json: str,
 ) -> Dict[str, str]:
     """Materialize the selected Conda extractors and return both runtime hashes."""
+    resolved_params = resolve_ct_params_file(params_file or None)
     payload = json.dumps(
         {
-            "params_file": params_file or None,
+            "params_file": resolved_params,
             "large_roi": bool(large_roi),
             "decision": json.loads(decision_json),
         },
@@ -964,7 +1004,7 @@ def _materialized_ct_arm_hashes(
     script = r'''
 import json
 import sys
-from radiomics import featureextractor
+from rtpipeline.radiomics_conda import make_extractor
 from rtpipeline.radiomics_ct_contract import (
     RoiClassDecision,
     effective_parameter_hashes_for_arms,
@@ -973,14 +1013,7 @@ from rtpipeline.radiomics_ct_contract import (
 payload = json.loads(sys.argv[1])
 
 def factory():
-    params_file = payload.get("params_file")
-    extractor = (
-        featureextractor.RadiomicsFeatureExtractor(params_file)
-        if params_file
-        else featureextractor.RadiomicsFeatureExtractor()
-    )
-    # The legacy size flag is not authority to change the configured method.
-    return extractor
+    return make_extractor(payload.get("params_file"), bool(payload.get("large_roi", False)))
 
 decision = RoiClassDecision(**payload["decision"])
 print(json.dumps(effective_parameter_hashes_for_arms(factory, decision)))
@@ -1128,11 +1161,10 @@ mask_path = params['mask_path']
 params_file = params.get('params_file')
 label = params.get('label')
 
+from rtpipeline.radiomics_conda import make_extractor
+
 # Create extractor
-if params_file:
-    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
-else:
-    extractor = featureextractor.RadiomicsFeatureExtractor()
+extractor = make_extractor(params_file, False)
 
 # Execute extraction
 if label is not None:
@@ -1198,11 +1230,10 @@ def observed_extractor_state(instance):
     }}
     return json.loads(json.dumps(state, default=str))
 
+from rtpipeline.radiomics_conda import make_extractor
+
 # Create extractor
-if params_file:
-    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
-else:
-    extractor = featureextractor.RadiomicsFeatureExtractor()
+extractor = make_extractor(params_file, False)
 
 # Preserve configured features, image types and spacing for every ROI size.
 # Resource failures are accounted by callers, never hidden by a reduced method.
@@ -1451,14 +1482,7 @@ if batch_params.get("acknowledged"):
             raise SystemExit("durable result acknowledgement missing")
 
 
-def make_extractor(params_file, large_roi):
-    candidate = (
-        featureextractor.RadiomicsFeatureExtractor(params_file)
-        if params_file
-        else featureextractor.RadiomicsFeatureExtractor()
-    )
-    # large_roi is retained for compatibility, not as a method override.
-    return candidate
+from rtpipeline.radiomics_conda import make_extractor
 
 
 for task in tasks:
@@ -2513,8 +2537,8 @@ def radiomics_for_course_ct_nifti_fallback(
         _invalidate_radiomics_outputs(output_path)
         return None
 
-    params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
-    parameter_path = Path(params_file) if params_file else None
+    params_file = resolve_ct_params_file(config)
+    parameter_path = Path(params_file)
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
 
@@ -3301,12 +3325,8 @@ def radiomics_for_course(
         'direction': tuple(ct_image.GetDirection()),
     }
 
-    params_file = (
-        str(config.radiomics_params_file)
-        if getattr(config, "radiomics_params_file", None)
-        else None
-    )
-    parameter_path = Path(params_file) if params_file else None
+    params_file = resolve_ct_params_file(config)
+    parameter_path = Path(params_file)
     series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
     if not series_uid:
         _invalidate_radiomics_outputs(output_path)

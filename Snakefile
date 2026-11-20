@@ -161,14 +161,26 @@ os.environ.setdefault("PIP_NO_BUILD_ISOLATION", "1")
 def _resolve_env_python(env_name: str) -> str:
     """Resolve the full path to python for a named conda/micromamba environment.
 
-    Searches configured and common user-level prefixes. Falls back to
-    sys.executable if not found.
+    Searches configured and common user-level prefixes and fails closed with
+    FileNotFoundError if the requested environment cannot be found.
     """
     candidates = []
+    envs_cfg = config.get("environments", {}) if isinstance(config.get("environments"), dict) else {}
+    rad_prefix = os.environ.get("RTPIPELINE_RADIOMICS_ENV_PREFIX")
+    if rad_prefix and env_name == envs_cfg.get("radiomics", "rtpipeline-radiomics"):
+        candidates.append(Path(rad_prefix) / "bin" / "python")
     # Try CONDA_PREFIX-based sibling envs
     conda_prefix = os.environ.get("CONDA_PREFIX")
     if conda_prefix:
         candidates.append(Path(conda_prefix).parent / env_name / "bin" / "python")
+    try:
+        exe_path = Path(sys.executable)
+        exe_prefix = exe_path.resolve().parent.parent
+        if exe_prefix.name == env_name:
+            candidates.append(exe_path)
+        candidates.append(exe_prefix.parent / env_name / "bin" / "python")
+    except Exception:
+        pass
     # Try common micromamba/conda locations
     home = Path.home()
     mamba_root = os.environ.get("MAMBA_ROOT_PREFIX")
@@ -186,7 +198,10 @@ def _resolve_env_python(env_name: str) -> str:
     for c in candidates:
         if c.exists():
             return str(c)
-    return sys.executable
+    tried = ", ".join(str(c) for c in candidates) if candidates else "<none>"
+    raise FileNotFoundError(
+        f"Requested environment '{env_name}' python executable not found; tried: {tried}"
+    )
 
 
 # Resolve python executables for configured environments
@@ -1559,6 +1574,8 @@ if config.get("container_mode", False):
             export MKL_NUM_THREADS=1
             export OPENBLAS_NUM_THREADS=1
 
+            export LD_LIBRARY_PATH="$(dirname "$(dirname "{params.python}")")/lib:${{LD_LIBRARY_PATH:-}}"
+            export PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}"
             # The CLI writes the completion receipt itself, bound to the course,
             # the run, the exact outcome, the exact output and the sidecar digest.
             # No "ok" token is echoed here: a shell exit status cannot certify
@@ -1709,6 +1726,8 @@ else:
             export OPENBLAS_NUM_THREADS=1
 
             export PATH="{params.python_bin}:$PATH"
+            export LD_LIBRARY_PATH="$(dirname "{params.python_bin}")/lib:${{LD_LIBRARY_PATH:-}}"
+            export PYTHONPATH="{params.root_dir}:${{PYTHONPATH:-}}"
             # The CLI writes the completion receipt itself, bound to the course,
             # the run, the exact outcome, the exact output and the sidecar digest.
             # No "ok" token is echoed here: a shell exit status cannot certify

@@ -129,6 +129,7 @@ class PipelineConfig:
     radiomics_thread_limit: int | None = None
     radiomics_env_probe_timeout: int | None = None
     radiomics_params_file_mr: Path | None = None
+    radiomics_sequential: bool = False
     # Campaign-owned ROI requiredness and approved aliases. An empty contract
     # makes declared structures inventory-only rather than implicitly required.
     radiomics_analysis_contract: dict = field(default_factory=dict)

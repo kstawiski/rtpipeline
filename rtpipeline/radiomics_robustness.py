@@ -4206,97 +4206,91 @@ def compute_icc_pingouin(
     Returns:
         Dictionary with keys: icc, icc_ci95_low, icc_ci95_high
     """
-    try:
-        import pingouin as pg
-    except ImportError:
-        logger.warning("Pingouin not available; install with: pip install pingouin")
-        return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
+    import pingouin as pg
 
-    try:
-        # --- C1 fix: detect unbalanced data before ICC computation ---
-        # Pingouin's nan_policy="omit" performs listwise deletion, dropping entire
-        # subjects when ANY rater value is missing. This silently biases ICC upward
-        # (surviving subjects are easier cases). We detect and report this explicitly.
-        n_raters_expected = df["rater"].nunique()
-        subject_counts = df.groupby("subject")["rater"].nunique()
-        complete_subjects = (subject_counts == n_raters_expected).sum()
-        total_subjects = len(subject_counts)
-        incomplete_subjects = total_subjects - complete_subjects
-        drop_pct = (incomplete_subjects / total_subjects * 100) if total_subjects > 0 else 0
+    # --- C1 fix: detect unbalanced data before ICC computation ---
+    # Pingouin's nan_policy="omit" performs listwise deletion, dropping entire
+    # subjects when ANY rater value is missing. This silently biases ICC upward
+    # (surviving subjects are easier cases). We detect and report this explicitly.
+    n_raters_expected = df["rater"].nunique()
+    subject_counts = df.groupby("subject")["rater"].nunique()
+    complete_subjects = (subject_counts == n_raters_expected).sum()
+    total_subjects = len(subject_counts)
+    incomplete_subjects = total_subjects - complete_subjects
+    drop_pct = (incomplete_subjects / total_subjects * 100) if total_subjects > 0 else 0
 
-        if incomplete_subjects > 0:
-            logger.warning(
-                "ICC: %d/%d subjects (%.1f%%) have missing perturbations and will be "
-                "dropped by listwise deletion. ICC may be biased upward.",
-                incomplete_subjects, total_subjects, drop_pct,
-            )
-            if drop_pct > 10:
-                logger.warning(
-                    "ICC: >10%% subjects dropped — consider using ICC2 (two-way random) "
-                    "or mixed-effects models for unbalanced designs."
-                )
-
-        # Use only complete cases to make the listwise deletion explicit
-        # (rather than relying on Pingouin's silent nan_policy="omit")
-        if incomplete_subjects > 0:
-            complete_subject_ids = subject_counts[subject_counts == n_raters_expected].index
-            df_balanced = df[df["subject"].isin(complete_subject_ids)].copy()
-            if df_balanced["subject"].nunique() < 2:
-                logger.warning("ICC: fewer than 2 complete subjects remain after dropping incomplete cases")
-                return {
-                    "icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan,
-                    "n_subjects_dropped": int(incomplete_subjects),
-                    "n_subjects_complete": int(complete_subjects),
-                }
-        else:
-            df_balanced = df
-
-        icc_res = pg.intraclass_corr(
-            data=df_balanced,
-            targets="subject",
-            raters="rater",
-            ratings="value",
-            nan_policy="raise"  # Fail loudly if data is still unbalanced
+    if incomplete_subjects > 0:
+        logger.warning(
+            "ICC: %d/%d subjects (%.1f%%) have missing perturbations and will be "
+            "dropped by listwise deletion. ICC may be biased upward.",
+            incomplete_subjects, total_subjects, drop_pct,
         )
+        if drop_pct > 10:
+            logger.warning(
+                "ICC: >10%% subjects dropped — consider using ICC2 (two-way random) "
+                "or mixed-effects models for unbalanced designs."
+            )
 
-        # Pingouin 0.6 renamed the historical ICC1/2/3 labels while retaining
-        # the same Shrout-Fleiss/McGraw-Wong estimands.
-        type_aliases = {
-            "ICC1": "ICC(1,1)",
-            "ICC2": "ICC(A,1)",
-            "ICC3": "ICC(C,1)",
-            "ICC1k": "ICC(1,k)",
-            "ICC2k": "ICC(A,k)",
-            "ICC3k": "ICC(C,k)",
-        }
-        requested_types = [icc_config.icc_type]
-        if icc_config.icc_type in type_aliases:
-            requested_types.append(type_aliases[icc_config.icc_type])
-        filtered = icc_res.loc[icc_res["Type"].isin(requested_types)]
-        if filtered.empty:
-            logger.debug("ICC type %s not found in results", icc_config.icc_type)
-            return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
-        row = filtered.iloc[0]
+    # Use only complete cases to make the listwise deletion explicit
+    # (rather than relying on Pingouin's silent nan_policy="omit")
+    if incomplete_subjects > 0:
+        complete_subject_ids = subject_counts[subject_counts == n_raters_expected].index
+        df_balanced = df[df["subject"].isin(complete_subject_ids)].copy()
+        if df_balanced["subject"].nunique() < 2:
+            logger.warning("ICC: fewer than 2 complete subjects remain after dropping incomplete cases")
+            return {
+                "icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan,
+                "n_subjects_dropped": int(incomplete_subjects),
+                "n_subjects_complete": int(complete_subjects),
+            }
+    else:
+        df_balanced = df
 
-        result = {
-            "icc": float(row["ICC"]),
-            "n_subjects_dropped": int(incomplete_subjects),
-            "n_subjects_complete": int(complete_subjects),
-        }
+    icc_res = pg.intraclass_corr(
+        data=df_balanced,
+        targets="subject",
+        raters="rater",
+        ratings="value",
+        nan_policy="raise"  # Fail loudly if data is still unbalanced
+    )
 
-        if icc_config.ci:
-            ci_column = "CI95%" if "CI95%" in row.index else "CI95"
-            ci = row[ci_column]
-            result["icc_ci95_low"] = float(ci[0])
-            result["icc_ci95_high"] = float(ci[1])
-        else:
-            result["icc_ci95_low"] = np.nan
-            result["icc_ci95_high"] = np.nan
+    # Pingouin 0.6 renamed the historical ICC1/2/3 labels while retaining
+    # the same Shrout-Fleiss/McGraw-Wong estimands.
+    type_aliases = {
+        "ICC1": "ICC(1,1)",
+        "ICC2": "ICC(A,1)",
+        "ICC3": "ICC(C,1)",
+        "ICC1k": "ICC(1,k)",
+        "ICC2k": "ICC(A,k)",
+        "ICC3k": "ICC(C,k)",
+    }
+    requested_types = [icc_config.icc_type]
+    if icc_config.icc_type in type_aliases:
+        requested_types.append(type_aliases[icc_config.icc_type])
+    filtered = icc_res.loc[icc_res["Type"].isin(requested_types)]
+    if filtered.empty:
+        raise ValueError(
+            f"Requested ICC type {icc_config.icc_type!r} not found in Pingouin results: "
+            f"{list(icc_res['Type'])}"
+        )
+    row = filtered.iloc[0]
 
-        return result
-    except Exception as e:
-        logger.debug("ICC computation failed: %s", e)
-        return {"icc": np.nan, "icc_ci95_low": np.nan, "icc_ci95_high": np.nan}
+    result = {
+        "icc": float(row["ICC"]),
+        "n_subjects_dropped": int(incomplete_subjects),
+        "n_subjects_complete": int(complete_subjects),
+    }
+
+    if icc_config.ci:
+        ci_column = "CI95%" if "CI95%" in row.index else "CI95"
+        ci = row[ci_column]
+        result["icc_ci95_low"] = float(ci[0])
+        result["icc_ci95_high"] = float(ci[1])
+    else:
+        result["icc_ci95_low"] = np.nan
+        result["icc_ci95_high"] = np.nan
+
+    return result
 
 
 def compute_cov(values: np.ndarray) -> float:

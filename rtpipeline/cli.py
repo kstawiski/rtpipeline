@@ -2096,6 +2096,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         radiomics_min_voxels=args.radiomics_min_voxels,
         radiomics_env_probe_timeout=args.radiomics_env_probe_timeout,
+        radiomics_sequential=bool(args.sequential_radiomics),
         custom_structures_config=None,  # Will be set below
         task_timeout=args.task_timeout,
     )
@@ -2149,6 +2150,88 @@ def main(argv: list[str] | None = None) -> int:
             except (TypeError, ValueError) as exc:
                 raise ConfigValidationError(f"rtsegmentator: {exc}") from exc
             radiomics_yaml = yaml_config.get("radiomics", {}) or {}
+            if not isinstance(radiomics_yaml, dict):
+                raise ConfigValidationError(
+                    f"radiomics must be a mapping, not {type(radiomics_yaml).__name__}"
+                )
+            cfg_base_dir = config_file_path.parent.resolve(strict=False)
+
+            def _resolve_radiomics_yaml_path(raw_value: Any) -> Path | None:
+                if not raw_value:
+                    return None
+                candidate = Path(str(raw_value))
+                if not candidate.is_absolute():
+                    candidate = (cfg_base_dir / candidate).resolve()
+                return candidate
+
+            def _coerce_radiomics_int(raw_value: Any, field_name: str) -> int | None:
+                if raw_value is None:
+                    return None
+                try:
+                    return int(raw_value)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigValidationError(
+                        f"{field_name} must be an integer, got {raw_value!r}"
+                    ) from exc
+
+            if cfg.radiomics_params_file is None and radiomics_yaml.get("params_file"):
+                cfg.radiomics_params_file = _resolve_radiomics_yaml_path(
+                    radiomics_yaml.get("params_file")
+                )
+            if cfg.radiomics_params_file_mr is None and radiomics_yaml.get("mr_params_file"):
+                cfg.radiomics_params_file_mr = _resolve_radiomics_yaml_path(
+                    radiomics_yaml.get("mr_params_file")
+                )
+            if cfg.radiomics_min_voxels is None and radiomics_yaml.get("min_voxels") is not None:
+                cfg.radiomics_min_voxels = _coerce_radiomics_int(
+                    radiomics_yaml.get("min_voxels"), "radiomics.min_voxels"
+                )
+            if cfg.radiomics_max_voxels is None and radiomics_yaml.get("max_voxels") is not None:
+                cfg.radiomics_max_voxels = _coerce_radiomics_int(
+                    radiomics_yaml.get("max_voxels"), "radiomics.max_voxels"
+                )
+            if (
+                cfg.radiomics_max_resampled_bbox_voxels is None
+                and radiomics_yaml.get("max_resampled_bbox_voxels") is not None
+            ):
+                cfg.radiomics_max_resampled_bbox_voxels = _coerce_radiomics_int(
+                    radiomics_yaml.get("max_resampled_bbox_voxels"),
+                    "radiomics.max_resampled_bbox_voxels",
+                )
+            if not cfg.radiomics_skip_rois and radiomics_yaml.get("skip_rois"):
+                raw_skip = radiomics_yaml.get("skip_rois")
+                if isinstance(raw_skip, str):
+                    cfg.radiomics_skip_rois = [
+                        item.strip()
+                        for item in raw_skip.replace(";", ",").split(",")
+                        if item.strip()
+                    ]
+                elif isinstance(raw_skip, list):
+                    cfg.radiomics_skip_rois = [
+                        str(item).strip() for item in raw_skip if str(item).strip()
+                    ]
+                else:
+                    raise ConfigValidationError(
+                        f"radiomics.skip_rois must be a string or list, not {type(raw_skip).__name__}"
+                    )
+            if radiomics_yaml.get("sequential") is not None:
+                seq_val = radiomics_yaml.get("sequential")
+                if not isinstance(seq_val, bool):
+                    raise ConfigValidationError(
+                        f"radiomics.sequential must be a boolean, not {type(seq_val).__name__}"
+                    )
+                cfg.radiomics_sequential = bool(args.sequential_radiomics or seq_val)
+            if (
+                cfg.radiomics_env_probe_timeout is None
+                and radiomics_yaml.get("env_probe_timeout") is not None
+            ):
+                cfg.radiomics_env_probe_timeout = _coerce_radiomics_int(
+                    radiomics_yaml.get("env_probe_timeout"),
+                    "radiomics.env_probe_timeout",
+                )
+                os.environ["RTPIPELINE_RADIOMICS_ENV_PROBE_TIMEOUT"] = str(
+                    cfg.radiomics_env_probe_timeout
+                )
             cfg.radiomics_analysis_contract = (
                 radiomics_yaml.get("analysis_contract")
                 or yaml_config.get("radiomics_analysis_contract")
@@ -2808,9 +2891,14 @@ def main(argv: list[str] | None = None) -> int:
     if "radiomics" in stages:
         import os
 
-        if args.sequential_radiomics:
+        if args.sequential_radiomics or getattr(cfg, "radiomics_sequential", False):
             os.environ['RTPIPELINE_RADIOMICS_SEQUENTIAL'] = '1'
-            logger.info("Using sequential radiomics processing (--sequential-radiomics specified)")
+            logger.info(
+                "Using sequential radiomics processing (%s)",
+                "--sequential-radiomics specified"
+                if args.sequential_radiomics
+                else "radiomics.sequential config",
+            )
         else:
             try:
                 from .radiomics_parallel import enable_parallel_radiomics_processing

@@ -583,8 +583,9 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
             return Path(candidate)
         # Copy packaged file to logs_root for stable path
         packaged = importlib_resources.files('rtpipeline').joinpath(packaged_name)
+        logs_root = getattr(config, 'logs_root', None) if config is not None else None
         if packaged.is_file():
-            if not (config and config.logs_root):
+            if not logs_root:
                 try:
                     packaged_path = Path(packaged)
                 except TypeError:
@@ -592,8 +593,8 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
                 if packaged_path is not None and packaged_path.is_file():
                     return packaged_path
             target_root = (
-                Path(config.logs_root)
-                if (config and config.logs_root)
+                Path(logs_root)
+                if logs_root
                 else Path(tempfile.gettempdir()) / "rtpipeline-resources"
             )
             target_root.mkdir(parents=True, exist_ok=True)
