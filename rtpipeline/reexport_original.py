@@ -58,6 +58,11 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
         if not same_sources:
             raise ValueError('REEXPORT_COURSE_IDENTITY_MISMATCH: inputs differ from the output course contract')
         rtstruct, ct_series, reference_nifti = contracted_rs, contracted_ct, contracted_nifti
+        provenance = contract.planning_ct.get('nifti_provenance')
+        contract_sidecar = contract.resolve_path(
+            provenance.get('sidecar_path') if isinstance(provenance, dict) else None,
+            'planning_ct.nifti_provenance.sidecar_path',
+        )
 
     builder = RTStructBuilder.create_from(str(ct_series), str(rtstruct))
     rtstruct_roi_entries(builder)
@@ -68,7 +73,9 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     # unrelated reference before touching an existing export.
     rtstruct_mask_to_image(np.zeros(shape, dtype=bool), builder.series_data, reference)
     target = output_root / 'Segmentation_Original' / _strip_nifti_base(reference_nifti)
-    sidecar = None
+    # A contracted course binds the NIfTI provenance sidecar it validated, which
+    # need not sit beside the NIfTI.
+    sidecar = contract_sidecar if contract is not None else None
     if contract is None:
         metadata = {
             **ct_metadata,

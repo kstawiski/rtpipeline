@@ -10,6 +10,7 @@ def rows(p):return list(csv.DictReader(p.open()))
 a=rows(old/'metrics_long.csv');b=rows(out/'legacy/metrics_long.csv')
 key=lambda r:(r['case'],r['tool'],r['metric'])
 ma={key(r):r for r in a};mb={key(r):r for r in b}
+unique_rows=len(ma)==len(a) and len(mb)==len(b)
 fields=['value','analytic','abs_err','rel_err','signed_err','status','rel_err_status','shape','volume_cc','phase','dose_mm','ct_mm','field']
 num=set(['value','analytic','abs_err','rel_err','signed_err','volume_cc','dose_mm','ct_mm'])
 diffs=[]
@@ -25,5 +26,6 @@ with p.open('w') as h:
 input_old=json.loads((old/'input_sha256.json').read_text());input_new=json.loads((out/'legacy/input_sha256.json').read_text())
 km=lambda r:(r['group'],r['path'])
 ha={km(r):(r['sha256'],r['bytes']) for r in input_old};hb={km(r):(r['sha256'],r['bytes']) for r in input_new}
-report=dict(old_rows=len(a),new_rows=len(b),old_cases=len({r['case'] for r in a}),new_cases=len({r['case'] for r in b}),compared_fields=fields,differences=len(diffs),input_files_old=len(ha),input_files_new=len(hb),input_hashes_identical=ha==hb,passed=not diffs and set(ma)==set(mb) and ha==hb)
+unique_inputs=len(ha)==len(input_old) and len(hb)==len(input_new)
+report=dict(old_rows=len(a),new_rows=len(b),old_cases=len({r['case'] for r in a}),new_cases=len({r['case'] for r in b}),compared_fields=fields,differences=len(diffs),input_files_old=len(ha),input_files_new=len(hb),input_hashes_identical=ha==hb,unique_metric_keys=unique_rows,unique_input_keys=unique_inputs,passed=not diffs and set(ma)==set(mb) and ha==hb and unique_rows and unique_inputs)
 (out/'legacy_comparison.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report));raise SystemExit(not report['passed'])

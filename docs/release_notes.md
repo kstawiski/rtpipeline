@@ -50,7 +50,8 @@ earlier 3.0 releases, because the code that produces them has changed.
   disjoint, and composite interpolation requires support from every component grid.
 - The authoritative RTDOSE and every selected RTDOSE must be physical dose in Gy.
 - Re-export of original masks into a contracted course requires the contracted
-  RTSTRUCT and planning CT.
+  RTSTRUCT and planning CT, and binds the NIfTI provenance sidecar the contract
+  validated, wherever it is stored.
 
 ### ROI identity
 

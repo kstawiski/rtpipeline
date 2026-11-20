@@ -356,6 +356,37 @@ def test_c13_explicit_legacy_sidecar_cannot_override_a_course_contract(tmp_path,
         require_current_original_mask(mask)
 
 
+def test_c13_contracted_reexport_binds_the_contract_nifti_sidecar(tmp_path, source, monkeypatch):
+    # PR 57 review: a contracted course's validated NIfTI sidecar need not sit beside the NIfTI,
+    # and re-export must pass that sidecar to the exporter.
+    from rtpipeline import reexport_original as module
+
+    ct, rs, ref, *_ = source
+    course = tmp_path / "course"
+    (course / "metadata").mkdir(parents=True)
+    (course / "metadata/case_metadata.json").write_text(json.dumps({"course_contract": {}}))
+    elsewhere = course / "metadata/planning_ct_nifti_sidecar.json"
+    contract = SimpleNamespace(
+        authoritative_rtstruct_path=rs, planning_ct_dir=ct, planning_ct_nifti=ref,
+        planning_ct={"nifti_provenance": {"sidecar_path": "metadata/planning_ct_nifti_sidecar.json"}},
+        resolve_path=lambda value, field, **kwargs: course / value,
+    )
+    seen = {}
+
+    def exporter(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    from rtpipeline import course_contract
+
+    monkeypatch.setattr(course_contract, "load_course_contract", lambda root: contract)
+    monkeypatch.setattr(organize, "_export_original_segmentation_from_paths", exporter)
+    with pytest.raises(ValueError, match="REEXPORT_NO_MASKS"):
+        module.reexport_original(rtstruct=rs, ct_series=ct, reference_nifti=ref, output_root=course)
+    assert seen["nifti_sidecar_path"] == elsewhere
+    assert seen["primary_nifti"] == ref and seen["rs_path"] == rs
+
+
 def test_c14_refused_only_table_is_a_nonmeasurement_in_receipt_qc_and_aggregate(tmp_path):
     from test_dvh_rotation import analytic_dose
 

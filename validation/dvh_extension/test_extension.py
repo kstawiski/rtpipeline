@@ -812,3 +812,33 @@ def test_verify_extension_checks_curve_labels_producers_and_raw_columns(tmp_path
 
 
 
+
+
+def test_compare_legacy_refuses_duplicate_metric_or_input_keys(tmp_path):
+    # PR 57 review: duplicate keys must not overwrite evidence and pass.
+    import csv, json, subprocess, sys
+    fields = ['case', 'tool', 'metric', 'value', 'analytic', 'abs_err', 'rel_err', 'signed_err', 'status',
+              'rel_err_status', 'shape', 'volume_cc', 'phase', 'dose_mm', 'ct_mm', 'field']
+    row = dict(case='c1', tool='rtpipeline', metric='DmeanGy', value='20', analytic='20', abs_err='0',
+               rel_err='0', signed_err='0', status='ok', rel_err_status='ok', shape='sphere', volume_cc='1',
+               phase='', dose_mm='1', ct_mm='1', field='uniform')
+    def write(directory, rows, inputs):
+        directory.mkdir(parents=True)
+        with (directory / 'metrics_long.csv').open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields); writer.writeheader(); writer.writerows(rows)
+        (directory / 'input_sha256.json').write_text(json.dumps(inputs))
+    entry = {'group': 'g', 'path': 'a.dcm', 'sha256': '0' * 64, 'bytes': 1}
+    script = Path(__file__).resolve().parent / 'compare_legacy.py'
+    def run(new_rows, new_inputs):
+        ref, res = tmp_path / ('ref%d' % run.n), tmp_path / ('res%d' % run.n)
+        run.n += 1
+        write(ref, [row], [entry]); write(res / 'legacy', new_rows, new_inputs)
+        done = subprocess.run([sys.executable, '-B', str(script), '--reference', str(ref), '--results', str(res)],
+                              capture_output=True, text=True)
+        return done.returncode, json.loads((res / 'legacy_comparison.json').read_text())
+    run.n = 0
+    assert run([row], [entry])[1]['passed'] is True
+    code, report = run([dict(row, value='999'), row], [entry])
+    assert code != 0 and report['passed'] is False and report['unique_metric_keys'] is False
+    code, report = run([row], [dict(entry, sha256='1' * 64), entry])
+    assert code != 0 and report['passed'] is False and report['unique_input_keys'] is False
