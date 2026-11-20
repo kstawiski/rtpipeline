@@ -27,6 +27,7 @@
 - `original_segmentation`, `rtstruct_geometry`, `custom_structures`, `custom_structures_rtstruct`: Apply common name-collision rules and withhold custom structures with ambiguous sources.
 - `radiomics_robustness`, `robustness_watchdog`: Retain worker identity mismatches as technical-failure rows and withhold measured completion.
 - `radiomics_robustness`: Record requested and realized translations and give shifts outside the allowed tolerance a geometric disposition.
+- `radiomics_robustness`: Preserve the requested translation in Parquet for small subvoxel shifts by using fixed-point perturbation identifiers.
 - `radiomics_robustness`: Record clipped contour offsets and unavailable realizations as nonmeasurements, support zero translation and preserve fractional perturbation identifiers.
 - `radiomics_robustness`: Bind planning CT bytes and the upstream CT radiomics publication at production, reuse and aggregation.
 - `radiomics`, `radiomics_robustness`, `cli`: Require matching CT extraction parameters for selected baseline ROIs and robustness measurements. Aggregation checks the configured parameter file, and the default binds the packaged YAML directly.

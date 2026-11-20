@@ -321,8 +321,9 @@ def test_c2_subvoxel_translation_records_a_geometric_disposition():
     assert outcome.evidence["realized_translation_mm"] == [0.0, 0.0, 0.0]
 
 
+@pytest.mark.parametrize("shift", [4.0, 1e-5], ids=["clinical", "subvoxel"])
 def test_c2_published_parquet_and_sidecar_record_requested_and_realized_translation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, shift
 ):
     from rasterizer_test_utils import stub_synthetic_rasterizer_columns
 
@@ -392,7 +393,7 @@ def test_c2_published_parquet_and_sidecar_record_requested_and_realized_translat
             enabled=True,
             perturbation=rr.PerturbationConfig(
                 small_volume_changes=[0.0],
-                max_translation_mm=4.0,
+                max_translation_mm=shift,
                 n_random_contour_realizations=0,
                 noise_levels=[0.0],
                 apply_to_structures=["ROI"],
@@ -402,6 +403,22 @@ def test_c2_published_parquet_and_sidecar_record_requested_and_realized_translat
         df = pd.read_parquet(out_pq)
         sidecar = json.loads(rr.robustness_source_dispositions_path(course).read_text())
         return df, sidecar
+
+    if shift == 1e-5:
+        frame, sidecar = _run_spacing("subvoxel", 5.0)
+        for sign in (1, -1):
+            requested = [0.0, 0.0, sign * shift]
+            evidence = next(e for e in sidecar["translation_realizations"]
+                            if e["requested_translation_mm"] == requested)
+            key = evidence["translation_suffix"]
+            rows = frame.loc[frame["perturbation_id"].eq(f"ntcv{key}_v0")]
+            assert len(rows) == len(CT_EXTRACTION_ARMS)
+            assert rows["reason_code"].eq("translation_not_realizable").all()
+            assert rows["requested_translation_mm"].map(json.loads).tolist() == [requested] * len(rows)
+            assert rows["realized_translation_mm"].map(json.loads).tolist() == [[0., 0., 0.]] * len(rows)
+            assert evidence["realized_translation_mm"] == [0.0, 0.0, 0.0]
+            assert key == ("_t0_0_0p00001" if sign == 1 else "_t0_0_-0p00001")
+        return
 
     df_5mm, sc_5mm = _run_spacing("s5", 5.0)
     t_5mm = {e["translation_suffix"]: e for e in sc_5mm["translation_realizations"]}
@@ -420,6 +437,15 @@ def test_c2_published_parquet_and_sidecar_record_requested_and_realized_translat
     assert (imp_10mm["reason_code"] == "translation_not_realizable").all()
     assert json.loads(imp_10mm.iloc[0]["requested_translation_mm"]) == [0.0, 0.0, 4.0]
     assert json.loads(imp_10mm.iloc[0]["realized_translation_mm"]) == [0.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("value", [-4.0, 0.0, 1.25, -1e-5, 5e-324])
+def test_r3_translation_key_accepts_every_fixed_point_form(value):
+    encoded = rr._format_ntcv_scalar(value)
+    assert "e" not in encoded
+    key = f"_t{encoded}_0_{encoded}"
+    assert rr._ntcv_translation_key_for_pert_id(f"ntcv_n10{key}_c2_v+15") == key
+    assert rr._ntcv_translation_key_for_pert_id("ntcv_t0_0_-1p25e-05_v0") == "_t0_0_-1p25e-05"
 
 
 # ---------------------------------------------------------------------------

@@ -3278,11 +3278,16 @@ def _ntcv_factors(config: PerturbationConfig) -> Tuple[List[float], int, int, Li
 
 
 def _format_ntcv_scalar(value: float) -> str:
-    """Preserve integer IDs and encode each distinct fractional float."""
+    """Encode finite values without exponent notation or loss of precision."""
+    from decimal import Decimal
+
     value = float(value)
     if value.is_integer():
         return str(int(value))
-    return repr(value).replace(".", "p")
+    scalar = Decimal(repr(value))
+    if not scalar.is_finite():
+        raise ValueError("NTCV perturbation values must be finite")
+    return format(scalar, "f").replace(".", "p")
 
 
 def _course_seed_offset(course_seed_key: Optional[str]) -> Tuple[int, ...]:
@@ -3300,7 +3305,8 @@ def _ntcv_translation_key_for_pert_id(pert_id: str) -> str:
     """Extract the translation suffix token from an NTCV or legacy perturbation ID."""
     import re
 
-    match = re.search(r"(_t-?[0-9p]+_-?[0-9p]+_-?[0-9p]+)(?=(?:_c|_v|$))", str(pert_id))
+    number = r"-?[0-9]+(?:p[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+    match = re.search(rf"(_t{number}_{number}_{number})(?=(?:_c|_v|$))", str(pert_id))
     return match.group(1) if match else ""
 
 
