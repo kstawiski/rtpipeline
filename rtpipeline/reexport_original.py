@@ -15,13 +15,13 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     """Validate explicit source identity/grid and write a current owned export.
 
     An old input sidecar is neither trusted nor modified. The output carries a
-    separately derived reference sidecar bound to the explicit CT series and
-    the supplied NIfTI bytes. No source discovery or decryption is performed.
+    separately derived reference sidecar on legacy roots. Contracted roots
+    require the authoritative RTSTRUCT, CT series and NIfTI. No source discovery or decryption is performed.
     """
     import numpy as np
     import SimpleITK as sitk
     from rt_utils import RTStructBuilder
-    from .course_contract import _ct_provenance
+    from .course_contract import _ct_provenance, load_course_contract
     from .nifti_provenance import nifti_geometry
     from .organize import _export_original_segmentation_from_paths, _strip_nifti_base
     from .original_segmentation import require_current_original_export
@@ -38,8 +38,27 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     if any(path.name.endswith('.age') or path.resolve().name.endswith('.age')
            for path in ct_series.rglob('*') if path.is_file()):
         raise ValueError('REEXPORT_SEALED_SOURCE: CT directory contains sealed inputs')
-    require_rtstruct_identity(rtstruct)
+    rtstruct_uid = require_rtstruct_identity(rtstruct)
     ct_metadata = _ct_provenance(ct_series)
+    case_metadata = output_root / 'metadata/case_metadata.json'
+    has_contract = case_metadata.is_file() and "course_contract" in json.loads(case_metadata.read_text())
+    contract = load_course_contract(output_root) if has_contract else None
+    if contract is not None:
+        contracted_rs = contract.authoritative_rtstruct_path
+        contracted_ct = contract.planning_ct_dir
+        contracted_nifti = contract.planning_ct_nifti
+        same_sources = (
+            contracted_rs is not None and contracted_ct is not None and contracted_nifti is not None
+            and rtstruct_uid == require_rtstruct_identity(contracted_rs)
+            and hashlib.sha256(rtstruct.read_bytes()).digest() == hashlib.sha256(contracted_rs.read_bytes()).digest()
+            and ct_metadata == _ct_provenance(contracted_ct)
+            and hashlib.sha256(reference_nifti.read_bytes()).digest()
+            == hashlib.sha256(contracted_nifti.read_bytes()).digest()
+        )
+        if not same_sources:
+            raise ValueError('REEXPORT_COURSE_IDENTITY_MISMATCH: inputs differ from the output course contract')
+        rtstruct, ct_series, reference_nifti = contracted_rs, contracted_ct, contracted_nifti
+
     builder = RTStructBuilder.create_from(str(ct_series), str(rtstruct))
     rtstruct_roi_entries(builder)
     reference = sitk.ReadImage(str(reference_nifti))
@@ -49,19 +68,21 @@ def reexport_original(*, rtstruct: Path, ct_series: Path, reference_nifti: Path,
     # unrelated reference before touching an existing export.
     rtstruct_mask_to_image(np.zeros(shape, dtype=bool), builder.series_data, reference)
     target = output_root / 'Segmentation_Original' / _strip_nifti_base(reference_nifti)
-    metadata = {
-        **ct_metadata,
-        'nifti_geometry': nifti_geometry(reference_nifti),
-        'nifti_sha256': hashlib.sha256(reference_nifti.read_bytes()).hexdigest(),
-        'nifti_path': str(reference_nifti),
-        'source_directory': str(ct_series),
-        'modality': 'CT',
-        'provenance_method': 'explicit-ct-reference-grid-verification',
-    }
-    identity = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
-    sidecar = output_root / 'metadata' / 'original_reexport' / f'{identity}.json'
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    sidecar.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    sidecar = None
+    if contract is None:
+        metadata = {
+            **ct_metadata,
+            'nifti_geometry': nifti_geometry(reference_nifti),
+            'nifti_sha256': hashlib.sha256(reference_nifti.read_bytes()).hexdigest(),
+            'nifti_path': str(reference_nifti),
+            'source_directory': str(ct_series),
+            'modality': 'CT',
+            'provenance_method': 'explicit-ct-reference-grid-verification',
+        }
+        identity = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+        sidecar = output_root / 'metadata' / 'original_reexport' / f'{identity}.json'
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(metadata, indent=2), encoding='utf-8')
     manifest = _export_original_segmentation_from_paths(
         rs_path=rtstruct, primary_nifti=reference_nifti, dicom_ct_dir=ct_series,
         segmentation_original_dir=output_root / 'Segmentation_Original',

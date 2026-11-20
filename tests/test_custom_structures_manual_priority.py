@@ -43,18 +43,19 @@ def test_manual_priority_does_not_block_distinct_auto_roi(tmp_path, tmp_path_fac
 
     def factory(ct_dir, source, *args, **kwargs):
         reader = original_factory(ct_dir, source, *args, **kwargs)
-        original_read = reader.get_roi_mask_by_name
+        original_read = reader.get_roi_mask_by_number
 
-        def read_roi(name):
+        def read_roi(number):
+            name = reader.scopes[number].roi_name
             if Path(source) == auto_path:
                 auto_reads.append(name)
             if Path(source) == course.rs_manual and name == "PTV" and failure:
                 if failure == "exception":
                     raise RuntimeError("synthetic manual reader failure")
-                return np.zeros_like(original_read(name))
-            return original_read(name)
+                return np.zeros_like(original_read(number))
+            return original_read(number)
 
-        reader.get_roi_mask_by_name = read_roi
+        reader.get_roi_mask_by_number = read_roi
         return reader
 
     monkeypatch.setattr(rtstruct_geometry, "create_scoped_rtstruct", factory)

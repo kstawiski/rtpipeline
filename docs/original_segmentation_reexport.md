@@ -15,10 +15,11 @@ rtpipeline re-export-original \
 The command checks that the RTSTRUCT references the supplied CT series and that
 the reference NIfTI has the same physical grid. It then writes the masks,
 `metadata.json` and `provenance.json` to `Segmentation_Original/<reference-stem>/`
-under the output root. Reference provenance derived from the CT series and the
-NIfTI goes to `metadata/original_reexport/` under the output root; an older
-sidecar next to the input NIfTI is left unchanged. The command does not decrypt:
-for sealed `.age` inputs, supply readable plaintext copies.
+under the output root. When the output root has a course contract, the supplied
+RTSTRUCT, CT series and reference NIfTI must match that contract. Otherwise the
+command writes a reference sidecar derived from the supplied CT and NIfTI to
+`metadata/original_reexport/`. It leaves the input sidecar unchanged. For sealed
+`.age` inputs, supply readable plaintext copies.
 
 ## File names
 
@@ -50,10 +51,10 @@ several reference stems, use one output root for each.
 DVH and the original export identify ROIs by number. Radiomics and robustness
 are keyed by ROI name, so they refuse the whole course when any source holds an
 ambiguous ROI name, including the course's unambiguous ROIs, and record the
-colliding ROI numbers and source as `RTSTRUCT_AMBIGUOUS_ROI_NAME`. For custom
-structures, an exact source-name match takes precedence over normalized aliases;
-an alias that matches several sources is refused as
-`CUSTOM_SOURCE_AMBIGUOUS_NAME`.
+colliding ROI numbers and source as `RTSTRUCT_AMBIGUOUS_ROI_NAME`. A custom
+structure with a colliding RTSTRUCT dependency or an alias that matches several
+sources is refused as `CUSTOM_SOURCE_AMBIGUOUS_NAME`. Independent custom
+structures can still use their own source ROIs.
 
 Label-based anchor and Dice-reference globs in the configuration are resolved
 through the manifest. A wildcard label selects every matching numbered mask; a
