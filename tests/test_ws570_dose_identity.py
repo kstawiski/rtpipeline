@@ -503,3 +503,29 @@ def test_a6_rs_custom_keeps_independent_dependencies_when_an_roi_name_collides(t
     metadata = json.loads((tmp_path / "metadata/rs_custom_meta.json").read_text())
     assert metadata["custom_structure_outcomes"]["blocked"]["reason_code"] == "CUSTOM_SOURCE_AMBIGUOUS_NAME"
     assert metadata["custom_structure_outcomes"]["independent"]["status"] == "generated"
+
+
+def test_z_partial_vx_counts_only_the_sampled_hot_volume(tmp_path):
+    course = _course(tmp_path)
+    rs = pydicom.dcmread(course / RS)
+    _set_box(rs, 0, (5, 25), (5, 25), (0, 5, 10, 15))
+    rs.save_as(course / RS, enforce_file_format=True)
+    dose = pydicom.dcmread(course / RD)
+    dose.NumberOfFrames = 2
+    dose.GridFrameOffsetVector = [0, 5]
+    shape = (2, int(dose.Rows), int(dose.Columns))
+    dose.PixelData = np.full(shape, 20. / float(dose.DoseGridScaling), dtype="<u4").tobytes()
+    dose.save_as(course / RD, enforce_file_format=True)
+
+    assert dvh._axial_roi_dvh(rs, dose, 1).volume == pytest.approx(8.)
+    row = _table(course).iloc[0]
+    assert row.dose_grid_coverage_status == "partial_grid"
+    assert row["Volume (cm³)"] == pytest.approx(6.)
+    assert row["covered_Volume (cm³)"] == pytest.approx(4.)
+    for threshold in ("V1Gy", "V100%Rx"):
+        assert pd.isna(row[f"{threshold} (cm³)"])
+        assert pd.isna(row[f"{threshold} (%)"])
+        legacy = row[f"diagnostic_legacy_{threshold} (cm³)"], row[f"diagnostic_legacy_{threshold} (%)"]
+        assert legacy == pytest.approx((4., 50.))
+        assert row[f"covered_{threshold} (cm³)"] == pytest.approx(4.)
+        assert row[f"covered_{threshold} (%)"] == pytest.approx(100.)

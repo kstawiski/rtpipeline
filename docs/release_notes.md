@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Legacy Vx diagnostics for axial ROIs with partial Z coverage count only dose-grid-covered samples at or above the threshold. Their percentage uses the full histogram volume.
 - DVH reuse now checks the bytes of the authoritative RTPLAN, RTDOSE and
   RTSTRUCT, including course-root copies and derived grids, and binds the
   treatment records used to establish course membership.

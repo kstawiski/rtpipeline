@@ -2205,10 +2205,11 @@ def _apply_sample_metrics(metrics, distribution, cumulative, rx_dose, *, collaps
         thresholds.extend((("V95%Rx", .95*rx_dose), ("V100%Rx", rx_dose)))
     positions = np.searchsorted(doses, [threshold for _, threshold in thresholds], side="left")
     for (name, _), index in zip(thresholds, positions):
-        sampled_fraction = (float(sampled_cumulative[index] / sampled_cumulative[0])
-                            if index < len(doses) else 0.)
-        metrics[name + " (cm³)"] = volume * sampled_fraction
-        metrics[name + " (%)"] = sampled_fraction * 100.
+        # Every Vx threshold is positive. The zero-padded volume in a
+        # full-ROI histogram belongs in the denominator alone.
+        hot_volume = min(volume, float(sampled_cumulative[index])) if index < len(doses) else 0.
+        metrics[name + " (cm³)"] = hot_volume
+        metrics[name + " (%)"] = hot_volume / volume * 100.
 
 
 def _compute_metrics(abs_dvh, rx_dose: Optional[float], dose_summary=None) -> Optional[Dict[str, object]]:
