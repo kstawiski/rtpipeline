@@ -304,7 +304,7 @@ def historical_dvh(tmp_path):
 @pytest.mark.parametrize('delivered', [False, True])
 @pytest.mark.parametrize('sidecar', [False, True])
 def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivered, sidecar):
-    """Exact historical output bytes with explicit additive plane-alignment evidence."""
+    """Keep unaffected historical fields and verify the Vx sampling convention."""
     import xlsxwriter.core
     class FixedTime(datetime.datetime):
         @classmethod
@@ -327,20 +327,15 @@ def test_contract_selected_bytes_against_80d5d65(tmp_path, monkeypatch, delivere
         old_frame = reader(BytesIO(old[name]))
         new_frame = reader(BytesIO(new[name]))
         assert set(new_frame.columns) == set(old_frame.columns) | {'dose_plane_alignment', 'D2ccGy', 'D2cc_status',
-                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'}
+                                                                            'dose_grid_coverage_reason', 'dose_grid_coverage_reason_code', 'dose_summary_basis'} | fx.DVH_305_COLUMNS
         fx.assert_d2cc_columns(new_frame)
         assert new_frame.dose_grid_coverage_reason.notna().all()
         assert new_frame.dose_grid_coverage_reason_code.isna().all()
         assert new_frame['dose_plane_alignment'].tolist() == ['EXACT'] * len(new_frame)
-        projected = new_frame.loc[:, old_frame.columns]
-        pd.testing.assert_frame_equal(projected, old_frame, check_dtype=True,
-                                      check_exact=True, check_like=False)
-        buffer = BytesIO()
-        if name.endswith('.parquet'):
-            projected.to_parquet(buffer, index=False)
-        else:
-            projected.to_excel(buffer, index=False)
-        assert old[name] == buffer.getvalue(), name
+        columns = [column for column in old_frame.columns if not fx.dvh_305_changes_metric(column)]
+        pd.testing.assert_frame_equal(new_frame.loc[:, columns], old_frame.loc[:, columns],
+                                      check_dtype=True, check_exact=True, check_like=False)
+        fx.assert_exact_vx_two_level_fixture(new_frame)
     curves = json.loads(new['dvh_curves.json'])
     for curve in curves['points']:
         assert curve.pop('dose_plane_alignment') == 'EXACT'

@@ -145,7 +145,8 @@ def test_dvh_cache_rejects_changed_component_bytes(tmp_path, monkeypatch):
         'structure_provenance_status', 'zero_dose_status', 'zero_dose_trigger_metric',
         'Dose_Plan_Scope_Status', 'Course_Treatment_Isocenter_Status',
         'Course_Treatment_Isocenter_Count', 'Course_Target_Dose_Coverage_Status']}
-    row.update(structure_provenance_type='DERIVED_NIFTI_MASK',
+    row.update(DmeanGy=1., row_status='computed',
+               structure_provenance_type='DERIVED_NIFTI_MASK',
                structure_provenance_path=str(closure),
                structure_provenance_sha256=sha256_file(closure))
     parquet = tmp_path / 'dvh_metrics.parquet'
