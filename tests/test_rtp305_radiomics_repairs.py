@@ -131,6 +131,9 @@ def test_a2_cli_stage_radiomics_carries_yaml_settings(tmp_path, monkeypatch):
         "run_radiomics",
         lambda config, *_a, **_k: seen.setdefault("config", config),
     )
+    # The test checks configuration propagation; it must not depend on a radiomics
+    # environment being installed on the test host (the minimum-Python suite has none).
+    monkeypatch.setattr(rad_mod, "_have_pyradiomics", lambda: True)
 
     monkeypatch.setenv("RTPIPELINE_CONFIGFILE", str(cfg_path))
     monkeypatch.setenv("RTPIPELINE_RADIOMICS_SEQUENTIAL", "")
