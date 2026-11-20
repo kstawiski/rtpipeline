@@ -814,8 +814,11 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
     native_voxel_mm3 = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
     physical_volume_mm3 = float(voxel_count) * max(1e-9, native_voxel_mm3)
     try:
-        resampled = ext.settings.get("resampledPixelSpacing") or spacing
-        resampled = tuple(float(x) for x in resampled)
+        from .radiomics import _resolve_resampled_spacing_xyz
+
+        resampled = _resolve_resampled_spacing_xyz(
+            ext.settings.get("resampledPixelSpacing"), spacing
+        )
     except Exception:
         resampled = spacing
     try:
@@ -2289,12 +2292,14 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
     from .radiomics_ct_contract import RoiClassDecision, extract_ct_roi_arms
 
     def _factory():
-        candidate = (
-            featureextractor.RadiomicsFeatureExtractor(params_file)
-            if params_file
-            else featureextractor.RadiomicsFeatureExtractor()
-        )
+        from .radiomics import build_ct_extractor_from_params
         from .robustness_watchdog import observed_extractor
+
+        candidate = build_ct_extractor_from_params(
+            params_file,
+            modality="CT",
+            featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
+        )
         return observed_extractor(candidate)
 
     try:

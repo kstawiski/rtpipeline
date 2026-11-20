@@ -690,6 +690,89 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
     return None
 
 
+def _resolve_resampled_spacing_xyz(
+    raw_spacing: Any,
+    native_spacing_xyz: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    if not raw_spacing:
+        return native_spacing_xyz
+    values = tuple(float(value) for value in raw_spacing)
+    if len(values) != 3:
+        return native_spacing_xyz
+    return tuple(
+        native_spacing_xyz[idx] if value == 0 else value
+        for idx, value in enumerate(values)
+    )
+
+
+def build_ct_extractor_from_params(
+    params_file: Optional[str | Path] = None,
+    *,
+    modality: str = "CT",
+    normalize_override: Optional[bool] = None,
+    featureextractor_cls: Any = None,
+) -> Any:
+    """Shared extractor builder supporting native PyRadiomics and optional IBSI CT preprocessing.
+
+    When ``params_file`` contains a top-level ``radiomics:`` mapping, it is
+    validated via ``ibsi_preprocessing.preprocessing_options`` and stripped
+    before PyRadiomics parses the remaining sections, preventing PyKwalify
+    ``SchemaError`` and building ``IBSIFeatureExtractor`` when enabled.
+    """
+    import numpy as np
+
+    if featureextractor_cls is None:
+        from radiomics.featureextractor import RadiomicsFeatureExtractor as featureextractor_cls
+
+    path_obj: Optional[Path] = None
+    if params_file not in (None, ""):
+        path_obj = Path(params_file)
+    if path_obj is not None and path_obj.is_file():
+        params_dict = _load_radiomics_params_dict(path_obj)
+        from .ibsi_preprocessing import preprocessing_options
+
+        explicit_radiomics = bool(params_dict and "radiomics" in params_dict)
+        preprocessing = preprocessing_options(params_dict or {})
+        if preprocessing:
+            if (modality or "CT").upper() != "CT":
+                raise ValueError("radiomics.preprocessing: ibsi is available for CT only")
+            numpy_version = tuple(map(int, np.__version__.split(".")[:2]))
+            if numpy_version[0] >= 2:
+                raise ValueError(
+                    "IBSI preprocessing requires the native CT extractor in a "
+                    "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
+                )
+            from .ibsi_preprocessing import extractor_class
+
+            ext = extractor_class()()
+            if params_dict is not None:
+                _apply_params_to_extractor(ext, params_dict)
+            ext.settings.update(preprocessing)
+        elif explicit_radiomics and params_dict is not None:
+            ext = featureextractor_cls()
+            _apply_params_to_extractor(ext, params_dict)
+        else:
+            ext = featureextractor_cls(str(path_obj))
+    elif path_obj is not None:
+        ext = featureextractor_cls(str(params_file))
+    else:
+        ext = featureextractor_cls()
+
+    if (modality or "CT").upper() == "MR":
+        try:
+            ext.settings["binCount"] = 64
+            if "binWidth" in ext.settings:
+                del ext.settings["binWidth"]
+        except Exception:
+            pass
+        if normalize_override is not None:
+            try:
+                ext.settings["normalize"] = bool(normalize_override)
+            except Exception:
+                pass
+    return ext
+
+
 def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override: Optional[bool] = None) -> Optional["featureextractor.RadiomicsFeatureExtractor"]:
     # Check NumPy version to decide which approach to use
     import numpy as np
@@ -725,46 +808,15 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
 
         pfile = _get_params_file(config, modality)
-        params_dict: Optional[Dict[str, Any]] = None
         if pfile is not None:
             params_dict = _load_radiomics_params_dict(pfile)
-
-        from .ibsi_preprocessing import preprocessing_options
-        explicit_preprocessing = bool(params_dict and params_dict.get('radiomics'))
-        preprocessing = preprocessing_options(params_dict or {})
-        if preprocessing:
-            if modality.upper() != 'CT':
-                raise ValueError("radiomics.preprocessing: ibsi is available for CT only")
-            from .ibsi_preprocessing import extractor_class
-            ext = extractor_class()()
-        else:
-            ext = RadiomicsFeatureExtractor()
-
-        if params_dict is not None:
-            _apply_params_to_extractor(ext, params_dict)
-        elif pfile is not None:
-            # Fallback to the library parser if caching fails for any reason
-            ext.loadParams(str(pfile))
-
-        if preprocessing:
-            ext.settings.update(preprocessing)
-
-        # Adjust per-modality recommendations
-        if modality.upper() == 'MR':
-            # Prefer binCount=64 for MRI; toggle normalization based on detected weighting
-            try:
-                ext.settings['binCount'] = 64
-                if 'binWidth' in ext.settings:
-                    del ext.settings['binWidth']
-            except Exception:
-                pass
-            if normalize_override is not None:
-                try:
-                    ext.settings['normalize'] = bool(normalize_override)
-                except Exception:
-                    pass
-
-        return ext
+            explicit_preprocessing = bool(params_dict and params_dict.get('radiomics'))
+        return build_ct_extractor_from_params(
+            pfile,
+            modality=modality,
+            normalize_override=normalize_override,
+            featureextractor_cls=RadiomicsFeatureExtractor,
+        )
     except Exception as e:
         if explicit_preprocessing:
             raise
@@ -2806,11 +2858,8 @@ def radiomics_for_course(
             except Exception:
                 spacing = (1.0, 1.0, 1.0)
             try:
-                resampled_spacing = tuple(
-                    float(value)
-                    for value in (
-                        extractor.settings.get("resampledPixelSpacing") or spacing
-                    )
+                resampled_spacing = _resolve_resampled_spacing_xyz(
+                    extractor.settings.get("resampledPixelSpacing"), spacing
                 )
             except Exception:
                 resampled_spacing = spacing

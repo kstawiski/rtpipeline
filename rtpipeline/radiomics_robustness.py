@@ -4004,11 +4004,13 @@ def _extract_features_for_masks_uncached(
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
             from radiomics import featureextractor
+            from .radiomics import build_ct_extractor_from_params
 
             def _factory():
-                return (
-                    featureextractor.RadiomicsFeatureExtractor(str(params_path))
-                    if params_path else featureextractor.RadiomicsFeatureExtractor()
+                return build_ct_extractor_from_params(
+                    params_path,
+                    modality="CT",
+                    featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
                 )
 
             for perturbation_id, mask in masks.items():

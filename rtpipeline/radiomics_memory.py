@@ -134,9 +134,13 @@ def preflight_metadata(estimate, mask, *, native_spacing_xyz, array_axis_to_xyz,
     image_types = image_types or {'Original': {}, 'LoG': {}, 'Wavelet': {}}
     if not _profile(settings, image_types):
         return None
-    target = settings.get('resampledPixelSpacing') or native_spacing_xyz
-    if len(target) != 3 or any(not math.isfinite(float(v)) or float(v) <= 0 for v in target):
+    raw_target = settings.get('resampledPixelSpacing') or native_spacing_xyz
+    if len(raw_target) != 3 or any(not math.isfinite(float(v)) or float(v) < 0 for v in raw_target):
         return None
+    target = tuple(
+        float(native_spacing_xyz[idx]) if float(v) == 0 else float(v)
+        for idx, v in enumerate(raw_target)
+    )
     # The legacy formula can undercount a floor/ceil boundary by two cells.
     b = math.prod(int(x)+2 for x in estimate.estimated_resampled_bbox_shape)
     replication = math.prod(math.ceil(float(a)/float(t)) for a,t in zip(native_spacing_xyz,target))

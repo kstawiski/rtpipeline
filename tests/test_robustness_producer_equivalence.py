@@ -42,7 +42,8 @@ def main_producer(tmp_path, monkeypatch):
             '072b146', f'rtpipeline/{relative}', cwd=Path(__file__).resolve().parents[1],
         ))
         if relative not in {"radiomics_robustness.py", "robustness_completion.py", "config.py", "custom_structures_rtstruct.py",
-                            "radiomics.py", "radiomics_parallel.py", "radiomics_conda.py", "radiomics_ct_contract.py"}:
+                            "radiomics.py", "radiomics_parallel.py", "radiomics_conda.py", "radiomics_ct_contract.py",
+                            "radiomics_robustness_outcomes.py"}:
             # Preserve byte checks on unchanged historical helpers. Phase B/C
             # changed the listed producers to bind durable item publications;
             # their scientific equivalence has dedicated production proofs.

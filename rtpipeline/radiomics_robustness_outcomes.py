@@ -88,7 +88,9 @@ def extraction_nonmeasurement(image, mask, factory):
     if native_count == 0:
         return GeometricNonmeasurement("empty_perturbed_mask", {"native_voxels": 0})
     _, loaded_mask = extractor.loadImage(image, mask, None, **settings)
-    binary = sitk.GetArrayFromImage(loaded_mask) == int(settings.get("label", 1))
+    ibsi = settings.get("rtpipelinePreprocessing") == "ibsi"
+    mask_label = 1 if ibsi else int(settings.get("label", 1))
+    binary = sitk.GetArrayFromImage(loaded_mask) == mask_label
     count = int(binary.sum())
     coords = np.where(binary)
     dimensions = sum(int(axis.max()) > int(axis.min()) for axis in coords) if count else 0

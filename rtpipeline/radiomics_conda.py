@@ -981,10 +981,15 @@ def resolve_ct_params_file(params_or_config: Any = None) -> str:
 def make_extractor(params_file: Any = None, large_roi: bool = False):
     """Build a CT PyRadiomics extractor from params_file or packaged defaults."""
     from radiomics import featureextractor
+    from .radiomics import build_ct_extractor_from_params
 
     resolved = resolve_ct_params_file(params_file)
     # large_roi is retained for compatibility, not as a method override.
-    return featureextractor.RadiomicsFeatureExtractor(resolved)
+    return build_ct_extractor_from_params(
+        resolved,
+        modality="CT",
+        featureextractor_cls=featureextractor.RadiomicsFeatureExtractor,
+    )
 
 
 @lru_cache(maxsize=64)
