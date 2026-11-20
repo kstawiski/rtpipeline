@@ -1,5 +1,6 @@
 {
   "rtstruct_geometry.py": "95ad682fdab43e27455aa4bc1f36bae4a8cd7ac23f1e793fb943450c3063a42c",
   "custom_structures.py": "e92c1dc7a8d62f5983c1c18eb1ea5b699cd1897b15df600ca1f942cda8ae5a1a",
-  "original_segmentation.py": "2b2e018b101edf36733dcc42d9822fa36df2af490645da362c58d362be2d15e1"
+  "original_segmentation.py": "2b2e018b101edf36733dcc42d9822fa36df2af490645da362c58d362be2d15e1",
+  "course_contract.py": "f3a6005f954234233da201f9d5d1380f1bc46496bca39bf8e495cb715bb22665"
 }
