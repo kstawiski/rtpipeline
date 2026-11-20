@@ -1,14 +1,12 @@
 cff-version: 1.2.0
 message: >-
-  RTpipeline 3.0.4 is a published release. Cite it by version and by the DOI
-  archived for the v3.0.4 tag. When the bytes you ran differ from the tag, also
-  report the immutable git commit or container digest. Cite TotalSegmentator,
-  PyRadiomics and, for imported structures, RTsegmentator and each segmentation
-  model as well.
+  RTpipeline 3.0.5 is an unreleased release candidate. Cite this version
+  with the immutable git commit or container digest you used. Also cite
+  TotalSegmentator, PyRadiomics and, for imported structures, RTsegmentator
+  and each segmentation model.
 title: "RTpipeline: Automated Radiotherapy DICOM Processing Pipeline"
 type: software
-version: 3.0.4
-date-released: 2026-11-17
+version: 3.0.5
 license: MIT
 authors:
 - family-names: Stawiski
@@ -37,7 +35,7 @@ preferred-citation:
   - family-names: Stawiski
     given-names: Konrad
   title: 'RTpipeline: Automated Radiotherapy DICOM Processing Pipeline'
-  version: 3.0.4
+  version: 3.0.5
   year: 2026
   repository-code: https://github.com/kstawiski/rtpipeline
   url: https://github.com/kstawiski/rtpipeline

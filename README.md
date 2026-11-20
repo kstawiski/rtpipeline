@@ -215,16 +215,16 @@ Shared configs and versioned artifacts make consistent local processing operatio
 If you use RTpipeline in your research, cite the software itself:
 
 ```bibtex
-@software{rtpipeline_3_0_0,
+@software{rtpipeline_3_0_5,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
-  version = {3.0.4},
+  version = {3.0.5},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
 ```
 
-Add the DOI archived for the `v3.0.4` release. `CITATION.cff` carries the machine-readable metadata, and GitHub's "Cite this repository" formats it. When the bytes you ran differ from the release tag, also report the immutable git commit or container digest.
+Add the archived DOI for a published release. `CITATION.cff` carries the machine-readable metadata, and GitHub's "Cite this repository" formats it. When the bytes you ran differ from the release tag, also report the immutable git commit or container digest.
 
 Also cite the underlying tools:
 - **TotalSegmentator:** Wasserthal et al., *Radiology: AI* (2023)

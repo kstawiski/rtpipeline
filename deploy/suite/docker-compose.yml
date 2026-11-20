@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
 
   rtpipeline:
-    image: kstawiski/rtpipeline:3.0.4
+    image: kstawiski/rtpipeline:3.0.5
     user: "1000:1000"
     # The Web UI and Snakemake live in the image's base environment (/opt/conda).
     working_dir: /app/webui

@@ -208,18 +208,18 @@ conda env export --no-builds > rtpipeline-radiomics-environment.yml
 
 ### Docker for Complete Reproducibility
 
-For maximum reproducibility, use the Docker image with a specific version tag and record its digest.
+Use the Docker image with a specific version tag and record its digest once the image is available.
 
 ```bash
 # Use a specific version, not :latest
-docker pull kstawiski/rtpipeline:3.0.4
+docker pull kstawiski/rtpipeline:3.0.5
 
 # Record the image digest
-docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.4
+docker inspect --format='{{.RepoDigests}}' kstawiski/rtpipeline:3.0.5
 ```
 
 Document in your methods:
-> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.4 (SHA256: abc123...)."
+> "All preprocessing was performed using RTpipeline Docker image kstawiski/rtpipeline:3.0.5 (SHA256: abc123...)."
 
 Also record whether radiomics and robustness were executed through the default dual-environment setup (`rtpipeline` + `rtpipeline-radiomics`) or a custom local installation. When structures come from RTsegmentator, keep each course's `Segmentation_CustomModels/rtseg_<model>/manifest.json` and report the RTsegmentator version, task names and model references it records.
 

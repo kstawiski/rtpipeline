@@ -1,14 +1,14 @@
 # Citing RTpipeline
 
-Cite the RTpipeline version you used and the DOI archived for its release tag.
+Cite the RTpipeline version you used and its archived release DOI when available.
 [`CITATION.cff`](https://github.com/kstawiski/rtpipeline/blob/main/CITATION.cff) holds
 the machine-readable metadata; GitHub's "Cite this repository" button formats it.
 
 ```bibtex
-@software{rtpipeline_3_0_0,
+@software{rtpipeline_3_0_5,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
-  version = {3.0.4},
+  version = {3.0.5},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }
