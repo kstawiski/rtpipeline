@@ -63,8 +63,11 @@ def _serial_reference(image, array, perturbation, config, course, identity, temp
     from rtpipeline.radiomics import _mask_from_array_like
 
     mask_img = _mask_from_array_like(image, array)
+    translation_realizations = {}
     masks, images = rr.generate_ntcv_perturbations(
-        mask_img, image, perturbation, "urinary_bladder", _noise_cache={})
+        mask_img, image, perturbation, "urinary_bladder", _noise_cache={},
+        _translation_realizations=translation_realizations,
+    )
     ids = list(masks)
     nonmeasurements = [(k, v) for k, v in masks.items() if isinstance(v, rr.GeometricNonmeasurement)]
     cache = {"images": {}}
@@ -76,7 +79,12 @@ def _serial_reference(image, array, perturbation, config, course, identity, temp
             images[key], mask, config, "AutoRTS_total", "urinary_bladder", course, temp, False,
             "synthetic-run", dict(identity, roi_original_name="urinary_bladder"), _cache=cache)
         tasks.append((key, task_file, params))
-    return {"perturbation_ids": ids, "nonmeasurements": nonmeasurements, "tasks": tasks}
+    return {
+        "perturbation_ids": ids,
+        "translation_realizations": translation_realizations,
+        "nonmeasurements": nonmeasurements,
+        "tasks": tasks,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +127,10 @@ def test_legacy_volume_only_grid_equals_the_serial_loop(tmp_path):
         masks = rr.generate_perturbed_masks(_mask_from_array_like(image, array),
                                             perturbation.small_volume_changes, "urinary_bladder")
         assert result["perturbation_ids"] == list(masks)
+        assert result["translation_realizations"] == {
+            "": {"requested_translation_mm": [0.0, 0.0, 0.0],
+                 "realized_translation_mm": [0.0, 0.0, 0.0]},
+        }
         cache = {"images": {}}
         expected = [
             (key, *rp._prepare_radiomics_task(
