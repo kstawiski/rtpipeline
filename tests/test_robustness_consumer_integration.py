@@ -962,7 +962,7 @@ def test_a_source_that_is_gone_fails_the_cohort(tmp_path, monkeypatch, caplog):
     output, raw = _summary_paths(tmp_path)
 
     assert _run_aggregate(cohort, manifest, output) == 1
-    _assert_failed_for(caplog, "no longer readable")
+    _assert_failed_for(caplog, "authoritative_rtstruct.path points to a missing file", "RS.dcm")
     _assert_no_nominal_outputs(output, raw)
 
 
