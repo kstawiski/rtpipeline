@@ -419,6 +419,31 @@ def test_classifier_sums_same_plan_beam_doses_when_no_plan_dose_exists(tmp_path)
     beam_1 = _mk_dose(tmp_path / "001_BEAM.dcm", generate_uid(), plan_uid, "BEAM")
     beam_2 = _mk_dose(tmp_path / "002_BEAM.dcm", generate_uid(), plan_uid, "BEAM")
 
+    dataset = pydicom.dcmread(plan)
+    fraction_group = dataset.FractionGroupSequence[0]
+    fraction_group.NumberOfBeams = 2
+    original = fraction_group.ReferencedBeamSequence[0]
+    original.BeamDose = float(original.BeamDose) / 2
+    reference = Dataset()
+    reference.ReferencedBeamNumber = 2
+    reference.BeamDose = original.BeamDose
+    reference.BeamDoseType = "PHYSICAL"
+    fraction_group.ReferencedBeamSequence.append(reference)
+    beam = Dataset()
+    beam.BeamNumber = 2
+    beam.TreatmentDeliveryType = "TREATMENT"
+    dataset.BeamSequence.append(beam)
+    dataset.save_as(plan, enforce_file_format=True)
+    for number, path in enumerate((beam_1, beam_2), start=1):
+        dose = pydicom.dcmread(path)
+        group = Dataset()
+        group.ReferencedFractionGroupNumber = int(fraction_group.FractionGroupNumber)
+        beam_ref = Dataset()
+        beam_ref.ReferencedBeamNumber = number
+        group.ReferencedBeamSequence = Sequence([beam_ref])
+        dose.ReferencedRTPlanSequence[0].ReferencedFractionGroupSequence = Sequence([group])
+        dose.save_as(path, enforce_file_format=True)
+
     classified = _classify_doses([plan], [beam_1, beam_2])
 
     assert classified.classification == "beam_doses_summed_to_plan"
