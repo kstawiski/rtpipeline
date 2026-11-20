@@ -21,6 +21,21 @@ def _positive_triplet(values: Iterable[Any], *, label: str) -> tuple[float, floa
     return converted
 
 
+def _resolved_resampled_triplet(
+    values: Iterable[Any],
+    native_spacing_xyz: tuple[float, float, float],
+    *,
+    label: str,
+) -> tuple[float, float, float]:
+    converted = tuple(float(value) for value in values)
+    if len(converted) != 3 or any(not math.isfinite(value) or value < 0 for value in converted):
+        raise ValueError(f"{label} must contain three finite nonnegative values")
+    return tuple(
+        native_spacing_xyz[idx] if value == 0 else value
+        for idx, value in enumerate(converted)
+    )
+
+
 def resolve_max_resampled_bbox_voxels(config: Any) -> int:
     value = getattr(config, "radiomics_max_resampled_bbox_voxels", None)
     if value in (None, ""):
@@ -49,7 +64,9 @@ def configured_grid_settings(
     resampled = (
         native
         if raw_resampled in (None, "", [])
-        else _positive_triplet(raw_resampled, label="resampledPixelSpacing")
+        else _resolved_resampled_triplet(
+            raw_resampled, native, label="resampledPixelSpacing"
+        )
     )
     raw_padding = settings.get("padDistance", DEFAULT_PAD_DISTANCE)
     try:
@@ -109,8 +126,8 @@ def estimate_resampled_bounding_box(
     if sorted(axis_map) != [0, 1, 2]:
         raise ValueError("array_axis_to_xyz must be a permutation of (0, 1, 2)")
     native_xyz = _positive_triplet(native_spacing_xyz, label="native spacing")
-    resampled_xyz = _positive_triplet(
-        resampled_spacing_xyz, label="resampled spacing"
+    resampled_xyz = _resolved_resampled_triplet(
+        resampled_spacing_xyz, native_xyz, label="resampled spacing"
     )
     padding = max(0, int(pad_distance))
     foreground_count = int(foreground.sum())

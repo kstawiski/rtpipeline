@@ -141,6 +141,7 @@ def _course(tmp_path, monkeypatch, *, patient="P1", parallel=False, plan=None):
     monkeypatch.setattr(rm, "_rtstruct_masks", lambda *a, **k: {"GTVm": array})
     monkeypatch.setattr(rm, "_mask_from_array_like", lambda *a: mask)
     monkeypatch.setattr(custom_models, "list_custom_model_outputs", lambda *a: [])
+    monkeypatch.setattr(rm, "_extractor", lambda *a, **k: None)
     monkeypatch.setattr(radiomics_conda, "check_radiomics_env", lambda *a, **k: True)
     monkeypatch.setattr(radiomics_conda, "extract_radiomics_batch_with_conda", fake_conda_batch)
     monkeypatch.setattr(rp, "_isolated_radiomics_extraction_with_retry", fake_parallel_worker)

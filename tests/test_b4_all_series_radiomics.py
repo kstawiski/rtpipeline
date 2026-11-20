@@ -521,15 +521,13 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
         def GetDirection(self):
             return (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-    class _Reader:
-        def GetGDCMSeriesFileNames(self, path):
-            return [str(next(Path(path).glob("*.dcm")))]
+    expected_series_uid = series_uid
 
-        def SetFileNames(self, _files):
-            return None
-
-        def Execute(self):
-            return _Image()
+    def load_contracted_image(dicom_dir, *, series_uid, use_cache):
+        assert Path(dicom_dir).is_dir()
+        assert series_uid == expected_series_uid
+        assert use_cache is False
+        return _Image()
 
     class _RTStruct:
         def get_roi_names(self):
@@ -544,7 +542,7 @@ def test_all_series_parallel_and_conda_emit_one_auto_source(tmp_path, monkeypatc
         )
     )
     monkeypatch.setitem(sys.modules, "rt_utils", fake_rt_utils)
-    monkeypatch.setattr(radconda.sitk, "ImageSeriesReader", _Reader)
+    monkeypatch.setattr(rad, "_load_series_image", load_contracted_image)
     monkeypatch.setattr(radconda.sitk, "WriteImage", lambda *_a, **_k: None)
     monkeypatch.setattr(radconda, "_write_mask_to_file", lambda *_a, **_k: None)
     captured = {}

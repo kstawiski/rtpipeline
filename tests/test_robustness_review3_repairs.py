@@ -53,8 +53,11 @@ def test_new_1_shipped_config_default_pelvic_helper(tmp_path, monkeypatch):
     custom_ds.RTROIObservationsSequence = [r for r in custom_ds.RTROIObservationsSequence if r.ReferencedROINumber in keep]
     custom_ds.save_as(course / "RS_custom.dcm")
     _custom_metadata(course, config.custom_structures_config, contract, monkeypatch)
-    shipped = yaml.safe_load((Path(rr.__file__).parent.parent / "config.yaml").read_text())
+    config_root = Path(rr.__file__).resolve().parents[1]
+    shipped = yaml.safe_load((config_root / "config.yaml").read_text())
     assert "custom_structures" not in shipped
+    for field in ("params_file", "mr_params_file"):
+        shipped["radiomics"][field] = str(config_root / shipped["radiomics"][field])
     shipped["radiomics_robustness"] = {"enabled": True, "segmentation_perturbation": {"apply_to_structures": ["pelvic_bones_3mm"]}}
     cfg = tmp_path / "config.yaml"
     cfg.write_text(yaml.safe_dump(shipped))
@@ -201,12 +204,16 @@ def test_new_4_certificate_unreadable_benign_model(tmp_path, monkeypatch, main_p
     course, config, _, _ = _layout(tmp_path, monkeypatch, "benign_voxel_model")
     (course / "Segmentation_CustomModels/M/colon.nii.gz").write_bytes(b"unreadable synthetic mask")
     before = _main_run(main_producer, course, config, monkeypatch)
-    assert _active_admit(course, None).measured
+    assert rr._compatible_main_measured_code(
+        before[1], rr._current_robustness_code_identity(), course_dir=course,
+    )
+    with pytest.raises(ValueError, match="planning CT source"):
+        _active_admit(course, None)
     after = _produce(rr, rc, course, config)
     pd.testing.assert_frame_equal(_canonical(before)[0], _canonical(after)[0], check_exact=True)
     assert after[1]["tolerated_source_failures"]
     print({"layout": "unreadable_benign_voxel_model", "rows": len(after[0]),
-           "comparison": "equal measurements; tolerated inventory failure recorded", "reuse": True})
+           "comparison": "equal measurements; tolerated inventory failure recorded", "reuse": False})
 
 
 @pytest.mark.parametrize("broken", ["RS.dcm", "RS_auto.dcm", "contract"])
@@ -347,7 +354,8 @@ def test_new_7_positive_custom_certificate_real_staleness(tmp_path, monkeypatch,
     monkeypatch.setattr(auto_rtstruct, "_derived_rtstruct_dependencies_are_current", real_auto_currency)
     kwargs = {"custom_structures_config": config.custom_structures_config} if "custom_structures_config" in inspect.signature(rr._compatible_main_measured_code).parameters else {}
     assert rr._compatible_main_measured_code(result[1], rr._current_robustness_code_identity(), course_dir=course, **kwargs)
-    assert _active_admit(course, config.custom_structures_config).measured
+    with pytest.raises(ValueError, match="planning CT source"):
+        _active_admit(course, config.custom_structures_config)
 
     # The same artifact is refused by the complete archived 4ad1c53 reader.
     from types import ModuleType

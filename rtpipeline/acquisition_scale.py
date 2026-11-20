@@ -23,6 +23,7 @@ cannot be written unless a complete descriptor object is supplied.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
@@ -36,6 +37,204 @@ EXTENDED_HU_MAX = 4000.0
 
 _SCALE_CLASSES = {"standard", "intermediate", "extended", "unknown"}
 _IMAR_PATTERN = re.compile(r"(?<![A-Za-z0-9])i?mar(?![A-Za-z0-9])", re.IGNORECASE)
+_ACCEPTED_HU_UNIT_TOKENS = frozenset(
+    {"HU", "HOUNSFIELD", "HOUNSFIELD UNIT", "HOUNSFIELD UNITS", "[HNSF'U]"}
+)
+
+
+def _rwvm_non_hu_units(dataset: Any) -> Optional[str]:
+    rwvm_seq = getattr(dataset, "RealWorldValueMappingSequence", None)
+    if not rwvm_seq:
+        return None
+    for item in rwvm_seq:
+        units_seq = getattr(item, "MeasurementUnitsCodeSequence", None)
+        if not units_seq:
+            return "unspecified RWVM units"
+        for unit_item in units_seq:
+            code_val = str(getattr(unit_item, "CodeValue", "") or "").strip()
+            code_meaning = str(getattr(unit_item, "CodeMeaning", "") or "").strip()
+            tokens = {t.upper() for t in (code_val, code_meaning) if t}
+            if not tokens or not (tokens & _ACCEPTED_HU_UNIT_TOKENS):
+                return code_val or code_meaning or "unspecified RWVM units"
+    return None
+
+
+def verify_dicom_datasets_hu_units(datasets: Sequence[Any]) -> Dict[str, Any]:
+    """Verify whether a CT DICOM dataset series represents calibrated Hounsfield Units."""
+    if not datasets:
+        return {
+            "hu_verified": False,
+            "status": "unverifiable_hu_rescale",
+            "detail": "no DICOM datasets provided for CT HU unit verification",
+            "rescale_types": [],
+        }
+    explicit_rescale_types: list[str] = []
+    explicit_units: list[str] = []
+    rwvm_non_hu: list[str] = []
+    missing_rescale = False
+    for ds in datasets:
+        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+        if modality and modality != "CT":
+            return {
+                "hu_verified": False,
+                "status": "non_hu_rescale_units",
+                "detail": f"DICOM Modality={modality!r} is not CT Hounsfield units",
+                "rescale_types": [],
+            }
+        rtype = str(getattr(ds, "RescaleType", "") or "").strip()
+        if rtype:
+            explicit_rescale_types.append(rtype)
+            if rtype.upper() not in _ACCEPTED_HU_UNIT_TOKENS:
+                return {
+                    "hu_verified": False,
+                    "status": "non_hu_rescale_units",
+                    "detail": f"DICOM RescaleType={rtype!r} is not Hounsfield units (HU)",
+                    "rescale_types": sorted(set(explicit_rescale_types)),
+                }
+        units = str(getattr(ds, "Units", "") or "").strip()
+        if units:
+            explicit_units.append(units)
+            if units.upper() not in _ACCEPTED_HU_UNIT_TOKENS:
+                return {
+                    "hu_verified": False,
+                    "status": "non_hu_rescale_units",
+                    "detail": f"DICOM Units={units!r} is not Hounsfield units (HU)",
+                    "rescale_types": sorted(set(explicit_rescale_types)),
+                }
+        rwvm_bad = _rwvm_non_hu_units(ds)
+        if rwvm_bad is not None:
+            rwvm_non_hu.append(rwvm_bad)
+        slope = _number(ds, "RescaleSlope")
+        intercept = _number(ds, "RescaleIntercept")
+        if (
+            slope is None
+            or intercept is None
+            or not math.isfinite(slope)
+            or not math.isfinite(intercept)
+            or slope == 0
+        ):
+            missing_rescale = True
+    if rwvm_non_hu:
+        return {
+            "hu_verified": False,
+            "status": "non_hu_rescale_units",
+            "detail": f"DICOM RealWorldValueMappingSequence declares non-HU units: {rwvm_non_hu[0]!r}",
+            "rescale_types": sorted(set(explicit_rescale_types)),
+        }
+    normalized_explicit = {v.upper() for v in explicit_rescale_types}
+    if len(normalized_explicit) > 1:
+        return {
+            "hu_verified": False,
+            "status": "non_hu_rescale_units",
+            "detail": f"mixed RescaleType values across CT slices: {sorted(set(explicit_rescale_types))!r}",
+            "rescale_types": sorted(set(explicit_rescale_types)),
+        }
+    if missing_rescale:
+        return {
+            "hu_verified": False,
+            "status": "unverifiable_hu_rescale",
+            "detail": "RescaleSlope or RescaleIntercept is missing or invalid; HU calibration is unverifiable",
+            "rescale_types": sorted(set(explicit_rescale_types)),
+        }
+    return {
+        "hu_verified": True,
+        "status": "verified",
+        "detail": (
+            f"RescaleType={explicit_rescale_types[0]!r}"
+            if explicit_rescale_types
+            else "DICOM PS3.3 CT default HU rescale"
+        ),
+        "rescale_types": sorted(set(explicit_rescale_types)),
+    }
+
+
+def verify_ct_series_hu_units(
+    ct_dir: Path,
+    *,
+    expected_series_uid: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Read DICOM headers from a CT directory and verify HU rescale calibration."""
+    try:
+        import pydicom
+    except Exception as exc:
+        return {
+            "hu_verified": False,
+            "status": "unverifiable_hu_rescale",
+            "detail": f"pydicom unavailable for HU verification: {exc}",
+            "rescale_types": [],
+        }
+    root = Path(ct_dir)
+    if not root.is_dir():
+        return {
+            "hu_verified": False,
+            "status": "unverifiable_hu_rescale",
+            "detail": f"CT directory does not exist: {root}",
+            "rescale_types": [],
+        }
+    datasets = []
+    expected_uid = str(expected_series_uid or "").strip() or None
+    for path in sorted(root.iterdir()):
+        if not path.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        except Exception:
+            continue
+        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+        actual_uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+        if not modality and not actual_uid:
+            continue
+        if expected_uid is not None and actual_uid != expected_uid:
+            continue
+        datasets.append(ds)
+    return verify_dicom_datasets_hu_units(datasets)
+
+
+def image_hu_verification_status(
+    image: Any = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Inspect attached image metadata and/or row metadata for explicit HU unit verification."""
+    if isinstance(metadata, Mapping):
+        if "_ct_hu_verified" in metadata and metadata["_ct_hu_verified"] is not None:
+            verified = bool(metadata["_ct_hu_verified"])
+            status = str(metadata.get("_ct_hu_status") or ("verified" if verified else "unverifiable_hu_rescale"))
+            detail = str(metadata.get("_ct_hu_detail") or "")
+            return {"hu_verified": verified, "status": status, "detail": detail}
+        acq_status = str(metadata.get("acq_provenance_status") or "").strip()
+        if acq_status == "non_hu_rescale_units":
+            return {
+                "hu_verified": False,
+                "status": "non_hu_rescale_units",
+                "detail": str(metadata.get("acq_provenance_detail") or "CT rescale units are not HU"),
+            }
+    if image is not None and hasattr(image, "HasMetaDataKey"):
+        try:
+            if image.HasMetaDataKey("rtpipeline_hu_verified"):
+                verified = str(image.GetMetaData("rtpipeline_hu_verified")).strip() == "1"
+                status = (
+                    str(image.GetMetaData("rtpipeline_hu_status"))
+                    if image.HasMetaDataKey("rtpipeline_hu_status")
+                    else ("verified" if verified else "unverifiable_hu_rescale")
+                )
+                detail = (
+                    str(image.GetMetaData("rtpipeline_hu_detail"))
+                    if image.HasMetaDataKey("rtpipeline_hu_detail")
+                    else ""
+                )
+                return {"hu_verified": verified, "status": status, "detail": detail}
+            for tag_key, label in (("0028|1054", "RescaleType"), ("0054|1001", "Units")):
+                if image.HasMetaDataKey(tag_key):
+                    raw_val = str(image.GetMetaData(tag_key) or "").strip()
+                    if raw_val and raw_val.upper() not in _ACCEPTED_HU_UNIT_TOKENS:
+                        return {
+                            "hu_verified": False,
+                            "status": "non_hu_rescale_units",
+                            "detail": f"DICOM {label}={raw_val!r} is not Hounsfield units (HU)",
+                        }
+        except Exception:
+            pass
+    return {"hu_verified": True, "status": "not_asserted", "detail": ""}
 
 ACQUISITION_DESCRIPTOR_FIELDS = (
     "acq_provenance_status",
@@ -359,21 +558,29 @@ def describe_planning_ct(
             representable_mins.append(float(min(endpoint_a, endpoint_b)))
             representable_maxs.append(float(max(endpoint_a, endpoint_b)))
 
+        hu_check = verify_dicom_datasets_hu_units(datasets)
         mapping_complete = rescale_complete and storage_mapping_complete
         observed_min = min(observed_mins) if rescale_complete else None
         observed_max = max(observed_maxs) if rescale_complete else None
-        status = "ok" if mapping_complete else "mapping_metadata_missing"
+        status = (
+            "non_hu_rescale_units"
+            if hu_check["status"] == "non_hu_rescale_units"
+            else ("ok" if mapping_complete else "mapping_metadata_missing")
+        )
         detail = None
+        if hu_check["status"] == "non_hu_rescale_units":
+            detail = hu_check["detail"]
         if not mapping_complete:
             missing_groups = []
             if not rescale_complete:
                 missing_groups.append("RescaleSlope or RescaleIntercept")
             if not storage_mapping_complete:
                 missing_groups.append("BitsStored or PixelRepresentation")
-            detail = (
+            missing_detail = (
                 " or ".join(missing_groups)
                 + " is missing or invalid for at least one contracted DICOM instance"
             )
+            detail = f"{detail}; {missing_detail}" if detail else missing_detail
 
         descriptions = [_text(dataset, "SeriesDescription") for dataset in datasets]
         kernels = [_text(dataset, "ConvolutionKernel") for dataset in datasets]

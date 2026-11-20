@@ -597,17 +597,6 @@ class _Image(sitk.Image):
         return (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 
-class _Reader:
-    def GetGDCMSeriesFileNames(self, _path):
-        return ["slice.dcm"]
-
-    def SetFileNames(self, _files):
-        pass
-
-    def Execute(self):
-        return _Image()
-
-
 def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     course = tmp_path / "P1" / "C1"
     dirs = build_course_dirs(course)
@@ -618,7 +607,7 @@ def _prepare_conda_rtstruct_course(tmp_path, monkeypatch):
     stale = course / "radiomics_ct.xlsx"
     stale.write_bytes(b"stale")
     monkeypatch.setattr(conda, "_select_usable_rtstruct", lambda *_paths: rs_path)
-    monkeypatch.setattr(conda.sitk, "ImageSeriesReader", lambda: _Reader())
+    monkeypatch.setattr(radiomics, "_load_series_image", lambda *_a, **_k: _Image())
     monkeypatch.setattr(conda.sitk, "WriteImage", lambda *_a, **_k: None)
     return course, stale
 

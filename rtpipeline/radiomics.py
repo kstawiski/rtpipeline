@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -47,7 +48,9 @@ from .custom_structures_rtstruct import (
 from .acquisition_scale import (
     attach_acquisition_descriptor,
     describe_contract_planning_ct,
+    image_hu_verification_status,
     validate_acquisition_descriptor_table,
+    verify_dicom_datasets_hu_units,
 )
 from .radiomics_cohort import (
     attach_radiomics_cohort_provenance,
@@ -126,7 +129,7 @@ if TYPE_CHECKING:
 
 # Image cache for avoiding repeated DICOM loading (significant I/O savings)
 # Configurable via environment variables: RTPIPELINE_IMAGE_CACHE_SIZE, RTPIPELINE_IMAGE_CACHE_AGE_SEC
-_IMAGE_CACHE: Dict[str, Tuple[sitk.Image, float]] = {}
+_IMAGE_CACHE: Dict[Tuple[str, str, str], Tuple[sitk.Image, float]] = {}
 _IMAGE_CACHE_LOCK = threading.Lock()
 _IMAGE_CACHE_MAX_SIZE = int(os.environ.get('RTPIPELINE_IMAGE_CACHE_SIZE', '8'))
 _IMAGE_CACHE_MAX_AGE_SEC = int(os.environ.get('RTPIPELINE_IMAGE_CACHE_AGE_SEC', '300'))
@@ -463,61 +466,136 @@ def _have_pyradiomics() -> bool:
         return False
 
 
+def _dicom_series_content_sha256(files: Iterable[str | Path]) -> str:
+    hasher = hashlib.sha256()
+    for filename in files:
+        path = Path(filename)
+        name = os.fsencode(path.name)
+        file_digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                file_digest.update(chunk)
+        hasher.update(len(name).to_bytes(4, "big"))
+        hasher.update(name)
+        hasher.update(file_digest.digest())
+    return hasher.hexdigest()
+
+
+def _load_contracted_series_image(
+    loader: Callable[..., Optional[sitk.Image]],
+    dicom_dir: Optional[Path],
+    series_uid: Optional[str] = None,
+    *,
+    use_cache: Optional[bool] = None,
+) -> Optional[sitk.Image]:
+    """Call _load_series_image passing contracted series_uid while tolerating 1-arg test doubles."""
+    if dicom_dir is None:
+        return None
+    try:
+        params = list(inspect.signature(loader).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    accepts_var_pos = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+    accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+    param_names = {p.name for p in params}
+    kwargs: Dict[str, Any] = {}
+    if series_uid is not None and (accepts_var_kw or "series_uid" in param_names or len(params) >= 2):
+        kwargs["series_uid"] = series_uid
+    if use_cache is not None and (accepts_var_kw or "use_cache" in param_names):
+        kwargs["use_cache"] = use_cache
+    if not kwargs and accepts_var_pos and series_uid is not None:
+        return loader(dicom_dir, series_uid)
+    return loader(dicom_dir, **kwargs)
+
+
 def _load_series_image(dicom_dir: Path, series_uid: Optional[str] = None, use_cache: bool = True) -> Optional[sitk.Image]:
-    """Load a DICOM series as a SimpleITK image with optional caching.
+    """Load a DICOM series as a SimpleITK image with content-bound caching.
 
-    The cache stores recently loaded images to avoid repeated disk I/O when processing
-    multiple structures from the same scan. This can provide 10-50x speedup for
-    subsequent accesses to the same series.
-
-    Args:
-        dicom_dir: Path to the DICOM directory
-        series_uid: Optional specific series UID to load
-        use_cache: Whether to use the image cache (default: True)
-
-    Returns:
-        SimpleITK Image or None if loading fails
+    Cache entries are keyed by resolved directory, exact SeriesInstanceUID,
+    and SHA-256 content hash of the series DICOM files. When ``series_uid`` is
+    requested, missing or mismatched UIDs fail closed (returning ``None``)
+    instead of falling back to another series in the directory.
     """
     import time
 
-    cache_key = f"{dicom_dir}:{series_uid or 'default'}"
-
-    # Check cache first
-    if use_cache:
-        with _IMAGE_CACHE_LOCK:
-            if cache_key in _IMAGE_CACHE:
-                cached_img, cached_time = _IMAGE_CACHE[cache_key]
-                # Check if cache entry is still valid
-                if time.time() - cached_time < _IMAGE_CACHE_MAX_AGE_SEC:
-                    # Update timestamp on hit (proper LRU behavior)
-                    _IMAGE_CACHE[cache_key] = (cached_img, time.time())
-                    logger.debug("Image cache hit for %s", cache_key)
-                    return cached_img
-                else:
-                    # Expired entry
-                    del _IMAGE_CACHE[cache_key]
-
-    # Load from disk
     try:
         reader = sitk.ImageSeriesReader()
         sids = reader.GetGDCMSeriesIDs(str(dicom_dir))
         if not sids:
             return None
-        sid = series_uid if (series_uid and series_uid in sids) else sids[0]
+        if series_uid is not None:
+            requested_uid = str(series_uid).strip()
+            if not requested_uid or requested_uid not in sids:
+                logger.warning(
+                    "Requested SeriesInstanceUID %r not present in %s (available=%s); refusing series fallback",
+                    series_uid,
+                    dicom_dir,
+                    list(sids),
+                )
+                return None
+            sid = requested_uid
+        else:
+            sid = sids[0]
         files = reader.GetGDCMSeriesFileNames(str(dicom_dir), sid)
+        if not files:
+            return None
+        content_digest = _dicom_series_content_sha256(files)
+        resolved_dir = str(Path(dicom_dir).resolve(strict=False))
+        cache_key = (resolved_dir, sid, content_digest)
+
+        if use_cache:
+            with _IMAGE_CACHE_LOCK:
+                stale_keys = [
+                    k for k in _IMAGE_CACHE
+                    if k[0] == resolved_dir and k[1] == sid and k[2] != content_digest
+                ]
+                for stale_key in stale_keys:
+                    del _IMAGE_CACHE[stale_key]
+                if cache_key in _IMAGE_CACHE:
+                    cached_img, cached_time = _IMAGE_CACHE[cache_key]
+                    if time.time() - cached_time < _IMAGE_CACHE_MAX_AGE_SEC:
+                        _IMAGE_CACHE[cache_key] = (cached_img, time.time())
+                        logger.debug("Image cache hit for %s", cache_key)
+                        return cached_img
+                    del _IMAGE_CACHE[cache_key]
+
         reader.SetFileNames(files)
         img = reader.Execute()
+        if img is not None:
+            try:
+                datasets = [
+                    pydicom.dcmread(str(f), stop_before_pixels=True, force=True)
+                    for f in files
+                ]
+                modalities = {
+                    str(getattr(ds, "Modality", "") or "").strip().upper()
+                    for ds in datasets
+                }
+                if "CT" in modalities:
+                    hu_info = verify_dicom_datasets_hu_units(datasets)
+                    img.SetMetaData("rtpipeline_hu_verified", "1" if hu_info["hu_verified"] else "0")
+                    img.SetMetaData("rtpipeline_hu_status", str(hu_info["status"]))
+                    img.SetMetaData("rtpipeline_hu_detail", str(hu_info["detail"]))
+            except Exception as exc:
+                img.SetMetaData("rtpipeline_hu_verified", "0")
+                img.SetMetaData("rtpipeline_hu_status", "unverifiable_hu_rescale")
+                img.SetMetaData("rtpipeline_hu_detail", "DICOM rescale metadata could not be read")
+                logger.debug("HU metadata check failed for %s: %s", dicom_dir, exc)
 
-        # Store in cache
+        if img is not None and (
+            reader.GetGDCMSeriesFileNames(str(dicom_dir), sid) != files
+            or _dicom_series_content_sha256(files) != content_digest
+        ):
+            raise RuntimeError(f"DICOM series changed while it was being read: {dicom_dir}")
+
+        if img is not None:
+            img.SetMetaData("rtpipeline_dicom_series_sha256", content_digest)
         if use_cache and img is not None:
             with _IMAGE_CACHE_LOCK:
-                # Evict old entries if cache is full
                 if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX_SIZE:
-                    # Remove oldest entry
                     oldest_key = min(_IMAGE_CACHE.keys(), key=lambda k: _IMAGE_CACHE[k][1])
                     del _IMAGE_CACHE[oldest_key]
                     logger.debug("Evicted oldest cache entry: %s", oldest_key)
-
                 _IMAGE_CACHE[cache_key] = (img, time.time())
                 logger.debug("Cached image for %s", cache_key)
 
@@ -583,8 +661,9 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
             return Path(candidate)
         # Copy packaged file to logs_root for stable path
         packaged = importlib_resources.files('rtpipeline').joinpath(packaged_name)
+        logs_root = getattr(config, 'logs_root', None) if config is not None else None
         if packaged.is_file():
-            if not (config and config.logs_root):
+            if not logs_root:
                 try:
                     packaged_path = Path(packaged)
                 except TypeError:
@@ -592,8 +671,8 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
                 if packaged_path is not None and packaged_path.is_file():
                     return packaged_path
             target_root = (
-                Path(config.logs_root)
-                if (config and config.logs_root)
+                Path(logs_root)
+                if logs_root
                 else Path(tempfile.gettempdir()) / "rtpipeline-resources"
             )
             target_root.mkdir(parents=True, exist_ok=True)
@@ -620,6 +699,109 @@ def _get_params_file(config: PipelineConfig | None, modality: str = 'CT') -> Opt
     except Exception as e:
         logger.warning("Failed to prepare radiomics params file: %s", e)
     return None
+
+
+def _resolve_resampled_spacing_xyz(
+    raw_spacing: Any,
+    native_spacing_xyz: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    if not raw_spacing:
+        return native_spacing_xyz
+    values = tuple(float(value) for value in raw_spacing)
+    if len(values) != 3:
+        return native_spacing_xyz
+    return tuple(
+        native_spacing_xyz[idx] if value == 0 else value
+        for idx, value in enumerate(values)
+    )
+
+
+def _validate_ct_preprocessing_runtime(config: PipelineConfig) -> None:
+    """Refuse opt-in IBSI before a NumPy 2 process delegates CT extraction."""
+    from .radiomics_runtime import needs_radiomics_process
+
+    if not needs_radiomics_process():
+        return
+    params_file = getattr(config, "radiomics_params_file", None)
+    if params_file:
+        from .ibsi_preprocessing import preprocessing_options
+
+        if preprocessing_options(_load_radiomics_params_dict(Path(params_file)) or {}):
+            raise ValueError(
+                "IBSI preprocessing requires the native CT extractor in a "
+                "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
+            )
+
+
+def build_ct_extractor_from_params(
+    params_file: Optional[str | Path] = None,
+    *,
+    modality: str = "CT",
+    normalize_override: Optional[bool] = None,
+    featureextractor_cls: Any = None,
+) -> Any:
+    """Shared extractor builder supporting native PyRadiomics and optional IBSI CT preprocessing.
+
+    When ``params_file`` contains a top-level ``radiomics:`` mapping, it is
+    validated via ``ibsi_preprocessing.preprocessing_options`` and stripped
+    before PyRadiomics parses the remaining sections, preventing PyKwalify
+    ``SchemaError`` and building ``IBSIFeatureExtractor`` when enabled.
+    """
+    import numpy as np
+
+    path_obj: Optional[Path] = None
+    if params_file not in (None, ""):
+        path_obj = Path(params_file)
+    params_dict: Optional[Dict[str, Any]] = None
+    explicit_radiomics = False
+    preprocessing: Optional[Dict[str, Any]] = None
+    if path_obj is not None and path_obj.is_file():
+        params_dict = _load_radiomics_params_dict(path_obj)
+        from .ibsi_preprocessing import preprocessing_options
+
+        explicit_radiomics = bool(params_dict and "radiomics" in params_dict)
+        preprocessing = preprocessing_options(params_dict or {})
+        if preprocessing:
+            if (modality or "CT").upper() != "CT":
+                raise ValueError("radiomics.preprocessing: ibsi is available for CT only")
+            numpy_version = tuple(map(int, np.__version__.split(".")[:2]))
+            if numpy_version[0] >= 2:
+                raise ValueError(
+                    "IBSI preprocessing requires the native CT extractor in a "
+                    "NumPy 1.x/PyRadiomics environment; helper extraction is unsupported."
+                )
+
+    if preprocessing:
+        from .ibsi_preprocessing import extractor_class
+
+        ext = extractor_class()()
+        if params_dict is not None:
+            _apply_params_to_extractor(ext, params_dict)
+        ext.settings.update(preprocessing)
+    else:
+        if featureextractor_cls is None:
+            from radiomics.featureextractor import RadiomicsFeatureExtractor as featureextractor_cls
+        if explicit_radiomics and params_dict is not None:
+            ext = featureextractor_cls()
+            _apply_params_to_extractor(ext, params_dict)
+        elif path_obj is not None:
+            ext = featureextractor_cls(str(path_obj))
+        else:
+            ext = featureextractor_cls()
+
+    if (modality or "CT").upper() == "MR":
+        try:
+            ext.settings["binCount"] = 64
+            if "binWidth" in ext.settings:
+                del ext.settings["binWidth"]
+        except Exception:
+            pass
+        if normalize_override is not None:
+            try:
+                ext.settings["normalize"] = bool(normalize_override)
+            except Exception:
+                pass
+    return ext
 
 
 def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override: Optional[bool] = None) -> Optional["featureextractor.RadiomicsFeatureExtractor"]:
@@ -657,46 +839,15 @@ def _extractor(config: PipelineConfig, modality: str = 'CT', normalize_override:
         logging.getLogger('radiomics.featureextractor').setLevel(logging.WARNING)
 
         pfile = _get_params_file(config, modality)
-        params_dict: Optional[Dict[str, Any]] = None
         if pfile is not None:
             params_dict = _load_radiomics_params_dict(pfile)
-
-        from .ibsi_preprocessing import preprocessing_options
-        explicit_preprocessing = bool(params_dict and params_dict.get('radiomics'))
-        preprocessing = preprocessing_options(params_dict or {})
-        if preprocessing:
-            if modality.upper() != 'CT':
-                raise ValueError("radiomics.preprocessing: ibsi is available for CT only")
-            from .ibsi_preprocessing import extractor_class
-            ext = extractor_class()()
-        else:
-            ext = RadiomicsFeatureExtractor()
-
-        if params_dict is not None:
-            _apply_params_to_extractor(ext, params_dict)
-        elif pfile is not None:
-            # Fallback to the library parser if caching fails for any reason
-            ext.loadParams(str(pfile))
-
-        if preprocessing:
-            ext.settings.update(preprocessing)
-
-        # Adjust per-modality recommendations
-        if modality.upper() == 'MR':
-            # Prefer binCount=64 for MRI; toggle normalization based on detected weighting
-            try:
-                ext.settings['binCount'] = 64
-                if 'binWidth' in ext.settings:
-                    del ext.settings['binWidth']
-            except Exception:
-                pass
-            if normalize_override is not None:
-                try:
-                    ext.settings['normalize'] = bool(normalize_override)
-                except Exception:
-                    pass
-
-        return ext
+            explicit_preprocessing = bool(params_dict and params_dict.get('radiomics'))
+        return build_ct_extractor_from_params(
+            pfile,
+            modality=modality,
+            normalize_override=normalize_override,
+            featureextractor_cls=RadiomicsFeatureExtractor,
+        )
     except Exception as e:
         if explicit_preprocessing:
             raise
@@ -1138,6 +1289,7 @@ def _rtstruct_masks(
     scoped_reader: bool = False,
     govern_every_roi: bool = False,
     quantized_scope_rescue: bool = False,
+    series_uid: Optional[str] = None,
 ) -> Dict[str, Optional[np.ndarray]]:
     """Convert RTSTRUCT ROIs to image-grid (y, x, z) boolean masks.
 
@@ -1611,7 +1763,7 @@ def _rtstruct_masks(
         series_data = getattr(reader, "series_data", None)
         if mask_bool is not None and series_data:
             try:
-                reference = _load_series_image(dicom_series_path)
+                reference = _load_contracted_series_image(_load_series_image, dicom_series_path, series_uid)
                 if reference is None:
                     raise ValueError("DICOM mask has no reference image")
                 image_mask = _mask_from_array_like(reference, mask_bool, series_data=series_data)
@@ -1672,6 +1824,7 @@ def radiomics_for_course(
     (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
+        _validate_ct_preprocessing_runtime(config)
         output = run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp)
         return (outcome_from_output(output) if output is not None
                 else RadiomicsCourseOutcome.nothing_to_do("isolated backend found no eligible ROIs"))
@@ -1729,7 +1882,12 @@ def radiomics_for_course(
         )
 
     ct_files_present = contracted_ct_dir is not None
-    img = _load_series_image(contracted_ct_dir) if contracted_ct_dir is not None else None
+    contracted_ct_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip() or None
+    img = (
+        _load_contracted_series_image(_load_series_image, contracted_ct_dir, contracted_ct_uid)
+        if contracted_ct_dir is not None
+        else None
+    )
     if img is None:
         if not ct_files_present:
             logger.info("No CT image for radiomics in %s", course_dir)
@@ -2188,6 +2346,7 @@ def radiomics_for_course(
                 failure_outcomes=source_failures,
                 requiredness_by_roi=requiredness_by_roi,
                 structural_inventory=source_inventory,
+                series_uid=contracted_ct_uid,
                 # A planner-authored structure set carries names the planner
                 # declared and never drew. Those are absent ROIs, not failed
                 # measurements, so they must not void the course. A generated
@@ -2534,6 +2693,7 @@ def radiomics_for_course(
                     name: Requiredness.ANALYSIS_REQUIRED
                     for name in custom_model_expected_rois[model_name]
                 },
+                series_uid=contracted_ct_uid,
             )
             for disposition in model_dispositions:
                 disposition["source"] = source
@@ -2730,11 +2890,8 @@ def radiomics_for_course(
             except Exception:
                 spacing = (1.0, 1.0, 1.0)
             try:
-                resampled_spacing = tuple(
-                    float(value)
-                    for value in (
-                        extractor.settings.get("resampledPixelSpacing") or spacing
-                    )
+                resampled_spacing = _resolve_resampled_spacing_xyz(
+                    extractor.settings.get("resampledPixelSpacing"), spacing
                 )
             except Exception:
                 resampled_spacing = spacing
@@ -2798,14 +2955,21 @@ def radiomics_for_course(
                 return candidate
 
             mask_image = _mask_from_array_like(img, task.mask)
+            img_hu = image_hu_verification_status(img)
             return extract_ct_roi_arms(
                 img,
                 mask_image,
                 factory=_factory,
                 decision=task.decision,
-                common_metadata={**_common_metadata(task),
-                                 "_resource_guard_legacy": legacy_rejection(
-                                     work_estimate, max_bbox_voxels, task.roi_name)},
+                common_metadata={
+                    **_common_metadata(task),
+                    "_resource_guard_legacy": legacy_rejection(
+                        work_estimate, max_bbox_voxels, task.roi_name
+                    ),
+                    "_ct_hu_verified": bool(img_hu["hu_verified"]),
+                    "_ct_hu_status": str(img_hu["status"]),
+                    "_ct_hu_detail": str(img_hu["detail"]),
+                },
                 run_identifier=run_identifier,
                 code_revision=code_revision,
                 native_voxel_count=voxel_count,
@@ -3061,6 +3225,7 @@ def _collect_total_mr_masks(
     failure_outcomes: Optional[List[Dict[str, str]]] = None,
     *,
     backend_out: Optional[Dict[str, str]] = None,
+    series_uid: Optional[str] = None,
 ) -> Dict[str, np.ndarray]:
     masks: Dict[str, np.ndarray] = {}
     if not seg_dir.exists():
@@ -3121,7 +3286,7 @@ def _collect_total_mr_masks(
             img = sitk.ReadImage(str(mask_path))
             arr = sitk.GetArrayFromImage(img)
             if arr.any():
-                reference = _load_series_image(series_dir)
+                reference = _load_contracted_series_image(_load_series_image, series_dir, series_uid)
                 if reference is None:
                     raise ValueError("MR mask has no reference image")
                 img = _resample_to_reference(img, reference)
@@ -3296,7 +3461,7 @@ def radiomics_for_course_mr(config: PipelineConfig, course) -> Optional[Path]:
             continue
         base_name = _strip_nii_name(nifti_path)
         backend_out: Dict[str, str] = {}
-        masks = _collect_total_mr_masks(source_dir, seg_dir, mr_failures, backend_out=backend_out)
+        masks = _collect_total_mr_masks(source_dir, seg_dir, mr_failures, backend_out=backend_out, series_uid=series_uid)
         if not masks:
             continue
         for roi_name, mask in masks.items():

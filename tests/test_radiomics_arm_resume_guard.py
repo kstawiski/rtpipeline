@@ -107,7 +107,7 @@ def test_texture_arm_peaks_differ_so_partial_resume_discriminates():
     peaks = []
     for resegment in (None, [-1000, 3000]):
         extractor = _GuardedExtractor()
-        extractor.enabledFeatures = {"firstorder": [], "glcm": []}
+        extractor.enabledFeatures = {"firstorder": ["Mean"], "glcm": ["Contrast"]}
         if resegment is not None:
             extractor.settings["resegmentRange"] = resegment
         metadata = {"resource_guard_native_image_voxels": 1728,

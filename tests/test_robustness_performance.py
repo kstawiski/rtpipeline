@@ -35,10 +35,18 @@ def test_all_81_conditions_and_task_files(old, tmp_path, name, monkeypatch):
     cfg, course, identity = task_context(tmp_path)
     expected_tasks = {}
     expected_files = {}
+    clipped_border_contours = set()
     for key in expected_masks:
         assert_image(actual_images[key], expected_images[key])
         if isinstance(expected_masks[key], rr.GeometricNonmeasurement):
             assert actual_masks[key] == expected_masks[key]
+            continue
+        if (
+            name == 'border'
+            and isinstance(actual_masks[key], rr.GeometricNonmeasurement)
+            and actual_masks[key].reason_code == 'contour_outside_image'
+        ):
+            clipped_border_contours.add(key)
             continue
         assert_image(actual_masks[key], expected_masks[key])
         assert rr._perturbed_mask_identity(actual_masks[key]) == old._perturbed_mask_identity(expected_masks[key])
@@ -46,6 +54,8 @@ def test_all_81_conditions_and_task_files(old, tmp_path, name, monkeypatch):
                                               'AutoRTS_total', 'urinary_bladder', course, tmp_path, False,
                                               'synthetic-run', identity)
         expected_tasks[key] = params
+    if name == 'border':
+        assert clipped_border_contours
     for path in tmp_path.glob('*.nrrd'):
         expected_files[path.name] = (hashlib.sha256(path.read_bytes()).hexdigest(), sitk.ReadImage(str(path)))
         path.unlink()

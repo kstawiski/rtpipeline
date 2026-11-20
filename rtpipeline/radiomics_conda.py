@@ -34,6 +34,8 @@ from .extraction_progress import radiomics_settings
 from .acquisition_scale import (
     attach_acquisition_descriptor,
     describe_contract_planning_ct,
+    image_hu_verification_status,
+    verify_ct_series_hu_units,
 )
 from .custom_models import (
     list_custom_model_outputs,
@@ -946,6 +948,45 @@ def _conda_subprocess_env() -> Dict[str, str]:
     return multiprocessing_subprocess_env(env)
 
 
+def resolve_ct_params_file(params_or_config: Any = None) -> str:
+    """Resolve CT PyRadiomics YAML path to configured file or packaged default.
+
+    Preserves an explicit path string/Path (even if missing, so callers fail
+    closed) and falls back to packaged ``rtpipeline/radiomics_params.yaml`` via
+    ``_get_params_file`` when unset rather than PyRadiomics library defaults.
+    """
+    cfg_obj = None
+    if params_or_config is not None:
+        if isinstance(params_or_config, (str, Path)):
+            text = str(params_or_config).strip()
+            if text:
+                return text
+        elif hasattr(params_or_config, "radiomics_params_file") or hasattr(
+            params_or_config, "logs_root"
+        ):
+            cfg_obj = params_or_config
+            candidate = getattr(params_or_config, "radiomics_params_file", None)
+            if candidate not in (None, ""):
+                return str(candidate)
+    from .radiomics import _get_params_file
+
+    resolved = _get_params_file(cfg_obj, "CT")
+    if resolved is None:
+        raise FileNotFoundError(
+            "Packaged rtpipeline/radiomics_params.yaml could not be resolved"
+        )
+    return str(resolved)
+
+
+def make_extractor(params_file: Any = None, large_roi: bool = False):
+    """Build a CT PyRadiomics extractor from params_file or packaged defaults."""
+    from .radiomics import build_ct_extractor_from_params
+
+    resolved = resolve_ct_params_file(params_file)
+    # large_roi is retained for compatibility, not as a method override.
+    return build_ct_extractor_from_params(resolved, modality="CT")
+
+
 @lru_cache(maxsize=64)
 def _materialized_ct_arm_hashes(
     params_file: str,
@@ -953,9 +994,10 @@ def _materialized_ct_arm_hashes(
     decision_json: str,
 ) -> Dict[str, str]:
     """Materialize the selected Conda extractors and return both runtime hashes."""
+    resolved_params = resolve_ct_params_file(params_file or None)
     payload = json.dumps(
         {
-            "params_file": params_file or None,
+            "params_file": resolved_params,
             "large_roi": bool(large_roi),
             "decision": json.loads(decision_json),
         },
@@ -964,7 +1006,7 @@ def _materialized_ct_arm_hashes(
     script = r'''
 import json
 import sys
-from radiomics import featureextractor
+from rtpipeline.radiomics_conda import make_extractor
 from rtpipeline.radiomics_ct_contract import (
     RoiClassDecision,
     effective_parameter_hashes_for_arms,
@@ -973,14 +1015,7 @@ from rtpipeline.radiomics_ct_contract import (
 payload = json.loads(sys.argv[1])
 
 def factory():
-    params_file = payload.get("params_file")
-    extractor = (
-        featureextractor.RadiomicsFeatureExtractor(params_file)
-        if params_file
-        else featureextractor.RadiomicsFeatureExtractor()
-    )
-    # The legacy size flag is not authority to change the configured method.
-    return extractor
+    return make_extractor(payload.get("params_file"), bool(payload.get("large_roi", False)))
 
 decision = RoiClassDecision(**payload["decision"])
 print(json.dumps(effective_parameter_hashes_for_arms(factory, decision)))
@@ -1128,11 +1163,10 @@ mask_path = params['mask_path']
 params_file = params.get('params_file')
 label = params.get('label')
 
+from rtpipeline.radiomics_conda import make_extractor
+
 # Create extractor
-if params_file:
-    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
-else:
-    extractor = featureextractor.RadiomicsFeatureExtractor()
+extractor = make_extractor(params_file, False)
 
 # Execute extraction
 if label is not None:
@@ -1198,11 +1232,10 @@ def observed_extractor_state(instance):
     }}
     return json.loads(json.dumps(state, default=str))
 
+from rtpipeline.radiomics_conda import make_extractor
+
 # Create extractor
-if params_file:
-    extractor = featureextractor.RadiomicsFeatureExtractor(params_file)
-else:
-    extractor = featureextractor.RadiomicsFeatureExtractor()
+extractor = make_extractor(params_file, False)
 
 # Preserve configured features, image types and spacing for every ROI size.
 # Resource failures are accounted by callers, never hidden by a reduced method.
@@ -1451,14 +1484,7 @@ if batch_params.get("acknowledged"):
             raise SystemExit("durable result acknowledgement missing")
 
 
-def make_extractor(params_file, large_roi):
-    candidate = (
-        featureextractor.RadiomicsFeatureExtractor(params_file)
-        if params_file
-        else featureextractor.RadiomicsFeatureExtractor()
-    )
-    # large_roi is retained for compatibility, not as a method override.
-    return candidate
+from rtpipeline.radiomics_conda import make_extractor
 
 
 for task in tasks:
@@ -2513,8 +2539,8 @@ def radiomics_for_course_ct_nifti_fallback(
         _invalidate_radiomics_outputs(output_path)
         return None
 
-    params_file = str(config.radiomics_params_file) if getattr(config, "radiomics_params_file", None) else None
-    parameter_path = Path(params_file) if params_file else None
+    params_file = resolve_ct_params_file(config)
+    parameter_path = Path(params_file)
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
 
@@ -2571,6 +2597,9 @@ def radiomics_for_course_ct_nifti_fallback(
                 "roi_name": display_roi,
                 "nifti_path": nifti_path_str,
                 "mask_path_source": str(mask_source),
+                "_ct_hu_verified": bool(ct_hu_info["hu_verified"]),
+                "_ct_hu_status": str(ct_hu_info["status"]),
+                "_ct_hu_detail": str(ct_hu_info["detail"]),
             },
         }
     skip_rois = _ct_skip_rois(config)
@@ -2586,6 +2615,14 @@ def radiomics_for_course_ct_nifti_fallback(
     if any(seg_dir.glob("*.nii*")):
         series_dirs.insert(0, seg_dir)
 
+    ct_hu_info = (
+        verify_ct_series_hu_units(
+            contract.planning_ct_dir,
+            expected_series_uid=str(contract.planning_ct.get("series_instance_uid") or "").strip() or None,
+        )
+        if contract.planning_ct_dir is not None
+        else {"hu_verified": True, "status": "not_asserted", "detail": ""}
+    )
     tasks: List[Dict[str, Any]] = []
     preparation_failures: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
@@ -2972,6 +3009,9 @@ def radiomics_for_course(
     (Path(course_dir) / "metadata/radiomics_ct_identity_refusals.json").unlink(missing_ok=True)
     from .radiomics_runtime import needs_radiomics_process, run_course_driver
     if needs_radiomics_process():
+        from .radiomics import _validate_ct_preprocessing_runtime
+
+        _validate_ct_preprocessing_runtime(config)
         return run_course_driver("ct", course_dir, config, custom_structures_config, allow_all_series_temp=allow_all_series_temp, max_workers=max_workers)
 
     course_dir = Path(course_dir)
@@ -3279,12 +3319,25 @@ def radiomics_for_course(
             f"RTSTRUCT radiomics requires a CT DICOM series in {course_dir}"
         )
 
-    # Load CT image
+    params_file = resolve_ct_params_file(config)
+    parameter_path = Path(params_file)
+    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    if not series_uid:
+        _invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            f"Course contract has no planning CT SeriesInstanceUID: {course_dir}"
+        )
+
+    # Load contracted CT image
     try:
-        reader = sitk.ImageSeriesReader()
-        dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir))
-        reader.SetFileNames(dicom_files)
-        ct_image = reader.Execute()
+        from .radiomics import _load_contracted_series_image, _load_series_image
+        ct_image = _load_contracted_series_image(
+            _load_series_image, ct_dir, series_uid, use_cache=False
+        )
+        if ct_image is None:
+            raise RuntimeError(
+                f"CT series {series_uid!r} could not be loaded from {ct_dir}"
+            )
     except Exception as e:
         logger.error(f"Failed to load CT image: {e}")
         _write_conda_roi_ledger(
@@ -3295,24 +3348,12 @@ def radiomics_for_course(
             f"CT series is present but unreadable for radiomics in {course_dir}: {e}"
         ) from e
 
+    ct_hu_info = image_hu_verification_status(ct_image)
     ct_info = {
         'spacing': tuple(ct_image.GetSpacing()),
         'origin': tuple(ct_image.GetOrigin()),
         'direction': tuple(ct_image.GetDirection()),
     }
-
-    params_file = (
-        str(config.radiomics_params_file)
-        if getattr(config, "radiomics_params_file", None)
-        else None
-    )
-    parameter_path = Path(params_file) if params_file else None
-    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
-    if not series_uid:
-        _invalidate_radiomics_outputs(output_path)
-        raise RadiomicsCourseExtractionError(
-            f"Course contract has no planning CT SeriesInstanceUID: {course_dir}"
-        )
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
     custom_provenance = load_custom_structure_provenance(custom_cfg)
@@ -3703,6 +3744,9 @@ def radiomics_for_course(
                     "cleanup": True,
                     "ct_info": ct_info,
                 })
+                tasks[-1]["metadata"]["_ct_hu_verified"] = bool(ct_hu_info["hu_verified"])
+                tasks[-1]["metadata"]["_ct_hu_status"] = str(ct_hu_info["status"])
+                tasks[-1]["metadata"]["_ct_hu_detail"] = str(ct_hu_info["detail"])
 
                 tasks[-1]["resource_guard_legacy"] = legacy_rejection(
                     work_estimate, max_bbox_voxels, roi_name)
