@@ -1,5 +1,5 @@
 {
-  "compatible_sources_sha256": "48411b718e42724700d0fc9b5f39850e35098208d7c32fce0da693e16d6f3fc8",
+  "compatible_sources_sha256": "3009d8fcdd2678c9bb8120c20a92e4d1398f360bb24e0e9ef314ab3a7cbb8880",
   "course_classes": [
     "dicom_ct_rtstruct"
   ],

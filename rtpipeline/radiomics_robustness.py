@@ -8061,14 +8061,17 @@ def _admit_robustness_aggregation_input(
         from .radiomics_ct_contract import roi_class_map_identity
 
         current_map_version, current_map_hash = roi_class_map_identity()
-        if "roi_map_hash" in frame.columns:
-            map_hashes = frame["roi_map_hash"].dropna()
-            if not map_hashes.empty and (map_hashes.astype(str) != str(current_map_hash)).any():
-                raise ValueError("robustness table uses a stale ROI class map hash")
-        if "roi_map_version" in frame.columns:
-            map_versions = frame["roi_map_version"].dropna()
-            if not map_versions.empty and (map_versions.astype(str) != str(current_map_version)).any():
-                raise ValueError("robustness table uses a stale ROI class map version")
+        for field, expected, label in (
+            ("roi_map_hash", current_map_hash, "hash"),
+            ("roi_map_version", current_map_version, "version"),
+        ):
+            if field not in frame.columns:
+                continue
+            recorded = frame[field].dropna().astype(str).str.strip()
+            # An empty optional row field makes no claim. The sidecar code
+            # identity still binds the packaged ROI map for the entire run.
+            if (recorded.ne("") & recorded.ne(str(expected))).any():
+                raise ValueError(f"robustness table uses a stale ROI class map {label}")
 
     return _AdmittedRobustnessInput(
         path=path,

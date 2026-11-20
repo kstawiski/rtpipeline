@@ -1075,38 +1075,31 @@ def test_c5_sequential_conda_robustness_propagates_ct_hu_metadata(monkeypatch):
     assert not df.empty
 
 
-def test_c4_admission_refuses_stale_roi_map_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("recorded_hash", ["", "stale-hash"])
+def test_c4_admission_checks_declared_roi_map_identity(tmp_path, monkeypatch, recorded_hash):
     import test_robustness_aggregation_admission as admission
+    from rtpipeline.radiomics_ct_contract import roi_class_map_identity
 
     cohort = admission._build_cohort(tmp_path, monkeypatch)
     path = cohort.tables[0]
-    df = pd.read_parquet(path)
-    if "roi_map_hash" not in df.columns:
-        from rtpipeline.radiomics_ct_contract import roi_class_map_identity
+    frame = pd.read_parquet(path)
+    frame["roi_map_version"], _ = roi_class_map_identity()
+    frame["roi_map_hash"] = recorded_hash
+    frame.to_parquet(path, index=False)
 
-        ver, _ = roi_class_map_identity()
-        df["roi_map_version"] = ver
-        df["roi_map_hash"] = "stale-hash"
-        # Re-bind sidecar output digest so failure comes strictly from ROI map drift
-        df.to_parquet(path, index=False)
-        sidecar_path = rr.robustness_source_dispositions_path(path.parent)
-        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        sidecar["measured_output"]["sha256"] = rr._file_sha256(path)
-        sidecar["measured_output"]["size_bytes"] = int(path.stat().st_size)
-        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
-        receipt_path = path.parent / ".radiomics_robustness_done"
-        if receipt_path.is_file():
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            receipt["measured_output"] = sidecar["measured_output"]
-            receipt["source_dispositions"]["sha256"] = rr._file_sha256(sidecar_path)
-            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    # Update the artifact digests so this probe reaches the ROI map check.
+    sidecar_path = rr.robustness_source_dispositions_path(path.parent)
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["measured_output"]["sha256"] = rr._file_sha256(path)
+    sidecar["measured_output"]["size_bytes"] = path.stat().st_size
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+    if recorded_hash:
+        with pytest.raises(ValueError, match="stale ROI class map hash"):
+            rr._admit_robustness_aggregation_input(path, cohort.rob)
     else:
-        monkeypatch.setattr(
-            "rtpipeline.radiomics_ct_contract.roi_class_map_identity",
-            lambda: ("999", "mutated-map-hash"),
-        )
-    with pytest.raises(ValueError, match="ROI class map"):
-        rr._admit_robustness_aggregation_input(path, cohort.rob)
+        admitted = rr._admit_robustness_aggregation_input(path, cohort.rob)
+        assert len(admitted.frame) == len(frame)
 
 
 def test_a7_sequential_bound_item_invalidated_by_rob_config_and_packaged_yaml(
