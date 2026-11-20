@@ -44,7 +44,9 @@ class GeometricNonmeasurement:
                 valid = (
                     requested.shape == (3,)
                     and realized.shape == (3,)
-                    and req_norm > 1e-6
+                    and np.isfinite(requested).all()
+                    and np.isfinite(realized).all()
+                    and np.any(requested != 0)
                     and (
                         float(np.linalg.norm(realized)) <= 1e-6
                         or projected <= 1e-6

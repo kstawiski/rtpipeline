@@ -2980,13 +2980,22 @@ def randomize_contour(
                 )
                 padded_dist = sitk.GetArrayViewFromImage(padded_distance)
                 clipped_count = 0
+                uncounted = [slice(None)] * 3
                 for axis in range(3):
                     if pad_lo[axis]:
-                        sl = tuple(0 if a == axis else slice(None) for a in range(3))
-                        clipped_count += int(np.count_nonzero(padded_dist[sl] >= -magnitude_mm))
+                        face = uncounted.copy()
+                        face[axis] = 0
+                        clipped_count += int(np.count_nonzero(
+                            padded_dist[tuple(face)] >= -magnitude_mm
+                        ))
                     if pad_hi[axis]:
-                        sl = tuple(-1 if a == axis else slice(None) for a in range(3))
-                        clipped_count += int(np.count_nonzero(padded_dist[sl] >= -magnitude_mm))
+                        face = uncounted.copy()
+                        face[axis] = -1
+                        clipped_count += int(np.count_nonzero(
+                            padded_dist[tuple(face)] >= -magnitude_mm
+                        ))
+                    # Edges shared by two halo faces are counted once.
+                    uncounted[axis] = slice(int(pad_lo[axis]), -int(pad_hi[axis]) or None)
                 if clipped_count > 0:
                     raise GeometricNotExtractable(GeometricNonmeasurement(
                         "contour_outside_image",
