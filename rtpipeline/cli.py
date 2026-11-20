@@ -1060,6 +1060,7 @@ _PERTURBATION_KEYS = frozenset(
         "contour_randomization_mm",
         "noise_levels",
         "intensity",
+        "course_specific_seeds",
     }
 )
 _METRICS_KEYS = frozenset({"icc", "cov", "qcd"})
@@ -1206,6 +1207,8 @@ def _validate_robustness_section(section: dict) -> None:
             _require_number(perturbation[key], f"{label}.{key}", minimum=0.0)
     if "intensity" in perturbation:
         _require_name(perturbation["intensity"], f"{label}.intensity")
+    if "course_specific_seeds" in perturbation:
+        _require_bool(perturbation["course_specific_seeds"], f"{label}.course_specific_seeds")
 
     metrics = _require_mapping(
         section.get("metrics", {}), "radiomics_robustness.metrics"

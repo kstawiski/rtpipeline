@@ -14,8 +14,8 @@ The radiomics robustness module helps you identify stable, reproducible radiomic
    - Custom models (Segmentation_{model_name}/rtstruct.dcm)
 2. **Generating systematic perturbations** via RTpipeline's NTCV chain (Noise + Translation + Contour + Volume):[^zwanenburg2019]
    - **N**: Image noise injection (Gaussian noise in HU)
-   - **T**: Rigid translations (shipped maximum +/-4 mm)
-   - **C**: Reproducible random inward/outward physical-space boundary offsets
+   - **T**: Rigid translations (shipped standard Z-only superior-inferior shifts of +/-4 mm; aggressive adds +/-4 mm along X, Y, and Z)
+   - **C**: Reproducible random inward/outward physical-space boundary offsets (defaults to `max_translation_mm / 2`, or `2.0 mm` when `max_translation_mm == 0` and `contour_randomization_mm == 0`)
    - **V**: Distance-ranked adaptation to the closest voxel count representing ±15-30% volume change
 3. **Re-extracting radiomics features** for each perturbation using PyRadiomics
 4. **Computing robustness metrics**: ICC(3,1) with analytical 95% CIs (via Pingouin[^pingouin]), plus the cohort median of within-subject CoV and QCD.[^koo2016]
@@ -439,13 +439,17 @@ The NTCV chain follows the systematic perturbation methodology from Zwanenburg e
 2. **T (Translation)**: Applies rigid geometric shifts
    - Simulates positioning uncertainty and registration errors
    - Applied *before* contour randomization
-   - The shipped standard grid uses 0 and +/-4 mm superior-inferior shifts;
-     aggressive intensity adds +/-4 mm shifts on each axis
+   - The shipped standard grid uses 0 and +/-4 mm superior-inferior (Z-axis only) shifts;
+     aggressive intensity adds +/-4 mm shifts along X, Y, and Z axes
+   - Coarse slice spacings where the requested displacement rounds to 0 voxels (or fails
+     tolerance) are recorded explicitly via `translation_not_realizable` alongside both
+     `requested_translation_mm` and `realized_translation_mm`
 
 3. **C (Contour)**: Randomizes ROI boundaries
    - Simulates inter-observer delineation variability
    - Applied to the already-shifted ROI
-   - Uses boundary noise simulation
+   - Uses boundary noise simulation (`contour_randomization_mm`, defaulting to `max_translation_mm / 2` or `2.0 mm` when `max_translation_mm == 0`)
+   - Boundary-clipped outward randomizations (`contour_outside_image`) and exhausted duplicate/tiny searches (`contour_realization_unavailable`) are recorded as explicit geometric non-measurements
 
 4. **V (Volume)**: Systematic distance-ranked volume adaptation
    - Final physical-space boundary adjustment to an exact rounded voxel count
@@ -461,9 +465,13 @@ states and 5 unique volume states, producing 315 perturbations. The module does
 not subsample these Cartesian grids. Noise images and contour realizations are
 created once for their own factor levels and reused across the other factors;
 therefore the grid is factorial rather than a sequence of differently seeded
-contours. Translation also fails closed if boundary clipping changes voxel
-count or topology, or if the requested physical displacement is not realized
-within half a voxel diagonal.
+contours. By default (`course_specific_seeds: false`), noise and contour seeds
+are identical across courses for cross-version reproducibility; set
+`segmentation_perturbation.course_specific_seeds: true` to opt in to deterministic
+per-course seed differentiation. Translation fails closed (`translation_outside_image`
+or `translation_not_realizable`) if boundary clipping changes voxel count or topology,
+or if the requested physical displacement rounds to zero or exceeds half a voxel
+diagonal from target displacement.
 
 ## Output Format
 

@@ -55,7 +55,7 @@ import pytest
 import yaml
 
 from rasterizer_provenance_test_utils import (
-    RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
+    HISTORICAL_PROVENANCE_FIELDS, RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
 )
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
@@ -197,7 +197,7 @@ def _normalize(value, ids, parent=None):
         for key, item in value.items():
             # Runtime provenance is tested independently. All
             # existing scientific fields and identities remain exact checks.
-            if key in RASTERIZER_PROVENANCE_FIELDS:
+            if key in HISTORICAL_PROVENANCE_FIELDS:
                 continue
             if key == "code_identity":
                 out[key] = "<code identity>"
@@ -216,7 +216,7 @@ def _normalize(value, ids, parent=None):
 
 
 def _normalize_frame(frame: pd.DataFrame, ids) -> pd.DataFrame:
-    frame = frame.drop(columns=list(RASTERIZER_PROVENANCE_FIELDS), errors="ignore").copy()
+    frame = frame.drop(columns=list(HISTORICAL_PROVENANCE_FIELDS), errors="ignore").copy()
     for column in frame.columns:
         if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
             frame[column] = frame[column].map(lambda v: _normalize_text(v, ids))

@@ -13,7 +13,9 @@ import SimpleITK as sitk
 
 
 GEOMETRIC_REASON_CODES = frozenset({
-    "translation_outside_image", "volume_below_generation_minimum",
+    "translation_outside_image", "translation_not_realizable",
+    "contour_outside_image", "contour_realization_unavailable",
+    "volume_below_generation_minimum",
     "volume_above_image_capacity", "volume_change_not_representable",
     "empty_perturbed_mask", "resampled_mask_below_minimum_voxels",
     "resampled_mask_below_minimum_dimensions",
@@ -32,6 +34,27 @@ class GeometricNonmeasurement:
         try:
             if self.reason_code == "translation_outside_image":
                 valid = 0 <= e["translated_voxels"] < e["original_voxels"]
+            elif self.reason_code == "translation_not_realizable":
+                requested = np.asarray(e["requested_translation_mm"], dtype=float)
+                realized = np.asarray(e["realized_translation_mm"], dtype=float)
+                req_norm = float(np.linalg.norm(requested))
+                projected = (
+                    float(np.dot(realized, requested) / req_norm) if req_norm > 0 else 0.0
+                )
+                valid = (
+                    requested.shape == (3,)
+                    and realized.shape == (3,)
+                    and req_norm > 1e-6
+                    and (
+                        float(np.linalg.norm(realized)) <= 1e-6
+                        or projected <= 1e-6
+                        or float(e["displacement_error_mm"]) > float(e["tolerance_mm"]) + 1e-6
+                    )
+                )
+            elif self.reason_code == "contour_outside_image":
+                valid = int(e["clipped_boundary_voxels"]) > 0 and float(e["magnitude_mm"]) > 0
+            elif self.reason_code == "contour_realization_unavailable":
+                valid = int(e["attempts"]) > 0 and int(e["contour_index"]) >= 1
             elif self.reason_code == "volume_below_generation_minimum":
                 valid = min(e["original_voxels"], e["target_voxels"]) < e["minimum_voxels"]
             elif self.reason_code == "volume_above_image_capacity":
@@ -44,9 +67,11 @@ class GeometricNonmeasurement:
                 valid = (e["resampled_voxels"] <= 1 or (
                     e["minimumROISize"] is not None
                     and e["resampled_voxels"] <= e["minimumROISize"]))
-            else:
+            elif self.reason_code == "resampled_mask_below_minimum_dimensions":
                 valid = e["observed_dimensions"] < e["minimumROIDimensions"]
-        except (KeyError, TypeError):
+            else:
+                valid = False
+        except (KeyError, TypeError, ValueError):
             valid = False
         if not valid:
             raise ValueError("geometric evidence does not establish the stated reason")

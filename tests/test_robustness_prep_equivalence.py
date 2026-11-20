@@ -55,7 +55,7 @@ import pytest
 import yaml
 
 from rasterizer_provenance_test_utils import (
-    RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
+    HISTORICAL_PROVENANCE_FIELDS, RASTERIZER_PROVENANCE_FIELDS, measurement_table_and_schema,
 )
 
 from robustness_prep_fixture import build_course, realistic_rois
@@ -190,9 +190,14 @@ COURSES = {
         _roi("Manual", "GTV1"), _roi("Manual", "CTV1", radii=(7, 8, 4)),
         *_organs("Manual", "OAR", 2)]),
 }
-# Courses whose outputs change on purpose (see test_scoped_reader_* below).
-# Every other course, completed or failed, must publish what the base did.
-CHANGED_COURSES = {"P7", "S1", "S2", "S3"}
+# Courses whose outputs change on purpose (see test_scoped_reader_* and the
+# RTP305 C1/C3 repair checks below):
+# - P7, S1, S2, S3: scoped RTSTRUCT reader repairs.
+# - P1, P2, P3: contain boundary-touching PTV_zedge/PTV_rowedge ROIs whose
+#   outward contour randomizations are now marked contour_outside_image (C3).
+# - P5: contains injected identity_mismatch_when whose condition stays in
+#   requested_condition_ids as technical_failure and fails closed (C1).
+CHANGED_COURSES = {"P1", "P2", "P3", "P5", "P7", "S1", "S2", "S3"}
 
 
 def _export_base(target: Path) -> Path:
@@ -261,7 +266,7 @@ def _normalize(value, ids, parent=None):
         for key, item in value.items():
             # Runtime provenance is tested independently. All
             # existing scientific fields and identities remain exact checks.
-            if key in RASTERIZER_PROVENANCE_FIELDS:
+            if key in HISTORICAL_PROVENANCE_FIELDS:
                 continue
             if key == "code_identity":
                 out[key] = "<code identity>"
@@ -405,6 +410,43 @@ def test_fixture_exercises_the_changed_paths(runs):
 @pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
 def test_outputs_match_base_revision(runs, variant):
     _assert_equivalent(runs["base"], runs[variant], set(COURSES) - CHANGED_COURSES)
+
+
+@pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
+def test_rtp305_edge_contours_and_identity_failure_repairs(runs, variant):
+    """P1-P3 only turn clipped edge contours to contour_outside_image; P5 fails closed on identity mismatch."""
+    base = runs["base"]
+    cur = runs[variant]
+    for course in ("P1", "P2", "P3"):
+        assert cur["codes"][course] == 0, (variant, course)
+        assert _sidecar(cur["outputs"], course)["measurement_outcome"] == "measured"
+        assert "translation_realizations" in _sidecar(cur["outputs"], course)
+        base_df, _ = base["outputs"][f"{course}/C1/radiomics_robustness_ct.parquet"]
+        cur_df, _ = cur["outputs"][f"{course}/C1/radiomics_robustness_ct.parquet"]
+        edge_rois = {"PTV_zedge", "PTV_rowedge"}
+        base_inner = base_df[~base_df["structure"].isin(edge_rois)]
+        cur_inner = cur_df[~cur_df["structure"].isin(edge_rois)]
+        pd.testing.assert_frame_equal(
+            canonical_table(cur_inner, _run_ids(cur["outputs"])),
+            canonical_table(base_inner, _run_ids(base["outputs"])),
+            check_exact=True,
+            obj=f"{course}:interior",
+        )
+        cur_edge = cur_df[cur_df["structure"].isin(edge_rois)]
+        assert "contour_outside_image" in set(cur_edge["reason_code"].dropna())
+    assert cur["codes"]["P5"] == 1
+    p5_sidecar = _sidecar(cur["outputs"], "P5")
+    assert p5_sidecar["measurement_outcome"] == "failed_extraction"
+    assert "P5/C1/radiomics_robustness_ct.parquet" not in cur["outputs"]
+    p5_ev, _ = cur["outputs"]["P5/C1/radiomics_robustness_ct.failed_evidence.parquet"]
+    tech = p5_ev[p5_ev["robustness_status"] == "technical_failure"]
+    assert "perturbation_identity_validation_failed" in set(tech["reason_code"])
+    assert any("_n10_t0_0_4_c1" in pid for pid in tech["perturbation_id"])
+    gtv_rows = p5_ev[p5_ev["structure"] == "GTV1"]
+    assert all(
+        any("_n10_t0_0_4_c1" in pid for pid in json.loads(req))
+        for req in gtv_rows["requested_condition_ids"]
+    )
 
 
 def _ordered_table(frame, ids):

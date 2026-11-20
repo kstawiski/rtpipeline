@@ -1218,6 +1218,9 @@ def effective_robustness_configuration(
         if not exclusions:
             # Empty and absent retain the exact configuration bytes of S11b.
             payload["robustness"]["perturbation"].pop("exclude_structures", None)
+        if not bool(declared_perturbation.get("course_specific_seeds", False)):
+            # Default False and absent retain the exact configuration bytes of Main/S11b.
+            payload["robustness"].get("perturbation", {}).pop("course_specific_seeds", None)
     # Normalize through JSON so the digest is stable for equal configurations
     # expressed with different (but equivalent) container types. No ``default``
     # coercion: a value that only survives as ``str(value)`` would let two
@@ -1407,6 +1410,7 @@ def _write_robustness_source_dispositions(
     failed_evidence: Optional[Path] = None,
     voxel_source_bindings: Optional[List[Dict[str, Any]]] = None,
     source_errors: Optional[List[Dict[str, Any]]] = None,
+    translation_realizations: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """Atomically publish the terminal RTSTRUCT source dispositions of one run.
 
@@ -1571,6 +1575,8 @@ def _write_robustness_source_dispositions(
         "target_selection": effective_configuration["robustness"].get("target_selection", "patterns"),
         "voxel_source_bindings": voxel_bindings,
         "target_inventory": inventory,
+        **({"translation_realizations": list(translation_realizations)}
+           if translation_realizations is not None else {}),
     }
     selection = effective_configuration["robustness"].get("perturbation", {}).get("apply_to_structures", [])
     missed_targets = [roi for roi in payload["target_inventory"] if roi["detector_rules"]
@@ -2308,14 +2314,17 @@ class PerturbationConfig:
     large_volume_changes: List[float] = field(default_factory=lambda: [-0.30, 0.0, 0.30])
     n_random_contour_realizations: int = 2
     max_translation_mm: float = 4.0
-    contour_randomization_mm: float = 0.0  # C8 fix: independent contour noise (0 = auto from max_translation_mm/2 for backwards compat)
+    contour_randomization_mm: float = 0.0  # C8 fix: independent contour noise (0 = auto from max_translation_mm/2, or 2.0 when max_translation_mm == 0)
     noise_levels: List[float] = field(default_factory=lambda: [0.0, 10.0, 20.0])  # Gaussian noise std dev in HU
-    intensity: str = "standard"  # "mild", "standard", "aggressive" - controls perturbation count
+    intensity: str = "standard"  # "mild", "standard", "aggressive" (standard shifts Z only; aggressive shifts X, Y, and Z)
     rotation_angles: List[float] = field(default_factory=list)  # Rotation sensitivity: e.g., [1, -1, 3, -3] degrees
     exclude_structures: List[str] = field(default_factory=list)
+    course_specific_seeds: bool = False  # Opt-in deterministic per-course seed differentiation for noise & contour draws
 
     def __post_init__(self) -> None:
         _validate_exclude_structures(self.exclude_structures)
+        if not isinstance(self.course_specific_seeds, bool):
+            raise ValueError("course_specific_seeds must be a boolean")
 
 
 @dataclass
@@ -2381,6 +2390,7 @@ class RobustnessConfig:
             contour_randomization_mm=pert_data.get("contour_randomization_mm", 0.0),
             noise_levels=pert_data.get("noise_levels", [0.0, 10.0, 20.0]),
             intensity=pert_data.get("intensity", "standard"),
+            course_specific_seeds=pert_data.get("course_specific_seeds", False),
         )
 
         # Metrics config
@@ -2636,8 +2646,11 @@ def _validate_translated_mask(
     original: sitk.Image,
     translated: sitk.Image,
     translation_mm: Tuple[float, float, float],
-) -> None:
-    """Fail closed when a requested translation is clipped or not realised."""
+) -> Tuple[float, float, float]:
+    """Fail closed when a requested translation is clipped, zero-quantized, or not realised.
+
+    Returns the realized physical-space centroid displacement ``(dx, dy, dz)`` in mm.
+    """
 
     geometry_fields = (
         ("size", original.GetSize(), translated.GetSize()),
@@ -2687,21 +2700,37 @@ def _validate_translated_mask(
     original_centroid = np.asarray(shape.GetCentroid(1), dtype=float)
     shape.Execute(translated_binary)
     translated_centroid = np.asarray(shape.GetCentroid(1), dtype=float)
+    realized = translated_centroid - original_centroid
     requested = np.asarray(translation_mm, dtype=float)
-    displacement_error = np.linalg.norm(
-        (translated_centroid - original_centroid) - requested
-    )
+    displacement_error = float(np.linalg.norm(realized - requested))
     # Nearest-neighbour resampling can quantise a physical shift by at most
-    # half of one voxel diagonal. Anything larger indicates a sign, geometry,
-    # or boundary failure rather than ordinary discretisation.
-    tolerance_mm = 0.5 * np.linalg.norm(np.asarray(original.GetSpacing(), dtype=float))
-    if displacement_error > tolerance_mm + 1e-6:
-        raise RuntimeError(
-            "requested mask translation was not realised within grid resolution: "
-            f"requested={tuple(float(v) for v in requested)}, "
-            f"observed={tuple(float(v) for v in translated_centroid - original_centroid)}, "
-            f"tolerance_mm={tolerance_mm:.6g}"
-        )
+    # half of one voxel diagonal. However, when slice spacing exceeds 2x the
+    # requested shift (e.g. a 4 mm Z shift on 10 mm slices), rounding produces
+    # a 0 mm displacement that still falls inside half a voxel diagonal. Both
+    # zero-quantized shifts and out-of-tolerance errors are non-realizable.
+    tolerance_mm = 0.5 * float(np.linalg.norm(np.asarray(original.GetSpacing(), dtype=float)))
+    req_norm = float(np.linalg.norm(requested))
+    projected_mm = float(np.dot(realized, requested) / req_norm) if req_norm > 0 else 0.0
+    zero_quantized = req_norm > 1e-6 and (
+        float(np.linalg.norm(realized)) <= 1e-6 or projected_mm <= 1e-6
+    )
+    if zero_quantized or displacement_error > tolerance_mm + 1e-6:
+        raise GeometricNotExtractable(GeometricNonmeasurement(
+            "translation_not_realizable",
+            {
+                "requested_translation_mm": [float(v) for v in requested],
+                "realized_translation_mm": [float(v) for v in realized],
+                "displacement_error_mm": displacement_error,
+                "tolerance_mm": tolerance_mm,
+                "spacing": [float(v) for v in original.GetSpacing()],
+                "detail": (
+                    "requested physical translation rounded to zero voxel displacement"
+                    if zero_quantized
+                    else "requested mask translation was not realised within grid resolution"
+                ),
+            },
+        ))
+    return tuple(float(v) for v in realized)
 
 
 def randomize_contour(
@@ -2715,7 +2744,8 @@ def randomize_contour(
     A signed distance map avoids the anisotropic-voxel error caused by forcing
     a one-voxel kernel in every dimension. Each realization randomly chooses an
     inward or outward displacement between 50% and 100% of the configured
-    maximum.
+    maximum. Raises ``GeometricNotExtractable`` (``contour_outside_image``) if
+    an outward realization extends beyond the image boundary.
 
     Args:
         mask: Binary SimpleITK image
@@ -2731,16 +2761,20 @@ def randomize_contour(
     if randomization_mm <= 0:
         raise ValueError("randomization_mm must be positive")
 
-    # Keep index zero fixed for bit-identical Maurer rounding (see
-    # _rank_volume_region). The extra voxel puts every omitted point strictly
-    # beyond the largest possible outward offset, including rounding error.
+    # Keep index zero fixed for bit-identical Maurer rounding on non-clipped
+    # ROIs (see _rank_volume_region). The extra voxel puts every omitted point
+    # strictly beyond the largest possible outward offset, including rounding error.
     array = sitk.GetArrayViewFromImage(mask)
     occupied = [np.flatnonzero(np.any(array > 0, axis=tuple(j for j in range(3) if j != i)))
                 for i in range(3)]
-    if all(indices.size for indices in occupied):
+    has_fg = all(indices.size for indices in occupied)
+    if has_fg:
+        lower = np.array([indices[0] for indices in occupied])
         upper = np.array([indices[-1] + 1 for indices in occupied])
-        margin = np.ceil(randomization_mm / np.array(mask.GetSpacing()[::-1])).astype(int) + 1
-        hi = np.minimum(array.shape, upper + margin)
+        shape_arr = np.array(array.shape, dtype=int)
+        spacing_zyx = np.array(mask.GetSpacing()[::-1], dtype=float)
+        margin = np.ceil(randomization_mm / spacing_zyx).astype(int) + 1
+        hi = np.minimum(shape_arr, upper + margin)
         region = tuple(slice(0, int(end)) for end in hi)
         distance_mask = mask[:int(hi[2]), :int(hi[1]), :int(hi[0])]
     else:
@@ -2754,9 +2788,54 @@ def randomize_contour(
         useImageSpacing=True,
     )
     magnitude_mm = float(rng.uniform(0.5 * randomization_mm, randomization_mm))
-    if rng.random() < 0.5:
+    inward = rng.random() < 0.5
+    if inward:
         result = signed_distance > magnitude_mm
     else:
+        if has_fg:
+            # An outward offset clips the image boundary iff a 1-voxel halo
+            # immediately outside any boundary face lies within magnitude_mm.
+            pad_lo = ((lower + 1) * spacing_zyx <= magnitude_mm + 1e-5).astype(int)
+            pad_hi = ((shape_arr - upper + 1) * spacing_zyx <= magnitude_mm + 1e-5).astype(int)
+            if int(pad_lo.sum()) or int(pad_hi.sum()):
+                hi_chk = np.where(pad_hi > 0, shape_arr, hi)
+                chk_mask = (
+                    binary if np.array_equal(hi_chk, hi)
+                    else sitk.Cast(mask[:int(hi_chk[2]), :int(hi_chk[1]), :int(hi_chk[0])] > 0, sitk.sitkUInt8)
+                )
+                padded = sitk.ConstantPad(
+                    chk_mask,
+                    [int(pad_lo[2]), int(pad_lo[1]), int(pad_lo[0])],
+                    [int(pad_hi[2]), int(pad_hi[1]), int(pad_hi[0])],
+                    0,
+                )
+                padded_dist = sitk.GetArrayViewFromImage(
+                    sitk.SignedMaurerDistanceMap(
+                        padded,
+                        insideIsPositive=True,
+                        squaredDistance=False,
+                        useImageSpacing=True,
+                    )
+                )
+                clipped_count = 0
+                for axis in range(3):
+                    if pad_lo[axis]:
+                        sl = tuple(0 if a == axis else slice(None) for a in range(3))
+                        clipped_count += int(np.count_nonzero(padded_dist[sl] >= -magnitude_mm))
+                    if pad_hi[axis]:
+                        sl = tuple(-1 if a == axis else slice(None) for a in range(3))
+                        clipped_count += int(np.count_nonzero(padded_dist[sl] >= -magnitude_mm))
+                if clipped_count > 0:
+                    raise GeometricNotExtractable(GeometricNonmeasurement(
+                        "contour_outside_image",
+                        {
+                            "randomization_mm": float(randomization_mm),
+                            "magnitude_mm": float(magnitude_mm),
+                            "clipped_boundary_voxels": int(clipped_count),
+                            "image_size": [int(v) for v in mask.GetSize()],
+                            "detail": "outward contour randomization clipped at image boundary",
+                        },
+                    ))
         result = signed_distance >= -magnitude_mm
     result_array = np.zeros(array.shape, dtype=np.uint8)
     result_array[region] = sitk.GetArrayViewFromImage(result)
@@ -2882,8 +2961,10 @@ def generate_ntcv_perturbations(
     config: PerturbationConfig,
     structure_name: str,
     *,
+    course_seed_key: Optional[str] = None,
     _noise_cache: Optional[dict] = None,
-) -> Tuple[Dict[str, sitk.Image], Dict[str, sitk.Image]]:
+    _translation_realizations: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Generate NTCV (Noise + Translation + Contour + Volume) perturbation chain.
 
@@ -2937,10 +3018,19 @@ def generate_ntcv_perturbations(
         The perturbation_id encodes the full chain: "ntcv_n{noise}_t{x}_{y}_{z}_c{idx}_v{pct}"
     """
     volume_changes, translation_steps, contour_realizations, noise_levels = _ntcv_factors(config)
-    noise_images = _ntcv_noise_images(original_image, noise_levels, _noise_cache)
+    course_specific_seeds = bool(getattr(config, "course_specific_seeds", False))
+    noise_images = _ntcv_noise_images(
+        original_image,
+        noise_levels,
+        _noise_cache,
+        course_seed_key=course_seed_key,
+        course_specific_seeds=course_specific_seeds,
+    )
     geometry_states = list(_iter_ntcv_geometry_states(
         original_mask, config, volume_changes, translation_steps,
         contour_realizations, structure_name,
+        course_seed_key=course_seed_key,
+        _translation_realizations=_translation_realizations,
     ))
     return _ntcv_assemble(noise_images, geometry_states, config, structure_name)
 
@@ -2971,14 +3061,46 @@ def _ntcv_factors(config: PerturbationConfig) -> Tuple[List[float], int, int, Li
     return volume_changes, translation_steps, contour_realizations, noise_levels
 
 
+def _format_ntcv_scalar(value: float) -> str:
+    """Losslessly format numeric NTCV parameters for perturbation identifiers."""
+    rounded = round(float(value), 6)
+    if abs(rounded) < 1e-9:
+        rounded = 0.0
+    if abs(rounded - round(rounded)) <= 1e-6:
+        return str(int(round(rounded)))
+    return f"{rounded:g}".replace(".", "p")
+
+
+def _course_seed_offset(course_seed_key: Optional[str]) -> Tuple[int, ...]:
+    """Return deterministic 31-bit seed words for opt-in course-specific draws."""
+    if not course_seed_key:
+        return ()
+    digest = hashlib.sha256(str(course_seed_key).encode("utf-8")).digest()
+    return (
+        int.from_bytes(digest[:4], "big") & 0x7FFFFFFF,
+        int.from_bytes(digest[4:8], "big") & 0x7FFFFFFF,
+    )
+
+
+def _ntcv_translation_key_for_pert_id(pert_id: str) -> str:
+    """Extract the translation suffix token from an NTCV or legacy perturbation ID."""
+    import re
+
+    match = re.search(r"(_t-?[0-9p]+_-?[0-9p]+_-?[0-9p]+)(?=(?:_c|_v|$))", str(pert_id))
+    return match.group(1) if match else ""
+
+
 def _ntcv_noise_suffix(noise_std: float) -> str:
-    return f"_n{int(noise_std)}" if noise_std > 0 else ""
+    return f"_n{_format_ntcv_scalar(noise_std)}" if noise_std > 0 else ""
 
 
 def _ntcv_noise_images(
     original_image: sitk.Image,
     noise_levels: List[float],
     _noise_cache: Optional[dict] = None,
+    *,
+    course_seed_key: Optional[str] = None,
+    course_specific_seeds: bool = False,
 ) -> List[Tuple[str, sitk.Image]]:
     """Return (identifier suffix, image) per noise level, in configured order."""
     # Construct each factor once and then take the strict Cartesian product.
@@ -2987,14 +3109,20 @@ def _ntcv_noise_images(
     # change the sampled boundary.
     # Private course-scoped cache: the input and cached images are immutable
     # throughout task preparation. Retain the source object to prevent id reuse.
-    if _noise_cache is not None and _noise_cache.get("source") is not original_image:
+    effective_seed_key = str(course_seed_key) if (course_specific_seeds and course_seed_key) else None
+    if _noise_cache is not None and (
+        _noise_cache.get("source") is not original_image
+        or _noise_cache.get("course_seed_key") != effective_seed_key
+    ):
         _noise_cache.clear()
         _noise_cache["source"] = original_image
+        _noise_cache["course_seed_key"] = effective_seed_key
+    seed_offset = _course_seed_offset(effective_seed_key)
     noise_images: List[Tuple[str, sitk.Image]] = []
     for noise_std in noise_levels:
         if noise_std > 0:
             noise_seed = np.random.SeedSequence(
-                [42, 0, int(round(float(noise_std) * 1000.0))]
+                [42, 0, int(round(float(noise_std) * 1000.0)), *seed_offset]
             )
             noise_rng = np.random.Generator(np.random.PCG64(noise_seed))
             if _noise_cache is not None and noise_std in _noise_cache:
@@ -3016,6 +3144,9 @@ def _iter_ntcv_geometry_states(
     translation_steps: int,
     contour_realizations: int,
     structure_name: str,
+    *,
+    course_seed_key: Optional[str] = None,
+    _translation_realizations: Optional[Dict[str, Dict[str, Any]]] = None,
 ):
     """Yield (identifier suffix, mask or geometric outcome) in grid order.
 
@@ -3027,6 +3158,7 @@ def _iter_ntcv_geometry_states(
     if config.max_translation_mm > 0 and translation_steps > 0:
         max_t = float(config.max_translation_mm)
         if translation_steps == 1:
+            # Standard intensity translates along Z (superior-inferior) only.
             translation_vectors.extend([(0.0, 0.0, max_t), (0.0, 0.0, -max_t)])
         else:
             translation_vectors.extend([
@@ -3036,25 +3168,51 @@ def _iter_ntcv_geometry_states(
             ])
 
     contour_noise_mm = (
-        config.contour_randomization_mm
+        float(config.contour_randomization_mm)
         if config.contour_randomization_mm > 0
-        else config.max_translation_mm / 2
+        else (float(config.max_translation_mm) / 2.0 if config.max_translation_mm > 0 else 2.0)
+    )
+    seed_offset = (
+        _course_seed_offset(course_seed_key)
+        if bool(getattr(config, "course_specific_seeds", False)) and course_seed_key
+        else ()
     )
     for translation_index, trans_vec in enumerate(translation_vectors):
         if any(abs(t) > 1e-3 for t in trans_vec):
             translated_mask = translate_mask(original_mask, trans_vec)
             translation_outcome = None
+            realized_vec: Optional[Tuple[float, float, float]] = None
             try:
-                _validate_translated_mask(original_mask, translated_mask, trans_vec)
+                realized_vec = _validate_translated_mask(original_mask, translated_mask, trans_vec)
+                if realized_vec is None:
+                    realized_vec = tuple(float(v) for v in trans_vec)
             except GeometricNotExtractable as exc:
                 translation_outcome = exc.outcome
+                if exc.outcome.reason_code == "translation_not_realizable":
+                    raw_real = exc.outcome.evidence.get("realized_translation_mm")
+                    if raw_real is not None:
+                        realized_vec = tuple(float(v) for v in raw_real)
             trans_suffix = (
-                f"_t{int(trans_vec[0])}_{int(trans_vec[1])}_{int(trans_vec[2])}"
+                f"_t{_format_ntcv_scalar(trans_vec[0])}"
+                f"_{_format_ntcv_scalar(trans_vec[1])}"
+                f"_{_format_ntcv_scalar(trans_vec[2])}"
             )
+            if _translation_realizations is not None:
+                _translation_realizations[trans_suffix] = {
+                    "requested_translation_mm": [float(v) for v in trans_vec],
+                    "realized_translation_mm": (
+                        [float(v) for v in realized_vec] if realized_vec is not None else None
+                    ),
+                }
         else:
             translated_mask = original_mask
             trans_suffix = ""
             translation_outcome = None
+            if _translation_realizations is not None:
+                _translation_realizations[trans_suffix] = {
+                    "requested_translation_mm": [0.0, 0.0, 0.0],
+                    "realized_translation_mm": [0.0, 0.0, 0.0],
+                }
 
         if translation_outcome is not None:
             for contour_index in range(contour_realizations + 1):
@@ -3064,19 +3222,25 @@ def _iter_ntcv_geometry_states(
                     yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", translation_outcome)
             continue
 
-        contour_variants = [translated_mask]
+        contour_variants: List[Tuple[int, Any]] = [(0, translated_mask)]
+        valid_masks: List[sitk.Image] = [translated_mask]
         for contour_index in range(1, contour_realizations + 1):
             contour_seed = np.random.SeedSequence(
-                [42, 1, translation_index, contour_index]
+                [42, 1, translation_index, contour_index, *seed_offset]
             )
             contour_rng = np.random.Generator(np.random.PCG64(contour_seed))
             randomized = None
+            contour_outcome = None
             for _attempt in range(16):
-                candidate = randomize_contour(
-                    translated_mask,
-                    contour_noise_mm,
-                    rng=contour_rng,
-                )
+                try:
+                    candidate = randomize_contour(
+                        translated_mask,
+                        contour_noise_mm,
+                        rng=contour_rng,
+                    )
+                except GeometricNotExtractable as exc:
+                    contour_outcome = exc.outcome
+                    break
                 candidate_arr = sitk.GetArrayViewFromImage(candidate)
                 if int(np.count_nonzero(candidate_arr)) < 5:
                     continue
@@ -3085,28 +3249,50 @@ def _iter_ntcv_geometry_states(
                         candidate_arr,
                         sitk.GetArrayViewFromImage(existing),
                     )
-                    for existing in contour_variants
+                    for existing in valid_masks
                 ):
                     continue
                 randomized = candidate
                 break
+            if contour_outcome is not None:
+                contour_variants.append((contour_index, contour_outcome))
+                continue
             if randomized is None:
-                raise RuntimeError(
-                    f"could not generate unique contour realization {contour_index} "
-                    f"for {structure_name} after 16 attempts"
-                )
-            contour_variants.append(randomized)
+                contour_variants.append((
+                    contour_index,
+                    GeometricNonmeasurement(
+                        "contour_realization_unavailable",
+                        {
+                            "attempts": 16,
+                            "contour_index": int(contour_index),
+                            "contour_noise_mm": float(contour_noise_mm),
+                            "minimum_voxels": 5,
+                            "detail": (
+                                f"could not generate unique contour realization "
+                                f"{contour_index} for {structure_name} after 16 attempts"
+                            ),
+                        },
+                    ),
+                ))
+                continue
+            valid_masks.append(randomized)
+            contour_variants.append((contour_index, randomized))
 
-        for contour_index, contour_mask in enumerate(contour_variants):
+        for contour_index, contour_item in contour_variants:
             contour_suffix = f"_c{contour_index}" if contour_index > 0 else ""
+            if isinstance(contour_item, GeometricNonmeasurement):
+                for tau in volume_changes:
+                    vol_suffix = "_v0" if abs(tau) < 1e-6 else f"_v{int(tau * 100):+03d}"
+                    yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", contour_item)
+                continue
             for tau in volume_changes:
                 if abs(tau) < 1e-6:
-                    final_mask = contour_mask
+                    final_mask = contour_item
                     vol_suffix = "_v0"
                 else:
-                    final_mask = volume_adapt_mask(contour_mask, tau)
+                    final_mask = volume_adapt_mask(contour_item, tau)
                     if final_mask is None:
-                        final_mask = volume_nonmeasurement(contour_mask, tau)
+                        final_mask = volume_nonmeasurement(contour_item, tau)
                     vol_suffix = f"_v{int(tau * 100):+03d}"
                 yield (f"{trans_suffix}{contour_suffix}{vol_suffix}", final_mask)
                 del final_mask
@@ -3768,7 +3954,7 @@ def extract_features_for_masks(
         frames.append(frame)
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     combined = _declare_not_evaluable_features(combined, declarations)
-    valid = set(masks) - set(failures)
+    valid = set(masks)
     if valid:
         _validate_extracted_feature_frame(combined, valid, structure_name,
                                           expected_source_identity=source_identity)
@@ -4058,18 +4244,41 @@ def _extract_features_for_masks_uncached(
                         exc,
                     )
         if identity_failures:
+            from .robustness_watchdog import technical_rows
+
             rows = [
                 row
                 for row in rows
                 if str(row.get("perturbation_id", "")) not in identity_failures
             ]
+            for pert_id, reason_detail in identity_failures.items():
+                feature_declarations = {
+                    k: v for k, v in feature_declarations.items() if k[0] != pert_id
+                }
+                rows.extend(technical_rows(
+                    {
+                        "__technical_failure__": {
+                            "reason_code": "perturbation_identity_validation_failed",
+                            "evidence": {"reason_detail": str(reason_detail)},
+                        },
+                        "roi_name": structure_name,
+                        "perturbation_id": pert_id,
+                    },
+                    source_identity.as_dict(),
+                    shared_run_id,
+                    perturbed_mask_identities[pert_id],
+                    {
+                        "configured_parameter_hashes": configured_hashes,
+                        "code_revision": current_code_revision(),
+                    },
+                ))
         frame = pd.DataFrame(rows)
         if not _defer_feature_validation:
             frame = _declare_not_evaluable_features(frame, feature_declarations)
         if _defer_feature_validation:
             frame.attrs["feature_declarations"] = [[pid, arm, declaration]
                 for (pid, arm), declaration in feature_declarations.items()]
-        valid_perturbations = set(masks) - set(identity_failures)
+        valid_perturbations = set(masks)
         if valid_perturbations and not _defer_feature_validation:
             _validate_extracted_feature_frame(
                 frame,
@@ -5236,6 +5445,7 @@ def _prepare_robustness_roi(request: Mapping[str, Any]) -> Dict[str, Any]:
         perturbation.n_random_contour_realizations > 0 or
         any(n > 0 for n in perturbation.noise_levels)
     )
+    translation_realizations: Dict[str, Dict[str, Any]] = {}
     if use_ntcv:
         volume_changes, translation_steps, contour_realizations, noise_levels = _ntcv_factors(
             perturbation
@@ -5248,6 +5458,8 @@ def _prepare_robustness_roi(request: Mapping[str, Any]) -> Dict[str, Any]:
         for geometry_suffix, final_mask in _iter_ntcv_geometry_states(
             mask_img, perturbation, volume_changes, translation_steps,
             contour_realizations, roi_name,
+            course_seed_key=request.get("course_seed_key"),
+            _translation_realizations=translation_realizations,
         ):
             if isinstance(final_mask, GeometricNonmeasurement):
                 geometry_states.append((geometry_suffix, final_mask))
@@ -5267,6 +5479,10 @@ def _prepare_robustness_roi(request: Mapping[str, Any]) -> Dict[str, Any]:
         else:
             volume_changes = perturbation.small_volume_changes
         perturbed_masks = generate_perturbed_masks(mask_img, volume_changes, roi_name)
+        translation_realizations[""] = {
+            "requested_translation_mm": [0.0, 0.0, 0.0],
+            "realized_translation_mm": [0.0, 0.0, 0.0],
+        }
         for pert_id, mask in perturbed_masks.items():
             if not isinstance(mask, GeometricNonmeasurement):
                 _prepare(pert_id, mask, image_paths["original"])
@@ -5288,6 +5504,7 @@ def _prepare_robustness_roi(request: Mapping[str, Any]) -> Dict[str, Any]:
             ) from exc
     return {
         "perturbation_ids": list(perturbed_masks),
+        "translation_realizations": translation_realizations,
         "nonmeasurements": [
             (pert_id, outcome)
             for pert_id, outcome in perturbed_masks.items()
@@ -6190,6 +6407,7 @@ def robustness_for_course(
         *,
         nonmeasured_outcome: str = ROBUSTNESS_SOURCE_ONLY_OUTCOME,
         source_only_basis: Optional[Dict[str, Any]] = None,
+        translation_realizations: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """Publish this run's terminal source dispositions, or nothing at all.
 
@@ -6214,6 +6432,7 @@ def robustness_for_course(
             source_only_basis=source_only_basis,
             tolerated_failures=tolerated_source_failures,
             voxel_source_bindings=voxel_source_bindings,
+            translation_realizations=translation_realizations,
         )
         logger.info(
             "Recorded %d RTSTRUCT source disposition(s) and %d tolerated "
@@ -6362,10 +6581,47 @@ def robustness_for_course(
         has_parallel = False
     all_features = []
     generated_nonmeasurement_keys = set()
+    roi_translation_realizations: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+    course_seed_key = (
+        f"{course_dir.parent.name}/{course_dir.name}/{series_uid}"
+        if bool(getattr(rob_config.perturbation, "course_specific_seeds", False))
+        else None
+    )
     from .radiomics_ct_contract import CT_EXTRACTION_ARMS
+    def _identity_failure_technical_rows(
+        source: str,
+        roi_name: str,
+        perturbation_id: str,
+        reason_detail: str,
+        *,
+        mask_identity: Optional[str] = None,
+        task_params: Optional[Mapping[str, Any]] = None,
+        task_index: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        from .robustness_watchdog import technical_rows
+
+        evidence: Dict[str, Any] = {"reason_detail": str(reason_detail)}
+        if task_index is not None:
+            evidence["task_index"] = int(task_index)
+        return technical_rows(
+            {
+                "__technical_failure__": {
+                    "reason_code": "perturbation_identity_validation_failed",
+                    "evidence": evidence,
+                },
+                "roi_name": roi_name,
+                "perturbation_id": perturbation_id,
+            },
+            identity_catalog[(source, roi_name)].as_dict(),
+            robustness_run_identifier,
+            mask_identity,
+            dict(task_params) if task_params is not None else None,
+        )
+
     def condition_context(roi_name, source):
         return {"configuration": getattr(config, "radiomics_robustness_config", None),
-            "seed": 42, "sources": [binding for binding in
+            "seed": ([42, course_seed_key] if course_seed_key else 42),
+            "sources": [binding for binding in
                 [*rtstruct_source_bindings, *voxel_source_bindings]
                 if binding.get("segmentation_source") == source
                 and binding.get("roi_name", roi_name) == roi_name]}
@@ -6373,7 +6629,8 @@ def robustness_for_course(
         from .extraction_progress import BoundItem, image_identity, restamp
         identity = identity_catalog[(source, roi_name)].as_dict()
         item = BoundItem(course_dir / ".robustness-progress/nonmeasurements",
-            [identity, pert_id, "paired_ct_arms", 42], rob_config,
+            [identity, pert_id, "paired_ct_arms", ([42, course_seed_key] if course_seed_key else 42)],
+            rob_config,
             {"image": image_identity(ct_image),
              "source_mask": hashlib.sha256(all_masks[(roi_name, source)].tobytes()).hexdigest()})
         rows = item.load()
@@ -6427,7 +6684,13 @@ def robustness_for_course(
                     image_paths = {
                         index: str(_radiomics_task_image_path(image, temp_dir, image_cache))
                         for index, (_, image) in enumerate(
-                            _ntcv_noise_images(ct_image, noise_levels, noise_cache)
+                            _ntcv_noise_images(
+                                ct_image,
+                                noise_levels,
+                                noise_cache,
+                                course_seed_key=course_seed_key,
+                                course_specific_seeds=bool(perturbation.course_specific_seeds),
+                            )
                         )
                     }
                 else:
@@ -6461,6 +6724,7 @@ def robustness_for_course(
                     "run_identifier": robustness_run_identifier,
                     "source_identity": identity_catalog[(source, roi_name)].as_dict(),
                     "itk_threads": sitk.ProcessObject.GetGlobalDefaultNumberOfThreads(),
+                    "course_seed_key": course_seed_key,
                 })
             logger.info(
                 "Preparing perturbations for %d robustness ROI(s) with %d worker(s)",
@@ -6472,6 +6736,9 @@ def robustness_for_course(
             del requests
             for (roi_name, source), prepared in zip(selected_structures, prepared_rois):
                 expected_perturbations[(roi_name, source)] = set(prepared["perturbation_ids"])
+                roi_translation_realizations[(roi_name, source)] = dict(
+                    prepared.get("translation_realizations", {})
+                )
                 for pert_id, outcome in prepared["nonmeasurements"]:
                     all_features.append(generated_nonmeasurement(roi_name, source, pert_id, outcome))
                     generated_nonmeasurement_keys.update(
@@ -6508,6 +6775,7 @@ def robustness_for_course(
                     any(n > 0 for n in rob_config.perturbation.noise_levels)
                 )
 
+                roi_realizations: Dict[str, Dict[str, Any]] = {}
                 if use_ntcv:
                     # Generate NTCV perturbation chain
                     perturbed_masks, perturbed_images = generate_ntcv_perturbations(
@@ -6515,7 +6783,9 @@ def robustness_for_course(
                         ct_image,
                         rob_config.perturbation,
                         roi_name,
+                        course_seed_key=course_seed_key,
                         _noise_cache=noise_cache,
+                        _translation_realizations=roi_realizations,
                     )
                 else:
                     # Legacy mode: volume-only perturbations
@@ -6530,8 +6800,13 @@ def robustness_for_course(
                         volume_changes,
                         roi_name,
                     )
+                    roi_realizations[""] = {
+                        "requested_translation_mm": [0.0, 0.0, 0.0],
+                        "realized_translation_mm": [0.0, 0.0, 0.0],
+                    }
                     perturbed_images = None
 
+                roi_translation_realizations[(roi_name, source)] = roi_realizations
                 if len(perturbed_masks) < 2:
                     raise RuntimeError(
                         f"insufficient perturbations for {roi_name} ({source}): "
@@ -6564,15 +6839,59 @@ def robustness_for_course(
                     progress_root=course_dir / ".robustness-progress",
                     progress_context=condition_context(roi_name, source),
                 )
+                seq_identity_failures: Dict[str, str] = {}
                 for perturbation_id, reason_detail in features_df.attrs.get(
                     "identity_failures", {}
                 ).items():
                     _record_identity_failure(
-                        source, roi_name, perturbation_id, str(reason_detail)
+                        source, roi_name, str(perturbation_id), str(reason_detail)
                     )
-                    expected_perturbations[(roi_name, source)].discard(
-                        perturbation_id
-                    )
+                    seq_identity_failures[str(perturbation_id)] = str(reason_detail)
+                if not features_df.empty and "perturbation_id" in features_df.columns:
+                    source_identity = identity_catalog[(source, roi_name)]
+                    for pert_id in sorted(perturbed_masks):
+                        if str(pert_id) in seq_identity_failures:
+                            continue
+                        sub = features_df[features_df["perturbation_id"].astype(str) == str(pert_id)]
+                        if sub.empty:
+                            continue
+                        if (
+                            "robustness_status" in sub.columns
+                            and sub["robustness_status"].eq("technical_failure").all()
+                        ):
+                            continue
+                        try:
+                            _validate_extracted_feature_frame(
+                                sub,
+                                {str(pert_id)},
+                                f"{source}/{roi_name}/{pert_id}",
+                                expected_source_identity=source_identity,
+                            )
+                        except RobustnessIdentityError as exc:
+                            _record_identity_failure(source, roi_name, str(pert_id), str(exc))
+                            seq_identity_failures[str(pert_id)] = str(exc)
+                if seq_identity_failures:
+                    if not features_df.empty and "perturbation_id" in features_df.columns:
+                        features_df = features_df[
+                            ~features_df["perturbation_id"].astype(str).isin(seq_identity_failures)
+                        ].copy()
+                    extra_tech_rows: List[Dict[str, Any]] = []
+                    for pert_id, reason_detail in seq_identity_failures.items():
+                        mask_id = (
+                            _perturbed_mask_identity(perturbed_masks[pert_id])
+                            if pert_id in perturbed_masks else None
+                        )
+                        extra_tech_rows.extend(_identity_failure_technical_rows(
+                            source, roi_name, pert_id, reason_detail,
+                            mask_identity=mask_id,
+                        ))
+                    if extra_tech_rows:
+                        tech_df = pd.DataFrame(extra_tech_rows)
+                        features_df = (
+                            tech_df
+                            if features_df.empty
+                            else pd.concat([features_df, tech_df], ignore_index=True)
+                        )
                 if not features_df.empty:
                     features_df["segmentation_source"] = source
                     all_features.append(features_df)
@@ -6670,18 +6989,26 @@ def robustness_for_course(
                                     expected_source_identity=source_identity,
                                 )
                             except RobustnessIdentityError as exc:
-                                # Recorded in task order after the loop; a
-                                # condition has exactly one task, so nothing
-                                # below consults it before then.
+                                # Recorded in task order after the loop; keep
+                                # the condition in requested_condition_ids as
+                                # a technical_failure so completion is never faked.
                                 identity_failures[index] = (
                                     source, roi_name, perturbation_id, str(exc)
                                 )
-                                task_key = (roi_name, source, perturbation_id)
-                                expected_perturbations.get(
-                                    (roi_name, source), set()
-                                ).discard(perturbation_id)
-                                for arm in CT_EXTRACTION_ARMS:
-                                    successful_task_keys.discard((*task_key, arm))
+                                failed_rows = _identity_failure_technical_rows(
+                                    source,
+                                    roi_name,
+                                    perturbation_id,
+                                    str(exc),
+                                    mask_identity=task_params["perturbed_mask_identity"],
+                                    task_params=task_params,
+                                    task_index=index,
+                                )
+                                result_frames[index] = pd.DataFrame(failed_rows)
+                                successful_task_keys.update(
+                                    (roi_name, source, perturbation_id, arm)
+                                    for arm in CT_EXTRACTION_ARMS
+                                )
                                 continue
                             for extraction_arm in result_frame[
                                 "extraction_arm"
@@ -6799,18 +7126,6 @@ def robustness_for_course(
         combined_df.rename(columns={"roi_name": "structure"}, inplace=True)
     if "roi_name" in combined_df and "structure" in combined_df:
         combined_df["structure"] = combined_df["structure"].fillna(combined_df["roi_name"])
-    if identity_failed_perturbations:
-        failed_keys = set(identity_failed_perturbations)
-        combined_df = combined_df.loc[
-            ~combined_df.apply(
-                lambda row: (
-                    str(row.get("structure", "")),
-                    str(row.get("segmentation_source", "")),
-                    str(row.get("perturbation_id", "")),
-                ) in failed_keys,
-                axis=1,
-            )
-        ].reset_index(drop=True)
     if feature_declarations:
         explained_rows = []
         for (roi_name, source), expected_ids in expected_perturbations.items():
@@ -6853,6 +7168,40 @@ def robustness_for_course(
         combined_df.loc[selected, "requested_condition_ids"] = json.dumps(sorted(requested_ids))
         combined_df.loc[selected, "impossible_condition_ids"] = json.dumps(impossible_ids)
         combined_df.loc[selected, "possible_condition_count"] = len(requested_ids) - len(impossible_ids)
+
+    req_translations: List[Optional[str]] = []
+    real_translations: List[Optional[str]] = []
+    for struct_val, source_val, pert_val in zip(
+        combined_df.get("structure", pd.Series(dtype=str)),
+        combined_df.get("segmentation_source", pd.Series(dtype=str)),
+        combined_df.get("perturbation_id", pd.Series(dtype=str)),
+    ):
+        t_map = roi_translation_realizations.get((str(struct_val), str(source_val)), {})
+        t_key = _ntcv_translation_key_for_pert_id(str(pert_val))
+        entry = t_map.get(t_key)
+        if entry is None:
+            req_translations.append(None)
+            real_translations.append(None)
+        else:
+            req_val = entry.get("requested_translation_mm")
+            real_val = entry.get("realized_translation_mm")
+            req_translations.append(json.dumps(req_val) if req_val is not None else None)
+            real_translations.append(json.dumps(real_val) if real_val is not None else None)
+    combined_df["requested_translation_mm"] = pd.Series(req_translations, index=combined_df.index, dtype="object")
+    combined_df["realized_translation_mm"] = pd.Series(real_translations, index=combined_df.index, dtype="object")
+    serialized_translation_realizations = [
+        {
+            "segmentation_source": source,
+            "structure": roi_name,
+            "translation_suffix": (t_suffix if t_suffix else "origin"),
+            "requested_translation_mm": entry["requested_translation_mm"],
+            "realized_translation_mm": entry["realized_translation_mm"],
+        }
+        for (roi_name, source), t_map in sorted(
+            roi_translation_realizations.items(), key=lambda item: (item[0][1], item[0][0])
+        )
+        for t_suffix, entry in sorted(t_map.items(), key=lambda item: item[0])
+    ]
 
     from .radiomics_ct_contract import _rasterizer_columns
     from .stage_completion import execution_environment_fingerprint
@@ -6958,7 +7307,10 @@ def robustness_for_course(
         )
 
     try:
-        _publish_source_dispositions(output_path)
+        _publish_source_dispositions(
+            output_path,
+            translation_realizations=serialized_translation_realizations,
+        )
     except BaseException:
         # The nominal completed table was never certified, so it is withdrawn
         # rather than left looking like a measured result. The deliberately
