@@ -66,7 +66,7 @@ BASE_MODULE_SHA256 = {
 
 # RTP305 changes the authoritative dose and prescription gates.
 RTP305_MODULE_SHA256 = {
-    "course_contract.py": "9efaca9eaf524f062a25d626a422434d904c1f25b7b69723a8c7b8830be8d2f3",
+    "course_contract.py": "f3a6005f954234233da201f9d5d1380f1bc46496bca39bf8e495cb715bb22665",
     "prescription.py": "f976ed56be1301e51cc16c48b183feef5a42809f9cfce922ce4f939a3edf2fd0",
 }
 
