@@ -123,7 +123,9 @@ COURSES = {
     "P1": _full_course(parallel=True, workers=3, prep_start_method="spawn", seed=1),
     "P2": _full_course(parallel=True, workers=1, seed=2),
     "P3": dict(GRID, parallel=False, seed=3, rois=[
-        _roi("Manual", "GTV1"), _slab("Manual", "PTV_zedge", (14, 24, 14, 24, 0, 4)),
+        _roi("Manual", "GTV1"),
+        _slab("Manual", "PTV_zedge", (14, 24, 14, 24, 0, 4)),
+        _slab("Manual", "PTV_rowedge", (0, 6, 8, 18, 5, 11)),
         *_organs("Manual", "OAR", 5)],
         defects={"Manual": [{"name": "Bad", "kind": "partially_unparseable"},
                             {"name": "far_oar", "kind": "outside_fov"}]}),
@@ -193,8 +195,8 @@ COURSES = {
 # Courses whose outputs change on purpose (see test_scoped_reader_* and the
 # RTP305 C1/C3 repair checks below):
 # - P7, S1, S2, S3: scoped RTSTRUCT reader repairs.
-# - P1, P2, P3: contain boundary-touching PTV_zedge/PTV_rowedge ROIs whose
-#   outward contour randomizations are now marked contour_outside_image (C3).
+# - P1, P2, P3: negative Z translation clips PTV_zedge. Outward contour
+#   realizations can clip PTV_rowedge while its Z translations remain in view.
 # - P5: contains injected identity_mismatch_when whose condition stays in
 #   requested_condition_ids as technical_failure and fails closed (C1).
 CHANGED_COURSES = {"P1", "P2", "P3", "P5", "P7", "S1", "S2", "S3"}
@@ -414,7 +416,7 @@ def test_outputs_match_base_revision(runs, variant):
 
 @pytest.mark.parametrize("variant", ["current", "current_other_budget", "current_in_process"])
 def test_rtp305_edge_contours_and_identity_failure_repairs(runs, variant):
-    """P1-P3 only turn clipped edge contours to contour_outside_image; P5 fails closed on identity mismatch."""
+    """Attribute edge losses to their first failing component and retain P5's failed conditions."""
     base = runs["base"]
     cur = runs[variant]
     for course in ("P1", "P2", "P3"):
@@ -432,8 +434,33 @@ def test_rtp305_edge_contours_and_identity_failure_repairs(runs, variant):
             check_exact=True,
             obj=f"{course}:interior",
         )
-        cur_edge = cur_df[cur_df["structure"].isin(edge_rois)]
-        assert "contour_outside_image" in set(cur_edge["reason_code"].dropna())
+        noise_suffixes = ("", "_n10", "_n20")
+        volume_suffixes = ("_v-15", "_v0", "_v+15")
+        z_edge = cur_df[cur_df["structure"].eq("PTV_zedge")]
+        z_clipped = z_edge[z_edge["reason_code"].notna()]
+        assert set(z_clipped["reason_code"]) == {"translation_outside_image"}
+        assert set(z_clipped["perturbation_id"]) == {
+            f"ntcv{noise}_t0_0_-4{contour}{volume}"
+            for noise in noise_suffixes
+            for contour in ("", "_c1", "_c2")
+            for volume in volume_suffixes
+        }
+        for evidence in z_clipped["geometry_evidence"].unique():
+            geometry = json.loads(evidence)
+            assert geometry["translation_mm"] == [0.0, 0.0, -4.0]
+            assert geometry["translated_voxels"] < geometry["original_voxels"]
+
+        row_edge = cur_df[cur_df["structure"].eq("PTV_rowedge")]
+        row_clipped = row_edge[row_edge["reason_code"].notna()]
+        assert set(row_clipped["reason_code"]) == {"contour_outside_image"}
+        assert set(row_clipped["perturbation_id"]) == {
+            f"ntcv{noise}{contour}{volume}"
+            for noise in noise_suffixes
+            for contour in ("_c1", "_c2", "_t0_0_-4_c1")
+            for volume in volume_suffixes
+        }
+        for evidence in row_clipped["geometry_evidence"].unique():
+            assert json.loads(evidence)["clipped_boundary_voxels"] > 0
     assert cur["codes"]["P5"] == 1
     p5_sidecar = _sidecar(cur["outputs"], "P5")
     assert p5_sidecar["measurement_outcome"] == "failed_extraction"

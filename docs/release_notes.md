@@ -29,6 +29,7 @@
 - `radiomics_robustness`: Record requested and realized translations and give shifts outside the allowed tolerance a geometric disposition.
 - `radiomics_robustness`: Preserve the requested translation in Parquet for small subvoxel shifts by using fixed-point perturbation identifiers.
 - `radiomics_robustness`: Record clipped contour offsets and unavailable realizations as nonmeasurements, support zero translation and preserve fractional perturbation identifiers.
+- The robustness preparation equivalence suite separately verifies translation clipping, outward contour clipping and retained worker identity failures.
 - `radiomics_robustness`: Bind planning CT bytes and the upstream CT radiomics publication at production, reuse and aggregation.
 - `radiomics`, `radiomics_robustness`, `cli`: Require matching CT extraction parameters for selected baseline ROIs and robustness measurements. Aggregation checks the configured parameter file, and the default binds the packaged YAML directly.
 - `acquisition_scale`, `radiomics`, `radiomics_robustness`: Withhold HU-dependent features and noise perturbations for unverified or non-HU intensities.

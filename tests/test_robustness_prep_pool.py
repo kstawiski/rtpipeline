@@ -187,15 +187,15 @@ def test_prepared_image_path_equals_written_image(tmp_path):
         rp._prepare_radiomics_task(None, *args, _image_path=tmp_path / "absent.nrrd")
 
 
-def test_packaged_params_copy_is_replaced_atomically(tmp_path):
-    """Preparation workers hash this copy while other workers rewrite it."""
+def test_packaged_mr_params_copy_is_replaced_atomically(tmp_path):
+    """The packaged MR parameters still use atomic materialization."""
     from rtpipeline.config import PipelineConfig
     from rtpipeline.radiomics import _get_params_file
 
     config = PipelineConfig(tmp_path, tmp_path, tmp_path / "logs")
-    first = _get_params_file(config, "CT")
+    first = _get_params_file(config, "MR")
     content = first.read_bytes()
     assert content
-    second = _get_params_file(config, "CT")
+    second = _get_params_file(config, "MR")
     assert second == first and second.read_bytes() == content
     assert sorted(p.name for p in first.parent.iterdir()) == [first.name]
