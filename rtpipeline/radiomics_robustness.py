@@ -941,8 +941,9 @@ def _voxel_roi_name(binding):
 def _planning_robustness_image(course_dir):
     contract = load_course_contract(Path(course_dir))
     if contract.planning_ct_dir is not None:
-        from .radiomics import _load_series_image
-        return _load_series_image(contract.planning_ct_dir)
+        from .radiomics import _load_contracted_series_image, _load_series_image
+        series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip() or None
+        return _load_contracted_series_image(_load_series_image, contract.planning_ct_dir, series_uid)
     return sitk.ReadImage(str(contract.planning_ct_nifti))
 
 
@@ -2783,16 +2784,31 @@ def add_noise_to_image(
     if noise_std_hu <= 0:
         return image
 
+    from .acquisition_scale import image_hu_verification_status
+
+    hu_info = image_hu_verification_status(image)
+    if not hu_info["hu_verified"]:
+        raise ValueError(
+            "Refusing HU Gaussian noise injection on CT image without verified HU scale "
+            f"({hu_info['status']}): {hu_info['detail']}"
+        )
+
     if rng is None:
         rng = np.random.default_rng()
 
     arr = sitk.GetArrayFromImage(image).astype(np.float32)
     noise = rng.normal(0, noise_std_hu, arr.shape).astype(np.float32)
     noisy_arr = arr + noise
-    
+
     noisy_img = sitk.GetImageFromArray(noisy_arr)
     noisy_img.CopyInformation(image)
-    
+    for key in ("rtpipeline_hu_verified", "rtpipeline_hu_status", "rtpipeline_hu_detail"):
+        try:
+            if image.HasMetaDataKey(key):
+                noisy_img.SetMetaData(key, image.GetMetaData(key))
+        except Exception:
+            pass
+
     return noisy_img
 
 
@@ -5442,15 +5458,22 @@ def robustness_for_course(
     course_dirs = build_course_dirs(course_dir)
 
     # Load CT image
-    from .radiomics import _load_series_image
+    from .radiomics import _load_contracted_series_image, _load_series_image
+    series_uid = str(
+        contract.planning_ct.get("series_instance_uid") or ""
+    ).strip()
     ct_dir = contract.planning_ct_dir
-    ct_image = _load_series_image(ct_dir) if ct_dir is not None else None
+    ct_image = (
+        _load_contracted_series_image(_load_series_image, ct_dir, series_uid or None)
+        if ct_dir is not None
+        else None
+    )
 
     # NIfTI fallback when DICOM/CT is not available (e.g. remote staging)
     _use_nifti_masks = False
     if ct_image is None:
         ct_nifti = contract.planning_ct_nifti
-        if ct_nifti is not None:
+        if ct_nifti is not None and ct_dir is None:
             try:
                 ct_image = sitk.ReadImage(str(ct_nifti))
                 _use_nifti_masks = True
@@ -5462,9 +5485,6 @@ def robustness_for_course(
         logger.warning("No CT image found for robustness analysis in %s", course_dir)
         return None
 
-    series_uid = str(
-        contract.planning_ct.get("series_instance_uid") or ""
-    ).strip()
     if not series_uid:
         raise RuntimeError(
             f"Planning CT contract has no SeriesInstanceUID for robustness in {course_dir}"
@@ -6455,10 +6475,15 @@ def robustness_for_course(
                     generated_nonmeasurement_keys.update(
                         (roi_name, source, pert_id, arm) for arm in CT_EXTRACTION_ARMS
                     )
+                from .acquisition_scale import image_hu_verification_status
+                ct_hu = image_hu_verification_status(ct_image)
                 for pert_id, task_file, task_params in prepared["tasks"]:
                     # Add perturbation-specific metadata to extra_metadata
                     task_params['extra_metadata'] = {'perturbation_id': pert_id}
                     task_params["__progress_context__"] = condition_context(roi_name, source)
+                    task_params["_ct_hu_verified"] = bool(ct_hu["hu_verified"])
+                    task_params["_ct_hu_status"] = str(ct_hu["status"])
+                    task_params["_ct_hu_detail"] = str(ct_hu["detail"])
                     tasks.append((task_file, task_params))
                 logger.info(
                     "Prepared %d robustness task(s) and %d geometric non-measurement(s) "

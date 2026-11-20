@@ -125,6 +125,8 @@ _COMPLETE_DISPOSITIONS = {
     "invalid_contour_geometry",
     "unresolved_source_scope",
     "below_minimum_dimensions",
+    "non_hu_rescale_units",
+    "unverifiable_hu_rescale",
 }
 
 FEATURE_POLICY_EXTRACT = "extract"
@@ -1788,14 +1790,20 @@ def extract_ct_roi_arms(
     progress_root: Optional[Path] = None,
     progress_context: Any = None,
 ) -> list[dict[str, Any]]:
+    from .acquisition_scale import image_hu_verification_status
     from .radiomics_memory import RadiomicsMemoryLimit, memory_budget_bytes
     metadata = dict(common_metadata)
     legacy = metadata.pop("_resource_guard_legacy", None)
+    hu_verification = image_hu_verification_status(image, metadata)
+    metadata.pop("_ct_hu_verified", None)
+    metadata.pop("_ct_hu_status", None)
+    metadata.pop("_ct_hu_detail", None)
     arguments = dict(factory=factory, decision=decision, common_metadata=metadata,
                      run_identifier=run_identifier, code_revision=code_revision,
                      native_voxel_count=native_voxel_count, required=required,
                      configured_parameter_hashes=configured_parameter_hashes,
-                     progress_root=progress_root, progress_context=progress_context)
+                     progress_root=progress_root, progress_context=progress_context,
+                     hu_verification=hu_verification)
     try:
         rows = _extract_ct_roi_arms_impl(image, mask, **arguments)
         # A legacy conda caller prepares masks before sending them to the feature
@@ -1855,6 +1863,7 @@ def _extract_ct_roi_arms_impl(
     configured_parameter_hashes: Optional[Mapping[str, str]] = None,
     progress_root: Optional[Path] = None,
     progress_context: Any = None,
+    hu_verification: Optional[Mapping[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     shape_extractor, raw_extractor, primary_extractor = build_ct_extractors(
         factory, decision.primary_resegment_range_hu
@@ -2019,40 +2028,80 @@ def _extract_ct_roi_arms_impl(
             runtime_versions=_runtime_versions(),
         )
 
-    raw_result = execute(raw_extractor, SENSITIVITY_ARM)
-    raw_expected = shape_expected | _configured_feature_names(
-        raw_extractor, observed_result=raw_result
+    hu_verified = True if hu_verification is None else bool(hu_verification.get("hu_verified", True))
+    hu_refusal_status = str((hu_verification or {}).get("status") or "non_hu_rescale_units")
+    hu_refusal_detail = str((hu_verification or {}).get("detail") or "")
+    raw_uses_hu = bool(
+        isinstance(getattr(raw_extractor, "settings", None), Mapping)
+        and raw_extractor.settings.get("binWidth") not in (None, 0, False)
+        and not raw_extractor.settings.get("normalize")
     )
-    raw_undefined = _approved_undefined_feature_names(raw_result)
-    raw_result.update(shape_features)
-    sensitivity = dict(raw_result)
-    sensitivity.update(common_metadata)
-    sensitivity.update(
-        _arm_metadata(
-            arm=SENSITIVITY_ARM,
-            decision=decision,
-            extractor=raw_extractor,
-            run_identifier=run_identifier,
-            code_revision=code_revision,
-            native_voxel_count=native_voxel_count,
-            required=required,
-            configured_parameter_hash_value=str(
-                (configured_parameter_hashes or {}).get(SENSITIVITY_ARM, "unavailable")
-            ),
+
+    if not hu_verified and raw_uses_hu:
+        raw_expected = set(shape_expected)
+        raw_undefined = set(shape_undefined)
+        sensitivity = dict(shape_features)
+        sensitivity.update(common_metadata)
+        sensitivity.update(
+            _arm_metadata(
+                arm=SENSITIVITY_ARM,
+                decision=decision,
+                extractor=raw_extractor,
+                run_identifier=run_identifier,
+                code_revision=code_revision,
+                native_voxel_count=native_voxel_count,
+                required=required,
+                configured_parameter_hash_value=str(
+                    (configured_parameter_hashes or {}).get(SENSITIVITY_ARM, "unavailable")
+                ),
+            )
         )
-    )
-    sensitivity.update(raw_qc)
-    sensitivity.update(
-        {
-            "shape_disposition": "success",
-            "intensity_texture_disposition": "success",
-            "extraction_status": "success",
-            RADIOMICS_UNDEFINED_FEATURES_COLUMN: _feature_names_json(
-                raw_undefined | shape_undefined
-            ),
-            **_feature_schema_metadata(raw_expected),
-        }
-    )
+        sensitivity.update(raw_qc)
+        sensitivity.update(
+            {
+                "shape_disposition": "success",
+                "intensity_texture_disposition": hu_refusal_status,
+                "extraction_status": "success",
+                "extraction_status_detail": hu_refusal_detail,
+                RADIOMICS_UNDEFINED_FEATURES_COLUMN: _feature_names_json(raw_undefined),
+                **_feature_schema_metadata(raw_expected),
+            }
+        )
+    else:
+        raw_result = execute(raw_extractor, SENSITIVITY_ARM)
+        raw_expected = shape_expected | _configured_feature_names(
+            raw_extractor, observed_result=raw_result
+        )
+        raw_undefined = _approved_undefined_feature_names(raw_result)
+        raw_result.update(shape_features)
+        sensitivity = dict(raw_result)
+        sensitivity.update(common_metadata)
+        sensitivity.update(
+            _arm_metadata(
+                arm=SENSITIVITY_ARM,
+                decision=decision,
+                extractor=raw_extractor,
+                run_identifier=run_identifier,
+                code_revision=code_revision,
+                native_voxel_count=native_voxel_count,
+                required=required,
+                configured_parameter_hash_value=str(
+                    (configured_parameter_hashes or {}).get(SENSITIVITY_ARM, "unavailable")
+                ),
+            )
+        )
+        sensitivity.update(raw_qc)
+        sensitivity.update(
+            {
+                "shape_disposition": "success",
+                "intensity_texture_disposition": "success",
+                "extraction_status": "success",
+                RADIOMICS_UNDEFINED_FEATURES_COLUMN: _feature_names_json(
+                    raw_undefined | shape_undefined
+                ),
+                **_feature_schema_metadata(raw_expected),
+            }
+        )
 
     primary_qc_extractor = primary_extractor or raw_extractor
     primary_expected = set(shape_expected)
@@ -2080,30 +2129,39 @@ def _extract_ct_roi_arms_impl(
     primary["shape_disposition"] = "success"
     disposition = decision.primary_intensity_texture_disposition
     if primary_extractor is not None:
-        minimum_size = primary_extractor.settings.get("minimumROISize")
-        minimum_dimensions = int(primary_extractor.settings.get("minimumROIDimensions", 2))
-        after_count = int(primary_qc["resegment_after_count"])
-        after_dimensions = int(primary_qc["observed_roi_dimensions_after_resegmentation"])
-        if minimum_size is not None and after_count <= int(minimum_size):
-            disposition = "below_minimum_voxels"
-        elif after_dimensions < minimum_dimensions:
-            disposition = "below_minimum_dimensions"
+        if not hu_verified:
+            disposition = hu_refusal_status
+            if hu_refusal_detail:
+                primary["extraction_status_detail"] = hu_refusal_detail
         else:
-            primary_result = execute(primary_extractor, PRIMARY_ARM)
-            primary_expected.update(
-                _configured_feature_names(
-                    primary_extractor, observed_result=primary_result
+            minimum_size = primary_extractor.settings.get("minimumROISize")
+            minimum_dimensions = int(primary_extractor.settings.get("minimumROIDimensions", 2))
+            after_count = int(primary_qc["resegment_after_count"])
+            after_dimensions = int(primary_qc["observed_roi_dimensions_after_resegmentation"])
+            if minimum_size is not None and after_count <= int(minimum_size):
+                disposition = "below_minimum_voxels"
+            elif after_dimensions < minimum_dimensions:
+                disposition = "below_minimum_dimensions"
+            else:
+                primary_result = execute(primary_extractor, PRIMARY_ARM)
+                primary_expected.update(
+                    _configured_feature_names(
+                        primary_extractor, observed_result=primary_result
+                    )
                 )
-            )
-            primary_undefined.update(_approved_undefined_feature_names(primary_result))
-            primary_result = {
-                key: value
-                for key, value in primary_result.items()
-                if not any(marker in key for marker in SHAPE_FEATURE_MARKERS)
-            }
-            primary_result.update(shape_features)
-            primary = {**primary_result, **primary}
-            disposition = "success"
+                primary_undefined.update(_approved_undefined_feature_names(primary_result))
+                primary_result = {
+                    key: value
+                    for key, value in primary_result.items()
+                    if not any(marker in key for marker in SHAPE_FEATURE_MARKERS)
+                }
+                primary_result.update(shape_features)
+                primary = {**primary_result, **primary}
+                disposition = "success"
+    elif not hu_verified:
+        disposition = hu_refusal_status
+        if hu_refusal_detail:
+            primary["extraction_status_detail"] = hu_refusal_detail
     primary["intensity_texture_disposition"] = disposition
     primary["extraction_status"] = "success"
     primary[RADIOMICS_UNDEFINED_FEATURES_COLUMN] = _feature_names_json(
@@ -2155,12 +2213,16 @@ def disposition_rows_for_arms(
     from .radiomics_rasterizer import mask_backend
 
     versions[RASTERIZER_BACKEND_COLUMN] = mask_backend({**common_metadata, **versions})
+    clean_metadata = {
+        k: v for k, v in common_metadata.items()
+        if k not in {"_ct_hu_verified", "_ct_hu_status", "_ct_hu_detail"}
+    }
     rows: list[dict[str, Any]] = []
     for arm in CT_EXTRACTION_ARMS:
         window = decision.primary_resegment_range_hu if arm == PRIMARY_ARM else None
         rows.append(
             {
-                **common_metadata,
+                **clean_metadata,
                 "extraction_arm": arm,
                 "effective_resegment_lower_hu": window[0] if window else None,
                 "effective_resegment_upper_hu": window[1] if window else None,
@@ -2421,6 +2483,16 @@ def validate_ct_publication(
                 record.get("effective_resegment_upper_hu")
             ):
                 raise ValueError("sensitivity_raw row must not carry an effective resegmentation window")
+            if disposition != "success":
+                feature_columns = [
+                    column
+                    for column in dataframe.columns
+                    if any(marker in str(column) for marker in INTENSITY_TEXTURE_FEATURE_MARKERS)
+                ]
+                if any(not _is_missing(record.get(column)) for column in feature_columns):
+                    raise ValueError(
+                        "sensitivity disposition row contains intensity or texture feature values"
+                    )
         else:
             expected_window = _PRIMARY_WINDOWS.get(str(record.get("roi_class")))
             lower = record.get("effective_resegment_lower_hu")

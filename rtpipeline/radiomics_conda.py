@@ -34,6 +34,8 @@ from .extraction_progress import radiomics_settings
 from .acquisition_scale import (
     attach_acquisition_descriptor,
     describe_contract_planning_ct,
+    image_hu_verification_status,
+    verify_ct_series_hu_units,
 )
 from .custom_models import (
     list_custom_model_outputs,
@@ -2595,6 +2597,9 @@ def radiomics_for_course_ct_nifti_fallback(
                 "roi_name": display_roi,
                 "nifti_path": nifti_path_str,
                 "mask_path_source": str(mask_source),
+                "_ct_hu_verified": bool(ct_hu_info["hu_verified"]),
+                "_ct_hu_status": str(ct_hu_info["status"]),
+                "_ct_hu_detail": str(ct_hu_info["detail"]),
             },
         }
     skip_rois = _ct_skip_rois(config)
@@ -2610,6 +2615,14 @@ def radiomics_for_course_ct_nifti_fallback(
     if any(seg_dir.glob("*.nii*")):
         series_dirs.insert(0, seg_dir)
 
+    ct_hu_info = (
+        verify_ct_series_hu_units(
+            contract.planning_ct_dir,
+            expected_series_uid=str(contract.planning_ct.get("series_instance_uid") or "").strip() or None,
+        )
+        if contract.planning_ct_dir is not None
+        else {"hu_verified": True, "status": "not_asserted", "detail": ""}
+    )
     tasks: List[Dict[str, Any]] = []
     preparation_failures: List[Dict[str, Any]] = []
     temp_files: List[Path] = []
@@ -3303,12 +3316,25 @@ def radiomics_for_course(
             f"RTSTRUCT radiomics requires a CT DICOM series in {course_dir}"
         )
 
-    # Load CT image
+    params_file = resolve_ct_params_file(config)
+    parameter_path = Path(params_file)
+    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
+    if not series_uid:
+        _invalidate_radiomics_outputs(output_path)
+        raise RadiomicsCourseExtractionError(
+            f"Course contract has no planning CT SeriesInstanceUID: {course_dir}"
+        )
+
+    # Load contracted CT image
     try:
-        reader = sitk.ImageSeriesReader()
-        dicom_files = reader.GetGDCMSeriesFileNames(str(ct_dir))
-        reader.SetFileNames(dicom_files)
-        ct_image = reader.Execute()
+        from .radiomics import _load_contracted_series_image, _load_series_image
+        ct_image = _load_contracted_series_image(
+            _load_series_image, ct_dir, series_uid, use_cache=False
+        )
+        if ct_image is None:
+            raise RuntimeError(
+                f"CT series {series_uid!r} could not be loaded from {ct_dir}"
+            )
     except Exception as e:
         logger.error(f"Failed to load CT image: {e}")
         _write_conda_roi_ledger(
@@ -3319,20 +3345,12 @@ def radiomics_for_course(
             f"CT series is present but unreadable for radiomics in {course_dir}: {e}"
         ) from e
 
+    ct_hu_info = image_hu_verification_status(ct_image)
     ct_info = {
         'spacing': tuple(ct_image.GetSpacing()),
         'origin': tuple(ct_image.GetOrigin()),
         'direction': tuple(ct_image.GetDirection()),
     }
-
-    params_file = resolve_ct_params_file(config)
-    parameter_path = Path(params_file)
-    series_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip()
-    if not series_uid:
-        _invalidate_radiomics_outputs(output_path)
-        raise RadiomicsCourseExtractionError(
-            f"Course contract has no planning CT SeriesInstanceUID: {course_dir}"
-        )
     run_identifier = new_run_identifier()
     code_revision = current_code_revision()
     custom_provenance = load_custom_structure_provenance(custom_cfg)
@@ -3723,6 +3741,9 @@ def radiomics_for_course(
                     "cleanup": True,
                     "ct_info": ct_info,
                 })
+                tasks[-1]["metadata"]["_ct_hu_verified"] = bool(ct_hu_info["hu_verified"])
+                tasks[-1]["metadata"]["_ct_hu_status"] = str(ct_hu_info["status"])
+                tasks[-1]["metadata"]["_ct_hu_detail"] = str(ct_hu_info["detail"])
 
                 tasks[-1]["resource_guard_legacy"] = legacy_rejection(
                     work_estimate, max_bbox_voxels, roi_name)

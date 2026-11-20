@@ -294,14 +294,15 @@ def _worker_init(
     min_voxels: int,
     max_voxels: int,
     base_timeout: int,
+    series_uid: Optional[str] = None,
 ) -> None:
     # Apply OpenMP/BLAS thread limits inside each worker.
     _apply_thread_limit(_resolve_thread_limit(thread_limit) or 1)
 
-    from .radiomics import _extractor, _extractor_large_roi, _load_series_image
+    from .radiomics import _extractor, _extractor_large_roi, _load_contracted_series_image, _load_series_image
 
     ct_path = Path(ct_dir)
-    img = _load_series_image(ct_path)
+    img = _load_contracted_series_image(_load_series_image, ct_path, series_uid)
     ext = _extractor(config, "CT")
     ext_large = _extractor_large_roi(config, "CT")
 
@@ -899,6 +900,8 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
                 raise RuntimeError("CT radiomics extractor is unavailable in worker")
             return candidate
 
+        from .acquisition_scale import image_hu_verification_status
+
         display_roi = (
             task.roi_name
             if (not cropped or task.roi_name.endswith("__partial"))
@@ -906,13 +909,21 @@ def _extract_one_with_geometry(task: _RoiTask) -> List[Dict[str, Any]]:
         )
         common_metadata = _task_common_metadata(task, cropped=cropped)
         common_metadata["roi_name"] = display_roi
+        img_hu = image_hu_verification_status(img)
         records = extract_ct_roi_arms(
             img,
             mask_img,
             factory=_factory,
             decision=task.decision,
-            common_metadata={**common_metadata, "_resource_guard_legacy":
-                             legacy_rejection(work_estimate, max_bbox_voxels, task.roi_name)},
+            common_metadata={
+                **common_metadata,
+                "_resource_guard_legacy": legacy_rejection(
+                    work_estimate, max_bbox_voxels, task.roi_name
+                ),
+                "_ct_hu_verified": bool(img_hu["hu_verified"]),
+                "_ct_hu_status": str(img_hu["status"]),
+                "_ct_hu_detail": str(img_hu["detail"]),
+            },
             run_identifier=task.run_identifier,
             code_revision=task.code_revision,
             native_voxel_count=voxel_count,
@@ -1135,14 +1146,15 @@ def parallel_radiomics_for_course(
             existing_df = None
 
     try:
-        from .radiomics import _extractor, _load_series_image
+        from .radiomics import _extractor, _load_contracted_series_image, _load_series_image
     except Exception as exc:
         _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
             f"Failed importing radiomics extractor for {course_dir}: {exc}"
         ) from exc
 
-    if _load_series_image(ct_dir) is None:
+    contracted_ct_uid = str(contract.planning_ct.get("series_instance_uid") or "").strip() or None
+    if _load_contracted_series_image(_load_series_image, ct_dir, contracted_ct_uid) is None:
         _invalidate_radiomics_outputs(out_path)
         raise RadiomicsCourseExtractionError(
             f"CT series is present but unreadable for radiomics in {course_dir}"
@@ -1770,7 +1782,7 @@ def parallel_radiomics_for_course(
             initializer=_worker_init,
             initargs=(
                 str(ct_dir), config, thread_limit, skip_rois, min_voxels,
-                max_voxels, base_task_timeout,
+                max_voxels, base_task_timeout, contracted_ct_uid,
             ),
         )
         futures: Dict[Any, _RoiTask] = {}
@@ -2301,6 +2313,15 @@ def _isolated_radiomics_extraction(task) -> Optional[Dict[str, Any]]:
             ),
             "roi_name": task_params.get("roi_name", ""),
             "modality": "CT",
+            **(
+                {
+                    "_ct_hu_verified": bool(task_params["_ct_hu_verified"]),
+                    "_ct_hu_status": str(task_params.get("_ct_hu_status") or ""),
+                    "_ct_hu_detail": str(task_params.get("_ct_hu_detail") or ""),
+                }
+                if "_ct_hu_verified" in task_params
+                else {}
+            ),
         }
         records = extract_ct_roi_arms(
             task_params["image_path"],
