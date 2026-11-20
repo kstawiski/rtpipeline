@@ -362,8 +362,8 @@ def test_receipt_only_failure_and_stale_record(tmp_path, monkeypatch):
     }
 
 
-def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
-    """Run the actual main producer, then admit its untouched artifacts here."""
+def test_compatible_main_receipt_without_ct_binding_is_refused_without_rewrite(tmp_path, monkeypatch):
+    """Historical code compatibility and measured CT binding are independent admission checks."""
     import hashlib
     import sys
     import types
@@ -407,15 +407,21 @@ def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
         rr.robustness_source_dispositions_path(c.course_dir("P1")),
     ]
     before = {str(path): path.read_bytes() for path in paths}
-    admitted = rr.admit_robustness_cohort_course(
-        c.course_dir("P1"),
-        patient_id="P1",
-        course_id="C1",
-        rob_config=rr.RobustnessConfig.from_dict(
-            yaml.safe_load(c.config_path.read_text())["radiomics_robustness"]
-        ),
-    )
-    assert admitted.measured
+    payload = json.loads(before[str(paths[-1])])
+    current = rr._current_robustness_code_identity()
+    course_dir = c.course_dir("P1")
+    assert rr._compatible_main_measured_code(payload, current, course_dir=course_dir)
+    with pytest.raises(
+        ValueError, match="robustness planning CT source, series membership or bytes changed or are unbound"
+    ):
+        rr.admit_robustness_cohort_course(
+            course_dir,
+            patient_id="P1",
+            course_id="C1",
+            rob_config=rr.RobustnessConfig.from_dict(
+                yaml.safe_load(c.config_path.read_text())["radiomics_robustness"]
+            ),
+        )
     assert {str(path): path.read_bytes() for path in paths} == before
     # Keep reproducible byte evidence in pytest's captured output.
     print(
@@ -424,10 +430,8 @@ def test_main_receipt_reused_byte_for_byte(tmp_path, monkeypatch):
             for path, value in before.items()
         }
     )
-    payload = json.loads(before[str(paths[-1])])
-    current = rr._current_robustness_code_identity()
     current["sources_sha256"] = "dirty-code"
-    assert not rr._compatible_main_measured_code(payload, current)
+    assert not rr._compatible_main_measured_code(payload, current, course_dir=course_dir)
 
 
 def test_newer_disagreeing_record_is_conflict(tmp_path, monkeypatch):
