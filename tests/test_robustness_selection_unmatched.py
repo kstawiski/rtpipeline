@@ -191,8 +191,14 @@ def test_campaign_rule_closes_unmatched_with_real_receipts(
         ds.save_as(path)
     expected_outcome = "selection_gap_targets_unselected" if target_present else OUTCOME
     expected_status = "technically_missing" if target_present else "not_applicable"
-    assert _run_course(cohort, "P3", campaign=True) == 0
+    from rtpipeline.radiomics_ct_contract import write_completion_sentinel
+    from test_workflow_fail_closed import _write_ct_publication
+
+    # The producer and the shell gates consume the same upstream publication.
     course = cohort.course_dir("P3")
+    _write_ct_publication(course, patient_id="P3")
+    write_completion_sentinel(course, course / ".radiomics_done")
+    assert _run_course(cohort, "P3", campaign=True) == 0
     saved = tmp_path / "producer-receipt.json"
     saved.write_bytes(cohort.sentinel("P3").read_bytes())
     # Extraction is covered above. Replay its writer-produced receipt after the
@@ -213,12 +219,6 @@ def test_campaign_rule_closes_unmatched_with_real_receipts(
         course, course / ".dvh_done", stage="dvh", status="disabled",
         configuration_dependency=dependency,
     )
-    from rtpipeline.radiomics_ct_contract import write_completion_sentinel
-    # The upstream radiomics shell gate reads the declared structured status.
-    # A real main-radiomics writer receipt is supplied by the existing helper.
-    from test_workflow_fail_closed import _write_ct_publication
-    _write_ct_publication(course, patient_id="P3")
-    write_completion_sentinel(course, course / ".radiomics_done")
     if tamper:
         with (course / "RS.dcm").open("ab") as stream:
             stream.write(b"changed source")

@@ -196,7 +196,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
         sidecar.update(_ct_provenance(course_dir / "CT"))
         sidecar_path.write_text(json.dumps(sidecar))
         metadata_path.write_text(json.dumps(metadata))
-        load_course_contract(course_dir)  # The subprocess consumes this same real contract.
+        contract = load_course_contract(course_dir)
         rs_paths[rs_path] = kind
         courses[(patient_id, course_id)] = SimpleNamespace(
             course_dir=course_dir, kind=kind, rs_path=rs_path
@@ -205,7 +205,7 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
             dict(
                 patient_id=patient_id,
                 course_id=course_id,
-                series_uid="1.2.3",
+                series_uid=contract.planning_ct["series_instance_uid"],
                 segmentation_source="Manual",
                 mask_identity=f"source-mask-{patient_id}-{course_id}",
                 roi_original_name="ROI",
@@ -213,14 +213,6 @@ def _build_courses(tmp_path, monkeypatch, specs, *, apply_to_structures=("ROI", 
             )
         )
 
-    monkeypatch.setattr(
-        rr,
-        "load_course_contract",
-        lambda course: SimpleNamespace(
-            planning_ct_dir=Path(course),
-            planning_ct={"series_instance_uid": "1.2.3"},
-        ),
-    )
     monkeypatch.setattr(
         rr,
         "_load_main_ct_identity_catalog",
