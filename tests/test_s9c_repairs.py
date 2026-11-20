@@ -388,8 +388,12 @@ def test_f10_conda_guards_receive_aligned_array(tmp_path, monkeypatch, rasterize
     case_path.write_text(json.dumps(case))
     image=sitk.PermuteAxes(native,[2,0,1])
     expected=np.moveaxis(sitk.GetArrayFromImage(rtstruct_mask_to_image(mask,builder.series_data,image)),0,-1)>0
-    monkeypatch.setattr(rc.sitk,'ImageSeriesReader',lambda:SimpleNamespace(
-        GetGDCMSeriesFileNames=lambda _:['synthetic'],SetFileNames=lambda _:None,Execute=lambda:image))
+    monkeypatch.setattr(rc.sitk, "ImageSeriesReader", lambda: SimpleNamespace(
+        GetGDCMSeriesIDs=reader.GetGDCMSeriesIDs,
+        GetGDCMSeriesFileNames=reader.GetGDCMSeriesFileNames,
+        SetFileNames=reader.SetFileNames,
+        Execute=lambda: image,
+    ))
     seen=[]
     def guard(observed,**kwargs):
         np.testing.assert_array_equal(observed,expected)
