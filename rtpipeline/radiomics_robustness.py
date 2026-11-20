@@ -4737,6 +4737,9 @@ def summarize_feature_stability(
     """
     Compute per-feature robustness metrics (ICC, CoV, QCD) and classify robustness.
 
+    This exploratory package summary reports fixed-grid perturbation stability.
+    Study analysis O7 uses a separate specification and implementation.
+
     Args:
         df_long: Tidy DataFrame with columns [patient_id, course_id, structure, segmentation_source,
                  perturbation_id, feature_name, value]
@@ -4747,22 +4750,24 @@ def summarize_feature_stability(
 
     Not-evaluable rule. ICC, CoV and QCD here assume every subject contributes
     a value under every perturbation. When any subject in a group has a
-    ``feature_not_evaluable`` row (a producer-declared gap, see
-    ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS), no metric is computed for that
-    group: subjects are not dropped, values are not imputed, and the
-    perturbation set is not reduced. The group is reported with NaN metrics,
-    ``robustness_label``/``cov_status``/``qcd_status`` = ``not_evaluable``,
-    ``evaluability_reason`` naming the declared reason codes and
-    ``n_subjects_not_evaluable``. Those two columns appear only when at least
-    one group is affected, so summaries without such rows are unchanged.
+    ``feature_not_evaluable`` or ``geometrically_impossible`` row, no metric is
+    computed for that group: subjects are not dropped, values are not imputed,
+    and varying perturbation sets are never pooled. The group is reported with
+    NaN metrics, ``robustness_label``/``cov_status``/``qcd_status`` = ``not_evaluable``,
+    ``evaluability_reason`` naming the declared reason codes, and
+    ``n_subjects_not_evaluable``. Undefined (NaN) ICC is likewise classified as
+    ``not_evaluable`` (never ``"poor"``). Those two columns appear only when at
+    least one group is affected, so unaffected summaries are unchanged.
     """
     if "robustness_status" in df_long and df_long.robustness_status.eq("technical_failure").any():
         raise RuntimeError("technical robustness failures require recovery before aggregation")
-    if "robustness_status" in df_long and df_long["robustness_status"].eq("geometrically_impossible").any():
-        raise ValueError(
-            "geometric non-measurements require an explicit comparable-condition analysis; "
-            "do not drop subjects, impute values, or pool varying condition sets into fixed-grid ICC"
-        )
+    if not df_long.index.is_unique:
+        df_long = df_long.reset_index(drop=True)
+    impossible_rows = (
+        df_long["robustness_status"].astype("string").fillna("measured").eq("geometrically_impossible")
+        if "robustness_status" in df_long
+        else pd.Series(False, index=df_long.index)
+    )
     not_evaluable_rows = (
         df_long["robustness_status"].astype("string").fillna("measured").eq(
             ROBUSTNESS_FEATURE_NOT_EVALUABLE_STATUS
@@ -4780,9 +4785,87 @@ def summarize_feature_stability(
             group_columns.append("extraction_arm")
         group_columns.append("feature_name")
 
-    for group_key, group in df_long.groupby(group_columns):
+    scope_columns = [col for col in group_columns if col != "feature_name"] or ["structure"]
+
+    def _subject_series(frame_part: pd.DataFrame) -> List[Tuple[str, ...]]:
+        parts = [frame_part["patient_id"].astype(str)]
+        if "course_id" in frame_part.columns:
+            parts.append(frame_part["course_id"].astype(str))
+        if "structure" in frame_part.columns:
+            parts.append(frame_part["structure"].astype(str))
+        if "segmentation_source" in frame_part.columns:
+            parts.append(frame_part["segmentation_source"].astype(str))
+        return list(zip(*(part.tolist() for part in parts)))
+
+    impossible_scopes: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+    possible_features = df_long.loc[~impossible_rows & df_long["feature_name"].notna()]
+    if impossible_rows.any():
+        relevant = impossible_rows | df_long["feature_name"].notna()
+        for scope_vals, scope_df in df_long.loc[relevant].groupby(scope_columns, dropna=False):
+            scope_key = scope_vals if isinstance(scope_vals, tuple) else (scope_vals,)
+            scope_imp = impossible_rows.loc[scope_df.index]
+            if not bool(scope_imp.any()):
+                continue
+            reasons = sorted(
+                {
+                    str(v)
+                    for v in scope_df.loc[scope_imp, "reason_code"].dropna().astype(str)
+                    if str(v).strip()
+                }
+            ) if "reason_code" in scope_df.columns else []
+            if not reasons:
+                reasons = ["geometrically_impossible"]
+            all_subjs = set(_subject_series(scope_df))
+            imp_subjs = set(_subject_series(scope_df.loc[scope_imp]))
+            impossible_scopes[scope_key] = {
+                "reasons": reasons,
+                "all_subjects": all_subjs,
+                "imp_subjects": imp_subjs,
+                "n_perturbations": int(scope_df["perturbation_id"].nunique()) if "perturbation_id" in scope_df.columns else 0,
+                "n_courses": (
+                    len(scope_df[["patient_id", "course_id"]].astype(str).drop_duplicates())
+                    if "course_id" in scope_df.columns else np.nan
+                ),
+                "scope_row": {
+                    col: val for col, val in zip(scope_columns, scope_key)
+                },
+            }
+
+    def _geometric_disposition(info, feature, other_gaps=()):
+        n_subjects = len(info["all_subjects"])
+        n_not_evaluable = len(info["imp_subjects"].union(other_gaps))
+        return {
+            **info["scope_row"],
+            "feature_name": feature,
+            "n_subjects": n_subjects,
+            "n_subjects_complete": n_subjects - n_not_evaluable,
+            "n_subjects_dropped": 0,
+            "n_courses": info["n_courses"],
+            "n_perturbations": info["n_perturbations"],
+            "icc": np.nan,
+            "icc_ci95_low": np.nan,
+            "icc_ci95_high": np.nan,
+            "cov_pct": np.nan,
+            "cov_pct_q1": np.nan,
+            "cov_pct_q3": np.nan,
+            "n_subjects_cov": 0,
+            "cov_status": "not_evaluable",
+            "qcd": np.nan,
+            "qcd_q1": np.nan,
+            "qcd_q3": np.nan,
+            "n_subjects_qcd": 0,
+            "qcd_status": "not_evaluable",
+            "robustness_label": "not_evaluable",
+            "pass_seg_perturb": False,
+            "evaluability_reason": "geometrically_impossible:" + ",".join(info["reasons"]),
+            "n_subjects_not_evaluable": n_not_evaluable,
+        }
+
+    covered_impossible_scopes: set[Tuple[Any, ...]] = set()
+    for group_key, group in possible_features.groupby(group_columns):
         key_values = group_key if isinstance(group_key, tuple) else (group_key,)
         row_data = {col: val for col, val in zip(group_columns, key_values)}
+        scope_key = tuple(group[col].iloc[0] for col in scope_columns)
 
         # Build unique subject identifier including course_id to avoid collapsing
         # different courses of the same patient into one subject for ICC computation.
@@ -4791,29 +4874,23 @@ def summarize_feature_stability(
         icc_df = group[["patient_id", "perturbation_id", "value"]].copy()
         icc_df.rename(columns={"perturbation_id": "rater"}, inplace=True)
 
-        # Start with patient_id
-        subject_parts = [group["patient_id"].astype(str)]
-
-        # Include course_id if available (critical for multi-course/longitudinal data)
-        if "course_id" in group.columns:
-            subject_parts.append(group["course_id"].astype(str))
-
-        # Include structure (already fixed by grouping, but ensures uniqueness across groups)
-        if "structure" in df_long.columns:
-            subject_parts.append(group["structure"].astype(str))
-
-        # Include segmentation_source
-        if "segmentation_source" in df_long.columns:
-            subject_parts.append(group.get("segmentation_source", "unknown").astype(str))
-
         # Tuples preserve field boundaries (unlike underscore concatenation,
         # which can collide for legitimate identifiers containing underscores).
-        icc_df["subject"] = list(zip(*(part.tolist() for part in subject_parts)))
+        icc_df["subject"] = _subject_series(group)
 
         if icc_df.duplicated(["subject", "rater"]).any():
             raise ValueError(
                 f"duplicate subject/perturbation values in robustness group {row_data}"
             )
+
+        group_not_evaluable = not_evaluable_rows.loc[group.index]
+        if scope_key in impossible_scopes:
+            covered_impossible_scopes.add(scope_key)
+            rows.append(_geometric_disposition(
+                impossible_scopes[scope_key], group["feature_name"].iloc[0],
+                icc_df.loc[group_not_evaluable.to_numpy(), "subject"],
+            ))
+            continue
 
         rater_sets = icc_df.groupby("subject")["rater"].agg(
             lambda values: frozenset(values.astype(str))
@@ -4826,7 +4903,6 @@ def summarize_feature_stability(
                 f"in robustness group {row_data}"
             )
 
-        group_not_evaluable = not_evaluable_rows.loc[group.index]
         if bool(group_not_evaluable.any()):
             if "reason_code" not in group.columns or group.loc[
                 group_not_evaluable, "reason_code"
@@ -4931,7 +5007,9 @@ def summarize_feature_stability(
             config.metrics.cov_enabled and len(finite_cov) == n_subjects
         )
 
-        if not cov_complete:
+        if np.isnan(icc):
+            robustness_label = "not_evaluable"
+        elif not cov_complete:
             robustness_label = "not_evaluable"
         elif robust_icc and robust_cov:
             robustness_label = "robust"
@@ -4982,6 +5060,10 @@ def summarize_feature_stability(
         })
 
         rows.append(row_data)
+
+    for scope_key, info in impossible_scopes.items():
+        if scope_key not in covered_impossible_scopes:
+            rows.append(_geometric_disposition(info, np.nan))
 
     return pd.DataFrame(rows)
 
@@ -8050,6 +8132,9 @@ def aggregate_robustness_results(
 ) -> None:
     """
     Aggregate per-course robustness results into cohort-level summary.
+
+    This exploratory package summary reports fixed-grid perturbation stability.
+    Study analysis O7 uses a separate specification and implementation.
 
     Only tables admitted by :func:`_admit_robustness_aggregation_input` are
     summarised: each input must still be the run-bound, code-bound,

@@ -147,6 +147,7 @@ class _StagedValues:
                         if c in self.columns]
         self.groups.append("feature_name")
         self.accumulators = {}
+        self.impossible_scopes = {}
         inventories = []
         needed = list(dict.fromkeys([
             *self.groups, "patient_id", "course_id", "perturbation_id", "value",
@@ -155,6 +156,7 @@ class _StagedValues:
         needed = [c for c in needed if c in self.columns]
         inventory_columns = [c for c in needed if c not in
                              {"perturbation_id", "value", "reason_code"}]
+        scope_cols = [c for c in self.groups if c != "feature_name"]
         for path in self.paths:
             available = pq.read_schema(path).names
             read_columns = ["roi_name" if self.rename_roi and c == "structure" else c
@@ -163,20 +165,22 @@ class _StagedValues:
             if self.rename_roi:
                 frame = frame.rename(columns={"roi_name": "structure"})
             frame = frame.reindex(columns=needed)
-            # Match the legacy global guards, including rows with null group keys.
+            # Match the legacy global guard on technical failures; geometric
+            # impossibilities are recorded per ROI/arm scope for explicit
+            # not-evaluable disposition without dropping subjects or pooling grids.
+            impossible = pd.Series(False, index=frame.index)
             if "robustness_status" in frame:
                 if frame.robustness_status.eq("technical_failure").any():
                     raise RuntimeError("technical robustness failures require recovery before aggregation")
-                if frame.robustness_status.eq("geometrically_impossible").any():
-                    raise ValueError(
-                        "geometric non-measurements require an explicit comparable-condition analysis; "
-                        "do not drop subjects, impute values, or pool varying condition sets into fixed-grid ICC"
-                    )
-            inventories.append(_dictionary_table(frame[inventory_columns].drop_duplicates(), self.schema))
-            table = _dictionary_table(frame, self.schema)
-            for key, indices in frame.groupby(self.groups).indices.items():
+                impossible = frame.robustness_status.eq("geometrically_impossible").fillna(False)
+                for scope_key, rows in frame.loc[impossible].groupby(scope_cols, dropna=False):
+                    self.impossible_scopes.setdefault(scope_key, []).append(rows)
+            measured_like = frame.loc[~impossible & frame["feature_name"].notna()]
+            inventories.append(_dictionary_table(measured_like[inventory_columns].drop_duplicates(), self.schema))
+            table = _dictionary_table(measured_like, self.schema)
+            for key, indices in measured_like.groupby(self.groups).indices.items():
                 self.accumulators.setdefault(key, []).append(table.take(pa.array(indices)))
-            del frame, table
+            del frame, measured_like, table
         if inventories:
             inventory = pa.concat_tables(inventories, promote_options="permissive").to_pandas()
             # Dictionary arrays become categoricals; the shared validator uses
@@ -187,11 +191,17 @@ class _StagedValues:
 
     def summaries(self, config):
         summaries = []
+        covered_scopes = set()
         for key in sorted(self.accumulators):
             tables = self.accumulators.pop(key)
             group = pa.concat_tables(tables, promote_options="permissive").to_pandas()
             for column in group.select_dtypes("category"):
                 group[column] = group[column].astype(object)
+            scope_key = key[:-1]
+            covered_scopes.add(scope_key)
+            impossible = self.impossible_scopes.get(scope_key, [])
+            if impossible:
+                group = pd.concat([group, *impossible], ignore_index=True)
             if self.progress_root:
                 from .extraction_progress import BoundItem, pack_frame, unpack_frame, digest
                 item = BoundItem(self.progress_root / "reductions", list(key), config,
@@ -205,8 +215,20 @@ class _StagedValues:
                 summaries.append(summary)
             else:
                 summaries.append(rr.summarize_feature_stability(group, config))
+        for scope_key, impossible in self.impossible_scopes.items():
+            if scope_key not in covered_scopes:
+                summaries.append(rr.summarize_feature_stability(
+                    pd.concat(impossible, ignore_index=True), config,
+                ))
         if summaries:
             summary = pd.concat(summaries, ignore_index=True)
+            if self.impossible_scopes:
+                scope_columns = self.groups[:-1]
+                named = summary["feature_name"].notna()
+                summary = pd.concat([
+                    summary.loc[named].sort_values(self.groups, kind="stable"),
+                    summary.loc[~named].sort_values(scope_columns, kind="stable"),
+                ], ignore_index=True)
         else:
             summary = (pd.DataFrame() if self.paths else
                        pd.DataFrame(columns=list(rr.ROBUSTNESS_SUMMARY_COLUMNS)))
@@ -218,7 +240,11 @@ class _StagedValues:
             if summary.empty:
                 per_source = summary.copy()
             else:
-                per_source = summary.sort_values(columns, kind="stable").reset_index(drop=True)
+                scope_cols = [c for c in columns if c != "feature_name"]
+                has_feature = summary["feature_name"].notna()
+                measured_part = summary.loc[has_feature].sort_values(columns, kind="stable")
+                uncovered_part = summary.loc[~has_feature].sort_values(scope_cols, kind="stable")
+                per_source = pd.concat([measured_part, uncovered_part], ignore_index=True)
                 per_source = per_source[columns + [c for c in summary if c not in columns]]
         return summary, per_source
 
@@ -309,6 +335,11 @@ def _duplicate(registry, key, path, repeated):
 
 
 def aggregate_robustness_results(input_parquets, output_excel, rob_config, *, custom_structures_config=None):
+    """Aggregate per-course robustness results into a cohort-level Excel summary.
+
+    This exploratory package summary reports fixed-grid perturbation stability.
+    Study analysis O7 uses a separate specification and implementation.
+    """
     output_excel = Path(output_excel)
     rr.withdraw_robustness_cohort_outputs(output_excel)
     if not input_parquets:

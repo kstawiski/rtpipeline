@@ -130,11 +130,17 @@ def test_resource_failure_cannot_be_typed_as_geometry():
         GeometricNonmeasurement('resource_guard',{'voxels':100})
 
 
-def test_nonmeasurement_is_not_silently_aggregated(tmp_path,monkeypatch):
-    course,cfg,rob,_=course_fixture(tmp_path,monkeypatch)
-    df=pd.read_parquet(rr.robustness_for_course(cfg,rob,course))
-    with pytest.raises(ValueError,match='explicit comparable-condition'):
-        rr.summarize_feature_stability(df,rob)
+def test_nonmeasurement_receives_explicit_not_evaluable_disposition(tmp_path, monkeypatch):
+    course, cfg, rob, _ = course_fixture(tmp_path, monkeypatch)
+    df = pd.read_parquet(rr.robustness_for_course(cfg, rob, course))
+    summary = rr.summarize_feature_stability(df, rob)
+    assert not summary.empty
+    assert set(summary.robustness_label) == {'not_evaluable'}
+    assert set(summary.cov_status) == {'not_evaluable'}
+    assert set(summary.qcd_status) == {'not_evaluable'}
+    assert not summary.pass_seg_perturb.any()
+    assert summary.evaluability_reason.str.startswith('geometrically_impossible:').all()
+    assert summary.icc.isna().all() and summary.cov_pct.isna().all()
 
 
 def _native_radiomics_interpreter():

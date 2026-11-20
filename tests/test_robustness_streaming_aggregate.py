@@ -109,12 +109,12 @@ def test_streaming_mid_aggregation_source_drift_refuses_publication(tmp_path, mo
     assert not output.with_suffix('.commit.json').exists()
 
 
-@pytest.mark.parametrize("failure", ["technical_failure", "geometrically_impossible", "duplicate", "missing_grid", "missing_feature"])
+@pytest.mark.parametrize("failure", ["technical_failure", "duplicate", "missing_grid", "missing_feature"])
 def test_metric_refusals_match_legacy(tmp_path, monkeypatch, failure):
     cohort = admission._build_cohort(tmp_path, monkeypatch)
     entries = [rr._admit_robustness_aggregation_input(p, cohort.rob) for p in cohort.tables]
     frame = entries[0].frame.copy()
-    if failure in {"technical_failure", "geometrically_impossible"}:
+    if failure == "technical_failure":
         frame.loc[0, "robustness_status"] = failure
     elif failure == "duplicate":
         frame = pd.concat([frame, frame.iloc[:1]], ignore_index=True)
@@ -133,6 +133,31 @@ def test_metric_refusals_match_legacy(tmp_path, monkeypatch, failure):
         with pytest.raises((RuntimeError, ValueError)):
             module.aggregate_robustness_results(cohort.tables, output, cohort.rob)
         admission._assert_no_nominal_outputs(output, raw)
+
+
+def test_geometrically_impossible_aggregation_matches_legacy(tmp_path, monkeypatch):
+    cohort = admission._build_cohort(tmp_path, monkeypatch)
+    entries = [rr._admit_robustness_aggregation_input(p, cohort.rob) for p in cohort.tables]
+    frame = entries[0].frame.copy()
+    scope_cols = [c for c in ("structure", "segmentation_source", "extraction_arm") if c in frame.columns]
+    scope_template = frame.drop_duplicates(subset=scope_cols) if scope_cols else frame.iloc[:1]
+    imp_rows = scope_template.copy()
+    imp_rows["perturbation_id"] = "ntcv_t0_0_-4_v0"
+    imp_rows["robustness_status"] = "geometrically_impossible"
+    imp_rows["reason_code"] = "translation_outside_image"
+    imp_rows["feature_name"] = None
+    imp_rows["value"] = np.nan
+    frame = pd.concat([frame, imp_rows], ignore_index=True)
+    entries[0] = replace(entries[0], frame=frame)
+    supplied = {entry.path: entry for entry in entries}
+    monkeypatch.setattr(rr, "_admit_robustness_aggregation_input", lambda p, cfg, **kwargs: supplied[p])
+    old, new = tmp_path / "old_imp.xlsx", tmp_path / "new_imp.xlsx"
+    rr.aggregate_robustness_results(cohort.tables, old, cohort.rob)
+    ra.aggregate_robustness_results(cohort.tables, new, cohort.rob)
+    _equal_outputs(old, new)
+    summary = pd.read_excel(new, sheet_name="global_summary")
+    assert set(summary["robustness_label"]) == {"not_evaluable"}
+    assert summary["evaluability_reason"].str.startswith("geometrically_impossible:").all()
 
 
 def test_unresolved_quarantine_refused(tmp_path, monkeypatch):
