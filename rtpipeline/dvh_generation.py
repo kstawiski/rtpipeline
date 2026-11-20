@@ -150,13 +150,13 @@ def input_manifest(course, *, include_derived=True):
                  for role in ("plan_artifact", "dose_grid", "authoritative_rtstruct")]
         for item in (contract.get("delivery") or {}).get("per_plan") or []:
             paths.extend(item.get("record_paths") or [])
+        course_root = course.resolve()
         for path in paths:
             if isinstance(path, str) and path:
-                relative = Path(path)
-                if not relative.is_absolute() and ".." not in relative.parts and relative.suffix != ".age":
-                    artifact = course / relative
-                    if artifact.is_file():
-                        files.add(artifact)
+                artifact = (course_root / path.strip()).resolve()
+                if (artifact.is_relative_to(course_root) and artifact.suffix != ".age"
+                        and artifact.is_file()):
+                    files.add(course / artifact.relative_to(course_root))
     manifest = [{"path": p.relative_to(course).as_posix(), "sha256": file_sha256(p)}
                 for p in sorted(files) if not is_operational_path(p.relative_to(course))]
     # The upstream generation identity binds content, code, configuration and

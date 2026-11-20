@@ -83,6 +83,20 @@ def test_c1_root_artifacts_and_record_bytes_bind_resume(tmp_path, artifact):
             dvh.dvh_for_course(course, parallel_workers=1)
 
 
+def test_c1_absolute_in_course_dose_path_binds_resume(tmp_path):
+    course = _course(tmp_path)
+    path = course / "authoritative_dose.dcm"
+    shutil.copyfile(course / RD, path)
+    edit_contract(course, lambda contract: contract["dose_grid"].update(path=str(path.resolve())))
+    original = _table(course).iloc[0].DmeanGy
+    previous = dvh_generation.current(course)["generation_id"]
+    dataset = pydicom.dcmread(path)
+    _dose_values(dataset, dataset.pixel_array * float(dataset.DoseGridScaling) / 2)
+    dataset.save_as(path, enforce_file_format=True)
+    assert _table(course).iloc[0].DmeanGy == pytest.approx((original - .005) / 2 + .005)
+    assert dvh_generation.current(course)["generation_id"] != previous
+
+
 def test_c2_exact_hot_volume_uses_hot_end_of_plateau():
     samples = np.r_[np.full(50, 10.), np.full(50, 50.)]
     metrics = dvh._compute_metrics_from_arrays(samples, .04, 50.)
