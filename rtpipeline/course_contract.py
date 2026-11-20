@@ -1182,7 +1182,7 @@ def _validate_dicom_identity(
                 f"(Modality={sorted(modalities)!r}, SOPClassUID={sorted(sop_classes)!r}), "
                 f"found (Modality={actual_modality!r}, SOPClassUID={actual_sop_class!r})"
             )
-    if field == "dose_grid":
+    if role == "RTDOSE":
         require_physical_gy_dose(dataset)
     if summation_type:
         expected_type = _nonempty_text(

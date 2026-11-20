@@ -541,3 +541,17 @@ def test_rotated_nifti_subcentigray_d90_uses_exact_roi_samples(grid_max_gy):
     assert metrics["D95Gy"] == pytest.approx(.001)
     result = add_brachy_metrics_from_values(values, voxel_volume, grid_max_gy, metrics)
     assert result["D90Gy"] == pytest.approx(.001)
+
+
+@pytest.mark.parametrize("attribute,value", [("DoseUnits", "RELATIVE"), ("DoseType", "EFFECTIVE")])
+def test_selected_source_rtdose_requires_physical_gy(tmp_path, attribute, value):
+    course = _course(tmp_path)
+    _root_artifacts(course)
+    load_course_contract(course)
+    path = course / RD
+    dose = pydicom.dcmread(path)
+    setattr(dose, attribute, value)
+    dose.save_as(path, enforce_file_format=True)
+
+    with pytest.raises(CourseContractError, match="RTDOSE_NOT_PHYSICAL_GY"):
+        load_course_contract(course)

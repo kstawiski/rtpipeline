@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Course contracts require physical Gy on each selected RTDOSE, including the source grids of a composite.
 - Rotated NIfTI DVHs use exact samples for D90 when the ROI receives less than 1 cGy.
 - Legacy Vx diagnostics for axial ROIs with partial Z coverage count only dose-grid-covered samples at or above the threshold. Their percentage uses the full histogram volume.
 - DVH reuse now checks the bytes of the authoritative RTPLAN, RTDOSE and
