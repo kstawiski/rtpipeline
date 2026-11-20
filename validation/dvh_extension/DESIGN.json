@@ -1,0 +1,5904 @@
+{
+  "schema_version": 1,
+  "declared_utc": "2026-11-16T13:05:58.166203+00:00",
+  "source": "93c113a",
+  "ct_inplane_mm": [
+    2.0,
+    2.0
+  ],
+  "shell_inner_ratio": 0.9,
+  "contour_vertices": 256,
+  "mask_voxelization": "closed shape membership at CT voxel centres; shell inner boundary excluded; no partial volume weighting",
+  "rotation_about": "patient LPS origin; dose origin and basis rotated together; analytic field evaluated at physical dose nodes",
+  "truth": "continuous analytic.py; independent of grid, rotation and mask",
+  "fields": {
+    "uniform": "20 Gy",
+    "linear": "20 + 0.1*z Gy in patient LPS",
+    "radial": "30 - 0.15*distance_from_shape_centre Gy; sphere/shell only"
+  },
+  "reference_gy": 25.0,
+  "metrics": [
+    "Dmean_Gy",
+    "Dmin_Gy",
+    "Dmax_Gy",
+    "D98_Gy",
+    "D95_Gy",
+    "D50_Gy",
+    "D2_Gy",
+    "D2cc_Gy",
+    "D0.03cc_Gy",
+    "V95Rx_pct",
+    "V20Gy_cc",
+    "Volume_cc",
+    "V20Gy_pct"
+  ],
+  "boundaries": {
+    "dose": "abs(error) > max(0.02*abs(analytic endpoint),0.5 Gy)",
+    "volume_percentage": "abs(error)>2 percentage points",
+    "volume": "abs(error)>0.03*analytic volume",
+    "descriptive": [
+      "all metrics for volume<1 cc",
+      "Dmin_Gy",
+      "Dmax_Gy",
+      "D0.03cc_Gy",
+      "V20Gy_cc"
+    ],
+    "V20Gy_pct": "100*published V20Gy_cc/published Volume_cc versus 100*analytic survival at 20 Gy"
+  },
+  "groups": [
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_linear_axial",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_radial_axial",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_linear_axial",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_radial_axial",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_linear_axial",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_radial_axial",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_linear_axial",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_radial_axial",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_linear_axial",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_radial_axial",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_linear_axial",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_radial_axial",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_linear_axial",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_radial_axial",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_linear_axial",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_radial_axial",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v2_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_linear_axial",
+      "legacy_group": "v2_aligned_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_radial_axial",
+      "legacy_group": "v2_aligned_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v2_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_linear_axial",
+      "legacy_group": "v2_aligned_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_radial_axial",
+      "legacy_group": "v2_aligned_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v2_offset_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_linear_axial",
+      "legacy_group": "v2_offset_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_radial_axial",
+      "legacy_group": "v2_offset_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v2_offset_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_linear_axial",
+      "legacy_group": "v2_offset_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_radial_axial",
+      "legacy_group": "v2_offset_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v50_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_linear_axial",
+      "legacy_group": "v50_aligned_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_radial_axial",
+      "legacy_group": "v50_aligned_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v50_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_linear_axial",
+      "legacy_group": "v50_aligned_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_radial_axial",
+      "legacy_group": "v50_aligned_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v50_offset_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_linear_axial",
+      "legacy_group": "v50_offset_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_radial_axial",
+      "legacy_group": "v50_offset_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v50_offset_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_linear_axial",
+      "legacy_group": "v50_offset_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_radial_axial",
+      "legacy_group": "v50_offset_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_linear_axial",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_radial_axial",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_linear_axial",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_radial_axial",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_uniform_axial",
+      "legacy_group": "v1000_offset_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_linear_axial",
+      "legacy_group": "v1000_offset_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_radial_axial",
+      "legacy_group": "v1000_offset_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_uniform_axial",
+      "legacy_group": "v1000_offset_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_linear_axial",
+      "legacy_group": "v1000_offset_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_radial_axial",
+      "legacy_group": "v1000_offset_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "axial",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_uniform_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_linear_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_radial_inplane_z0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "inplane_z0p5",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_aligned_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.1_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.1_offset_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.1_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.1,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.5_aligned_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct1_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_linear",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_offset_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v0.5_offset_ct3_dg2.5_radial",
+      "volume_cc": 0.5,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_aligned_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v2_aligned_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v2_offset_ct1_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_uniform",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_linear",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v2_offset_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v2_offset_ct3_dg2.5_radial",
+      "volume_cc": 2.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_aligned_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v50_aligned_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v50_offset_ct1_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_uniform",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_linear",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v50_offset_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v50_offset_ct3_dg2.5_radial",
+      "volume_cc": 50.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_aligned_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v1000_aligned_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct1_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct1_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_uniform_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_uniform",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_linear_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_linear",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "linear",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v1000_offset_ct3_dg2.5_radial_oblique_x0p5",
+      "legacy_group": "v1000_offset_ct3_dg2.5_radial",
+      "volume_cc": 1000.0,
+      "phase": "offset",
+      "center": [
+        0.37,
+        -0.61,
+        0.43
+      ],
+      "ct_mm": 3.0,
+      "dose_mm": 2.5,
+      "field": "radial",
+      "shapes": [
+        "sphere",
+        "shell"
+      ],
+      "rotation": {
+        "id": "oblique_x0p5",
+        "axis": [
+          1,
+          0,
+          0
+        ],
+        "angle_deg": 0.5
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    },
+    {
+      "group": "v0.5_aligned_ct1_dg2.5_uniform_refusal_z2",
+      "legacy_group": "v0.5_aligned_ct1_dg2.5_uniform",
+      "volume_cc": 0.5,
+      "phase": "aligned",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ct_mm": 1.0,
+      "dose_mm": 2.5,
+      "field": "uniform",
+      "shapes": [
+        "sphere",
+        "cylinder",
+        "cube",
+        "shell"
+      ],
+      "rotation": {
+        "id": "refusal_z2",
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "angle_deg": 2.0
+      },
+      "paths": [
+        "rtstruct",
+        "nifti_mask"
+      ]
+    }
+  ],
+  "legacy_reproduction": "unchanged 120-case axial design via run_benchmark.py, separate results/legacy; optional comparison with a user-supplied reference table"
+}

@@ -1,0 +1,14 @@
+tmp/
+scratch/
+phantoms/
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+results*/
+
+# Retain only the declared public design and bounded reference evidence.
+!reference/
+!reference/*.csv
+!reference/provenance.json
+!DESIGN.json

@@ -16,6 +16,15 @@ sys.path.insert(0, str(BENCH))
 from analytic import METRICS
 from generate_phantoms import designs
 
+EXPECTED_BENCHMARK_SCRIPTS = frozenset((
+    'analytic.py',
+    'analyze_volume.py',
+    'finalize_results.py',
+    'generate_phantoms.py',
+    'run_benchmark.py',
+    'test_analytic.py',
+))
+
 
 def dump(name, value):
     (OUT / name).write_text(json.dumps(value, indent=2, default=str, allow_nan=False) + '\n')
@@ -34,6 +43,11 @@ def audit():
     cases = {s['group'] + '_' + shape for s in selected for shape in s['shapes']}
     primary = rows[rows.tool == 'rtpipeline'].copy()
     numeric = rows.dropna(subset=['value', 'analytic'])
+    code_hashes = (
+        receipt['public_benchmark_code_sha256']
+        if 'public_benchmark_code_sha256' in receipt
+        else receipt.get('benchmark_code_sha256')
+    )
     checks = {
         'run_completed': receipt['status'] == 'completed' and not receipt['errors'],
         'all_36_dg25_groups': {g['group'] for g in receipt['groups']} == groups
@@ -51,10 +65,18 @@ def audit():
         'absolute_errors_recompute': bool(np.allclose(numeric.abs_err, abs(numeric.value - numeric.analytic),
                                                      atol=2e-8, rtol=1e-9)),
         'pipeline_sources_unchanged_during_run': receipt['pipeline_sources_unchanged'],
-        'benchmark_sources_match_receipt': all(sha(BENCH / name) == digest
-            for name, digest in receipt.get('public_benchmark_code_sha256', receipt['benchmark_code_sha256']).items()),
+        'benchmark_sources_match_receipt': (
+            isinstance(code_hashes, dict)
+            and EXPECTED_BENCHMARK_SCRIPTS.issubset(code_hashes)
+            and all(
+                (BENCH / name).is_file() and sha(BENCH / name) == digest
+                for name, digest in code_hashes.items()
+                if name != 'verify_results.py'
+            )
+        ),
         'nice_10': receipt['effective_nice'] == 10,
-        'scratch_inside_results': str((OUT / 'tmp').relative_to(REPO)) in receipt['reproduction_command'],
+        'scratch_inside_results': any(str((p / 'tmp').relative_to(REPO)) in receipt['reproduction_command']
+            for p in (OUT, BENCH / 'results') if p.is_relative_to(REPO)),
         'helper_diagnostics_labelled': {
             'helper_snap_planes', 'helper_snap_moved_contours', 'helper_snap_max_mm',
             'helper_snap_min_thickness_mm', 'dose_plane_alignment'}.issubset(geometry.columns)
@@ -105,9 +127,10 @@ def audit():
                   native_D2cc_matches_published_table=bool(d2cc_ok))
     pd.DataFrame(alignments).to_csv(OUT / 'alignment_by_roi.csv', index=False)
 
+    BOUNDED_DOSE_METRICS = ('Dmean_Gy', 'D98_Gy', 'D95_Gy', 'D50_Gy', 'D2_Gy', 'D2cc_Gy')
     primary['boundary_type'] = None
     primary['boundary'] = np.nan
-    dose = primary.metric.str.endswith('_Gy')
+    dose = primary.metric.isin(BOUNDED_DOSE_METRICS)
     v95 = primary.metric.eq('V95Rx_pct')
     volume = primary.metric.eq('Volume_cc') & primary.analytic.ge(1.)
     primary.loc[dose, 'boundary_type'] = 'dose_Gy'
@@ -156,7 +179,7 @@ def audit():
     volume_components.to_csv(OUT / 'primary_volume_error_components.csv', index=False, float_format='%.12g')
     native_d2cc = primary[primary.metric.eq('D2cc_Gy')]
     checks['all_native_dose_boundaries_hold'] = (
-        overall['dose_comparisons'] == 960 + int(native_d2cc.value.notna().sum())
+        overall['dose_comparisons'] == 600 + int(native_d2cc.value.notna().sum())
         and overall['dose_failures'] == 0)
     checks['all_V95Rx_boundaries_hold'] = overall['V95Rx_comparisons'] == 120 and overall['V95Rx_failures'] == 0
     supplements = rows[(rows.tool == 'rtpipeline_curve_supplement') & rows.abs_err.notna()]
@@ -199,7 +222,7 @@ def audit():
     lines = ['# Synthetic axial DVH accuracy', '',
         'All 36 dg2.5 groups completed: 120 synthetic structure–dose cases. CT slice spacing was 1 or 3 mm. '
         'The dose fields were uniform, linear in z, and radial. Continuous analytic truth was the reference.', '',
-        'Dose-error limits were max(2% of analytic dose, 0.5 Gy). The V95Rx limit was 2 percentage points. '
+        'Dose-error limits were max(2% of analytic dose, 0.5 Gy) for the six bounded dose endpoints (Dmean_Gy, D98_Gy, D95_Gy, D50_Gy, D2_Gy, D2cc_Gy); Dmin_Gy, Dmax_Gy and D0.03cc_Gy remain descriptive without boundary assignment. The V95Rx limit was 2 percentage points. '
         'The volume limit was 3% for structures of at least 1 cm³. V20Gy has no specified absolute-volume limit.', '',
         '| CT spacing (mm) | Cases | Dose comparisons | Dose failures | Max dose error (Gy) | V95Rx failures | Max V95Rx error (pp) | Volume failures | Max volume error (%) |',
         '|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
@@ -207,7 +230,7 @@ def audit():
         lines.append(f"| {r['stratum']:g} | {r['cases']} | {r['dose_comparisons']} | {r['dose_failures']} | "
             f"{r['max_dose_error_Gy']:.6g} | {r['V95Rx_failures']}/{r['V95Rx_comparisons']} | "
             f"{r['max_V95Rx_error_pp']:.6g} | {r['volume_failures']}/{r['volume_comparisons']} | {r['max_volume_error_pct']:.6g} |")
-    lines += ['', f"All {overall['dose_comparisons']} available production RTpipeline dose comparisons and all 120 V95Rx comparisons met their limits. "
+    lines += ['', f"All {overall['dose_comparisons']} available bounded production RTpipeline dose comparisons ({overall['dose_failures']}/{overall['dose_comparisons']} failures across Dmean_Gy, D98_Gy, D95_Gy, D50_Gy, D2_Gy and available D2cc_Gy) and all 120 V95Rx comparisons met their limits. "
         f"Volume exceeded its limit in {overall['volume_failures']} of 120 cases.", '',
         f"Native D2cc is available in {d2cc_result['available']}/{d2cc_result['cases']} cases; "
         f"{d2cc_result['unavailable']} measured structures are below 2 cm³. "

@@ -1,7 +1,7 @@
 {
   "status": "ok",
   "metric_version": "2026-09-05-grid-support-derived-mask-d003-v5",
-  "code_sources_sha256": "c6f6f985e402b87f75d04cc34e9fa6362e71fd6638a4fb922b4ad7c5693f695c",
+  "code_sources_sha256": "f5aa1e76d1fd73a5115cce2c1980e78f5d842956f5af502785d891819994666d",
   "rx_source": "course_contract_resolved_total",
   "rx_relative_metrics_available": true,
   "treatment_technique": "EBRT",
@@ -96,8 +96,8 @@
   "dose_resolution": {
     "classification": "single_dose",
     "reason": "Organize course contract selected the plan and dose membership",
-    "rd_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTDOSE/dose.dcm",
-    "rp_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTPLAN/plan.dcm",
+    "rd_path": "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTDOSE/dose.dcm",
+    "rp_path": "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTPLAN/plan.dcm",
     "source_dose_sop_instance_uids": [
       "2.25.298992332547150868243085385690454373813"
     ],
@@ -110,10 +110,10 @@
       "2.25.210119942606589490135458575447616002074"
     ],
     "selected_plan_paths": [
-      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTPLAN/plan.dcm"
+      "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTPLAN/plan.dcm"
     ],
     "selected_dose_paths": [
-      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTDOSE/dose.dcm"
+      "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTDOSE/dose.dcm"
     ],
     "dose_grid_semantics": "planned_rtdose_weighted_by_rtrecord_delivered_fraction_counts",
     "prescribed_dose_gy": 25.0,
@@ -125,7 +125,7 @@
     "dose_qc_status": "pass",
     "dose_qc_pass": true,
     "dose_qc_reasons": [],
-    "contract_path": "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/metadata/case_metadata.json",
+    "contract_path": "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/metadata/case_metadata.json",
     "dvh": {
       "status": "ready",
       "metrics_status": "computed",
@@ -147,8 +147,16 @@
       "2.25.94955712807356136452484065341530292469"
     ],
     "selected_rtstruct_paths": [
-      "validation/dvh_accuracy/results/tmp/run-h_o8n8hn/phantom-aoufr1yt/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTSTRUCT/rs.dcm"
+      "validation/dvh_accuracy/results/tmp/run-yu8zs49b/phantom-c54glh4z/SYNTH_DVH/v1000_offset_ct1_dg2.5_radial/DICOM/RTSTRUCT/rs.dcm"
     ],
     "allow_nifti_direct": true
+  },
+  "opencv_runtime": {
+    "opencv_version": "5.0.0",
+    "opencv_path": "${PYTHON_ENV}/lib/python3.11/site-packages/cv2/__init__.py",
+    "providers": {
+      "opencv-python": "5.0.0.93"
+    },
+    "error": null
   }
 }

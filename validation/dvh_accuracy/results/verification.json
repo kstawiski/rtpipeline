@@ -29,9 +29,9 @@
   "boundaries": {
     "stratum": "overall",
     "cases": 120,
-    "dose_comparisons": 1052,
+    "dose_comparisons": 692,
     "dose_failures": 0,
-    "max_dose_error_Gy": 0.30901574932,
+    "max_dose_error_Gy": 0.27176210395,
     "V95Rx_comparisons": 120,
     "V95Rx_failures": 0,
     "max_V95Rx_error_pp": 0.868748871784,
@@ -43,9 +43,9 @@
     {
       "stratum": 1,
       "cases": 60,
-      "dose_comparisons": 525,
+      "dose_comparisons": 345,
       "dose_failures": 0,
-      "max_dose_error_Gy": 0.12,
+      "max_dose_error_Gy": 0.075,
       "V95Rx_comparisons": 60,
       "V95Rx_failures": 0,
       "max_V95Rx_error_pp": 0.378787878788,
@@ -56,9 +56,9 @@
     {
       "stratum": 3,
       "cases": 60,
-      "dose_comparisons": 527,
+      "dose_comparisons": 347,
       "dose_failures": 0,
-      "max_dose_error_Gy": 0.30901574932,
+      "max_dose_error_Gy": 0.27176210395,
       "V95Rx_comparisons": 60,
       "V95Rx_failures": 0,
       "max_V95Rx_error_pp": 0.868748871784,
@@ -110,20 +110,148 @@
       "failure_details": []
     },
     "dvh-tests": {
-      "tests": 453,
-      "failures": 0,
+      "tests": 586,
+      "failures": 20,
       "errors": 0,
-      "skipped": 0,
-      "passed": 453,
-      "failure_details": []
+      "skipped": 3,
+      "passed": 563,
+      "failure_details": [
+        {
+          "classname": "tests.test_dvh_generations",
+          "name": "test_code_identity_is_rechecked_inside_same_process",
+          "type": "failure",
+          "message": "PermissionError: [Errno 13] Permission denied: 'tmp/dvh-tests/test_code_identity_is_rechecke0/package/dvh_support.py'"
+        },
+        {
+          "classname": "tests.test_dvh_generations",
+          "name": "test_measurement_bytes_match_unmodified_producer",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'show', '7e509c7:rtpipeline/dvh.py']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_generations",
+          "name": "test_binding_scopes_rule_text_and_effective_parameters[other_rule]",
+          "type": "failure",
+          "message": "PermissionError: [Errno 13] Permission denied: 'tmp/dvh-tests/test_binding_scopes_rule_text_0/source/Snakefile'"
+        },
+        {
+          "classname": "tests.test_dvh_generations",
+          "name": "test_binding_scopes_rule_text_and_effective_parameters[trailing_comment]",
+          "type": "failure",
+          "message": "PermissionError: [Errno 13] Permission denied: 'tmp/dvh-tests/test_binding_scopes_rule_text_1/source/Snakefile'"
+        },
+        {
+          "classname": "tests.test_dvh_generations",
+          "name": "test_binding_scopes_rule_text_and_effective_parameters[dvh_rule]",
+          "type": "failure",
+          "message": "PermissionError: [Errno 13] Permission denied: 'tmp/dvh-tests/test_binding_scopes_rule_text_2/source/Snakefile'"
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation0]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation1]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation2]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation3]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation4]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation5]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation6]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_rotation",
+          "name": "test_axis_aligned_publication_bytes_against_git_a61b96a[orientation7]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '49424e5bb7d151e7e63dded32384cc3875ed7378']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_state_fixes",
+          "name": "test_multibin_summary_is_lazy_and_metric_bytes_stay_exact[0.01]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', 'fbefdcdd0b942348bcbc7232192e80760a064a50']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_state_fixes",
+          "name": "test_multibin_summary_is_lazy_and_metric_bytes_stay_exact[0.02]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', 'fbefdcdd0b942348bcbc7232192e80760a064a50']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_dvh_state_fixes",
+          "name": "test_multibin_summary_is_lazy_and_metric_bytes_stay_exact[20.0]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', 'fbefdcdd0b942348bcbc7232192e80760a064a50']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_planning_dose_selection",
+          "name": "test_contract_selected_bytes_against_80d5d65[False-False]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '5794ff4cb6ee05ecb48e7da768074a043866a4d0']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_planning_dose_selection",
+          "name": "test_contract_selected_bytes_against_80d5d65[False-True]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '5794ff4cb6ee05ecb48e7da768074a043866a4d0']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_planning_dose_selection",
+          "name": "test_contract_selected_bytes_against_80d5d65[True-False]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '5794ff4cb6ee05ecb48e7da768074a043866a4d0']' returned non-zero exit status 128."
+        },
+        {
+          "classname": "tests.test_planning_dose_selection",
+          "name": "test_contract_selected_bytes_against_80d5d65[True-True]",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '5794ff4cb6ee05ecb48e7da768074a043866a4d0']' returned non-zero exit status 128."
+        }
+      ]
     },
     "rtstruct-tests": {
       "tests": 71,
-      "failures": 0,
+      "failures": 1,
       "errors": 0,
       "skipped": 0,
-      "passed": 71,
-      "failure_details": []
+      "passed": 70,
+      "failure_details": [
+        {
+          "classname": "tests.test_rtstruct_writers_exact_planes",
+          "name": "test_uniform_spacing_writer_outputs_are_byte_identical_to_a177c59",
+          "type": "failure",
+          "message": "subprocess.CalledProcessError: Command '['git', 'cat-file', 'blob', '5b587acb548f2b05cbcca9f31d9958f408a3df55']' returned non-zero exit status 128."
+        }
+      ]
     },
     "analytic-tests": {
       "tests": 20,
@@ -134,10 +262,10 @@
       "failure_details": []
     }
   },
-  "python": "3.11.14 | packaged by conda-forge | (main, Jan 26 2026, 23:48:32) [GCC 14.3.0]",
+  "python": "3.11.16 (main, Sep  2 2026, 23:39:52) [GCC 15.3.0]",
   "effective_nice": 10,
   "executed_pipeline_source_sha256": {
-    "rtpipeline/utils.py": "72bbd134555870f8f1d6e77fd7adb96d9f7232fabf382964741a36e42ad8d5a9",
-    "rtpipeline/dvh.py": "4abef0c44eeb0bbb99ccaeaca31c5aa07e04447211b0332bcb70a6fbdd8d38ad"
+    "rtpipeline/utils.py": "b0fca6a68644c57538cb309648120ab5c5eaa045c3980fb0692dcfce10cd3e70",
+    "rtpipeline/dvh.py": "49d50ee55a2eb3084b85bf432016d2bdd33b75c2d48321677b560091c3e7ba4c"
   }
 }

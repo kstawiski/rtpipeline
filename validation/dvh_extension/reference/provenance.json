@@ -1,0 +1,13 @@
+{
+  "kind": "recorded synthetic benchmark summaries",
+  "summary_sha256": {
+    "boundary_exceedances.csv": "63f1cd83376232cb763e1d213032b5613191310e049227c57740db540aae74be",
+    "counts_by_stratum.csv": "70bc58e5d6750408a067beca19cd04771d68f0956acc8f6ec76fc73b4bba81aa",
+    "summary.csv": "9d597dc72709ab2767da731a8cb5f72b521623f57f38cd6f2a61df821194413b",
+    "unavailable.csv": "5220df44ef98a0f8115040add2897824e0939f36b65134ce83224c1aafc2dd43"
+  },
+  "pipeline_source": "93c113a",
+  "recorded_design_sha256": "03d35843f45ffa348ed0bacac7ac73494dd1daadc0c3900b0fb483013a26d561",
+  "case_unit": "structure-path-dose case",
+  "declared_cases": 1208
+}

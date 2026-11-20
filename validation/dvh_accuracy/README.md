@@ -104,16 +104,14 @@ The production axial path exports `D2ccGy` and `D2cc_status`. It uses the same `
 
 ## Results and evidence
 
-The canonical results are in `results/`. Across 1,052 available native dose-endpoint
-comparisons, the maximum absolute error is 0.309016 Gy. All meet the descriptive
-boundary of max(2% of analytic dose, 0.5 Gy). All 120 V95Rx comparisons meet a
+The canonical `93c113a` results are in `results/` (with the earlier `46a9edd` results archived in `results/history/46a9edd/`). Across 692 available bounded native dose-endpoint comparisons (`Dmean_Gy`, `D98_Gy`, `D95_Gy`, `D50_Gy`, `D2_Gy` and available `D2cc_Gy`), the maximum absolute error is 0.271762 Gy (`0/692` exceed `max(2% of analytic dose, 0.5 Gy)`). `Dmin_Gy`, `Dmax_Gy` and `D0.03cc_Gy` remain descriptive without boundary assignment. All 120 V95Rx comparisons meet a
 2-percentage-point boundary; the maximum error is 0.868749 percentage points.
 Structure volume exceeds a 3% relative-error boundary in 29/120 cases.
 
-| CT slice spacing | Cases | Maximum dose error, Gy | Maximum V95Rx error, percentage points | Volume errors >3% | Maximum volume error |
-|---|---:|---:|---:|---:|---:|
-| 1 mm | 60 | 0.120000 | 0.378788 | 13/60 | 14.6875% |
-| 3 mm | 60 | 0.309016 | 0.868749 | 16/60 | 17.1875% |
+| CT slice spacing | Cases | Bounded dose comparisons | Maximum bounded dose error, Gy | Maximum V95Rx error, percentage points | Volume errors >3% | Maximum volume error |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 mm | 60 | 345 | 0.075000 | 0.378788 | 13/60 | 14.6875% |
+| 3 mm | 60 | 347 | 0.271762 | 0.868749 | 16/60 | 17.1875% |
 
 The largest relative volume errors occur in small structures; 21/40 cases at
 2 cm³, 8/40 at 50 cm³ and 0/40 at 1,000 cm³ exceed 3%. Native D2cc is available

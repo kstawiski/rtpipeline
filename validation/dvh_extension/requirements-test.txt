@@ -1,0 +1,2 @@
+# Install alongside the repository's production dependencies.
+pytest>=8,<10
