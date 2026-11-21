@@ -429,30 +429,90 @@ def _roundoff(z, k=3):
     return float(shifted)
 
 
+def components(path, planes):
+    """One ROI whose contours are (z, x0, x1) squares, possibly coplanar."""
+    rs = pydicom.dcmread(fx.write_rtstruct(path, [('Organ', 'ORGAN', (4.1, 24.1))]))
+    items = []
+    for z, x0, x1 in planes:
+        c = Dataset()
+        c.ContourGeometricType = 'CLOSED_PLANAR'
+        c.NumberOfContourPoints = 4
+        c.ContourData = [x0, 4.1, z, x1, 4.1, z, x1, 24.1, z, x0, 24.1, z]
+        items.append(c)
+    rs.ROIContourSequence[0].ContourSequence = Sequence(items)
+    return rs
+
+
+def roi_measurement(rs, dose):
+    working, method = dose_on_contour_planes(rs, dose, 1)
+    result = dvh._axial_roi_dvh(rs, working, 1)
+    metrics = dvh._compute_metrics(result, 25.)
+    return working, method, result.volume, {k: metrics[k] for k in ('DmeanGy', 'D95Gy', 'DmaxGy')}
+
+
+def assert_same_measurement(rs, reference, dose, single=None):
+    _, _, volume, metrics = roi_measurement(rs, dose)
+    _, _, expected_volume, expected = roi_measurement(reference, dose)
+    assert volume == pytest.approx(expected_volume, abs=1e-12)
+    for key, value in expected.items():
+        assert metrics[key] == pytest.approx(value, abs=1e-12), key
+    if single is not None:
+        # Both coplanar components count; neither cancels the other.
+        assert volume == pytest.approx(2 * roi_measurement(single, dose)[2], abs=1e-12)
+
+
 @pytest.mark.parametrize('base', [0., -73.4, 1012.3])
 @pytest.mark.parametrize('k', [1, 3, 64])
 def test_contour_planes_differing_by_round_off_are_one_plane(tmp_path, base, k):
     # Several contours on one plane can give mean z values that differ only by
     # floating round-off; they form one sampled plane.
     dose = dose_grid(tmp_path/'dose.dcm', step=2., start=base, stop=base + 40.)
-    z1, z2 = base + 3.3, base + 5.7
-    rs = structure(tmp_path/'rs.dcm', [[z1, z2, _roundoff(z2, k), _roundoff(z2, 2 * k)]])
-    working, method = dose_on_contour_planes(rs, dose, 1)
+    z1, z2, z3 = base + 3.3, base + 5.7, base + 8.1
+    r1, r2 = _roundoff(z1, k), _roundoff(z2, 2 * k)
+    left, right = (4.1, 10.1), (14.1, 20.1)
+    rs = components(tmp_path/'rs.dcm', [(z1, *left), (r1, *right),
+                                        (z2, *left), (r2, *right),
+                                        (z3, *left), (z3, *right)])
+    working, method, _, _ = roi_measurement(rs, dose)
     assert method == 'DOSE_Z_INTERPOLATED'
     positions = _axial_dose_plane_positions(working)
-    np.testing.assert_allclose(positions, [base, z1, z2, base + 40.], atol=1e-9, rtol=0)
-    assert dvh.dvhcalc.get_dvh(rs, working, 1).volume > 0
+    np.testing.assert_allclose(positions, [base, z1, z2, z3, base + 40.], atol=1e-9, rtol=0)
+    # The merged plane is sampled at its first position; the same ROI with
+    # both components there is the exact reference.
+    merged = (min(z1, r1), min(z2, r2), z3)
+    reference = components(tmp_path/'ref.dcm', [(z, *side) for z in merged
+                                                 for side in (left, right)])
+    single = components(tmp_path/'one.dcm', [(z, *left) for z in merged])
+    assert_same_measurement(rs, reference, dose, single)
 
 
 def test_round_off_duplicates_far_from_origin_no_longer_refuse(tmp_path):
     # Offsets measured from a distant origin are encoded with fewer decimals,
     # so round-off duplicates collapse into equal neighbours (3.0.5 refused).
     dose = dose_grid(tmp_path/'dose.dcm', step=2., start=-73.4, stop=40.6)
-    rs = structure(tmp_path/'rs.dcm', [[0.5, _roundoff(0.5, 1), 5.7, _roundoff(5.7, 1), 9.1]])
-    working, _ = dose_on_contour_planes(rs, dose, 1)
+    left, right = (4.1, 10.1), (14.1, 20.1)
+    rs = components(tmp_path/'rs.dcm', [(0.5, *left), (_roundoff(0.5, 1), *right),
+                                        (5.7, *left), (_roundoff(5.7, 1), *right),
+                                        (9.1, *left), (9.1, *right)])
+    working, _, _, _ = roi_measurement(rs, dose)
     positions = _axial_dose_plane_positions(working)
     np.testing.assert_allclose(positions, [-73.4, 0.5, 5.7, 9.1, 40.6], atol=1e-9, rtol=0)
-    assert dvh.dvhcalc.get_dvh(rs, working, 1).volume > 0
+    merged = (min(0.5, _roundoff(0.5, 1)), min(5.7, _roundoff(5.7, 1)), 9.1)
+    reference = components(tmp_path/'ref.dcm', [(z, *side) for z in merged
+                                                 for side in (left, right)])
+    single = components(tmp_path/'one.dcm', [(z, *left) for z in merged])
+    assert_same_measurement(rs, reference, dose, single)
+
+
+def test_representatives_never_share_an_encoded_offset(tmp_path):
+    # A cluster sampled at its dose plane must not end up next to a round-off
+    # position of that plane in the following cluster.
+    dose = dose_grid(tmp_path/'dose.dcm', step=2., start=-74., stop=40.)
+    zs = [3.3, 9.999999999000002, 10., 10.000000000000002]
+    working, method = dose_on_contour_planes(structure(tmp_path/'rs.dcm', [zs]), dose, 1)
+    positions = _axial_dose_plane_positions(working)
+    np.testing.assert_allclose(positions, [-74., 3.3, 10., 40.], atol=1e-9, rtol=0)
+    assert np.all(np.diff(positions) > 1e-9)
 
 
 @pytest.mark.parametrize('lower', [True, False])

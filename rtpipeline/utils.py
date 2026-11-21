@@ -900,7 +900,20 @@ def dose_on_contour_planes(
                     return z
         return cluster[0]
 
-    target_z = np.asarray([sampled_position(c) for c in clusters])
+    # A representative can move toward the next cluster (a dose plane chosen
+    # over a cluster's first position). Merge neighbours until every sampled
+    # position is more than the tolerance from the next, so no two rebuilt
+    # offsets can encode to the same value.
+    positions = [sampled_position(c) for c in clusters]
+    while len(positions) > 1:
+        gaps = np.diff(positions)
+        close = np.flatnonzero(gaps <= _PLANE_ROUND_OFF_MM)
+        if not close.size:
+            break
+        i = int(close[0])
+        clusters[i:i + 2] = [clusters[i] + clusters[i + 1]]
+        positions[i:i + 2] = [sampled_position(clusters[i])]
+    target_z = np.asarray(positions)
     pixels = np.asarray(rtdose.pixel_array)
     pixels = pixels.reshape(len(planes), int(rtdose.Rows), int(rtdose.Columns))
     upper = np.searchsorted(source_z, target_z).clip(0, len(source_z) - 1)
