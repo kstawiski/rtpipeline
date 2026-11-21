@@ -231,17 +231,17 @@ singularity build rtpipeline.sif docker-daemon://kstawiski/rtpipeline:latest
 
 #### Option C: convert the release image with `rtpipeline.def`
 
-The definition references the version-matched image `kstawiski/rtpipeline:3.0.5`:
+The definition references the version-matched image `kstawiski/rtpipeline:3.0.6`:
 
 ```bash
-apptainer build rtpipeline-3.0.5.sif rtpipeline.def
+apptainer build rtpipeline-3.0.6.sif rtpipeline.def
 ```
 
 This does not build a separate software stack or consume repository files as a build context. It converts the version-matched Docker image.
 
 **Expected:**
 - Build completes successfully
-- Creates `rtpipeline-3.0.5.sif` (~4-7 GB)
+- Creates `rtpipeline-3.0.6.sif` (~4-7 GB)
 - No errors about missing files
 
 ### 2. Test Singularity Image

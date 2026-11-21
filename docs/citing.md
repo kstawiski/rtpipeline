@@ -8,7 +8,7 @@ the machine-readable metadata; GitHub's "Cite this repository" button formats it
 @software{rtpipeline_3_0_5,
   title = {RTpipeline: Automated Radiotherapy DICOM Processing Pipeline},
   author = {Stawiski, Konrad},
-  version = {3.0.5},
+  version = {3.0.6},
   url = {https://github.com/kstawiski/rtpipeline},
   year = {2026}
 }

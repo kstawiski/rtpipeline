@@ -1,9 +1,9 @@
 Bootstrap: docker
-From: kstawiski/rtpipeline:3.0.5
+From: kstawiski/rtpipeline:3.0.6
 
 %labels
     Author kstawiski
-    Version 3.0.5
+    Version 3.0.6
     Description DICOM-RT pipeline with TotalSegmentator, nnUNet, and Snakemake
     org.label-schema.name rtpipeline
     org.label-schema.description Radiotherapy DICOM processing pipeline
@@ -12,15 +12,15 @@ From: kstawiski/rtpipeline:3.0.5
     org.label-schema.schema-version 1.0
 
 %help
-    RTpipeline 3.0.5 - Radiotherapy DICOM Processing Pipeline
+    RTpipeline 3.0.6 - Radiotherapy DICOM Processing Pipeline
 
     This definition deliberately converts the version-matched canonical Docker
     image built from this repository's Dockerfile by .github/workflows/docker.yml
-    (the v3.0.5 tag builds kstawiski/rtpipeline:3.0.5). It does not build dependencies
+    (the v3.0.6 tag builds kstawiski/rtpipeline:3.0.6). It does not build dependencies
     from source. The mandatory %post check rejects an older image or an image
     without the pinned radiomics environment:
 
-      apptainer build rtpipeline-3.0.5.sif rtpipeline.def
+      apptainer build rtpipeline-3.0.6.sif rtpipeline.def
 
     Run the pipeline with explicit data bindings:
 
@@ -28,7 +28,7 @@ From: kstawiski/rtpipeline:3.0.5
         --bind /path/to/input:/data/input:ro \
         --bind /path/to/output:/data/output:rw \
         --bind /path/to/logs:/data/logs:rw \
-        rtpipeline-3.0.5.sif \
+        rtpipeline-3.0.6.sif \
         snakemake --cores all --configfile /app/config.container.yaml
 
     For more information, visit https://github.com/kstawiski/rtpipeline.

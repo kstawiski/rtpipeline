@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 3.0.6 — 2026-11-21
+
+Cite this release by version and by the DOI archived for the `v3.0.6` tag (see
+[citing](citing.md)). This release removes a refusal introduced in 3.0.5 for ROIs
+whose contours on one plane differ in position only by floating round-off. After
+upgrade, the workflow recomputes the DVH and course metadata outputs, because the
+code that produces them has changed. Compared with 3.0.5, values change only for
+the ROIs described below.
+
 ### DVH
 
 - Contours on one axial plane whose mean z positions differ only by floating

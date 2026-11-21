@@ -3136,7 +3136,7 @@ wheels = [
 
 [[package]]
 name = "rtpipeline"
-version = "3.0.5"
+version = "3.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "dicom2nifti" },

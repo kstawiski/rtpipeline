@@ -328,7 +328,7 @@ esac
 
 receipt_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/rtpipeline"
 mkdir -p "$receipt_dir"
-receipt_path="${receipt_dir}/install-receipt-v3.0.5.txt"
+receipt_path="${receipt_dir}/install-receipt-v3.0.6.txt"
 {
     printf 'RTpipeline local installation receipt\n'
     printf 'created_utc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
