@@ -812,6 +812,9 @@ def _axial_dose_plane_positions(rtdose: FileDataset) -> np.ndarray:
     return planes
 
 
+_PLANE_ROUND_OFF_MM = 1e-9
+
+
 class _ContourPlaneDose(pydicom.dataset.Dataset):
     """Read-only floating pixel adapter for dicompyler; never written as DICOM."""
 
@@ -872,9 +875,32 @@ def dose_on_contour_planes(
     if np.all(distance <= 1e-3) and not absolute_offsets:
         return rtdose, "EXACT"
 
-    # Keep the support endpoints, including the origin used by dicompyler to
-    # rasterize out-of-grid contours for its diagnostic full-volume estimate.
-    target_z = np.unique(np.r_[source_z[0], target_z, source_z[-1]])
+    # Contours on one plane can yield mean z values that differ only by
+    # floating round-off. Positions within 1e-9 mm of the first position of
+    # their cluster (far above round-off, far below anything the encoded frame
+    # offsets resolve) form one sampled plane, so the rebuilt offsets stay
+    # strictly monotonic once encoded. A cluster that holds a support endpoint
+    # or a source dose plane is sampled there; otherwise at its first position.
+    # A lone position is unchanged. Keep the endpoints, including the origin
+    # used by dicompyler to rasterize out-of-grid contours for its diagnostic
+    # full-volume estimate.
+    clusters = []
+    for z in np.unique(np.r_[source_z[0], target_z, source_z[-1]]):
+        if clusters and z - clusters[-1][0] <= _PLANE_ROUND_OFF_MM:
+            clusters[-1].append(float(z))
+        else:
+            clusters.append([float(z)])
+    endpoints = {float(source_z[0]), float(source_z[-1])}
+    source_set = set(source_z.tolist())
+
+    def sampled_position(cluster):
+        for preferred in (endpoints, source_set):
+            for z in cluster:
+                if z in preferred:
+                    return z
+        return cluster[0]
+
+    target_z = np.asarray([sampled_position(c) for c in clusters])
     pixels = np.asarray(rtdose.pixel_array)
     pixels = pixels.reshape(len(planes), int(rtdose.Rows), int(rtdose.Columns))
     upper = np.searchsorted(source_z, target_z).clip(0, len(source_z) - 1)

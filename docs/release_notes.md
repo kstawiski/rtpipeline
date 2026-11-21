@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### DVH
+
+- Contours on one axial plane whose mean z positions differ only by floating
+  round-off are treated as one plane when dose is interpolated onto contour
+  planes. 3.0.5 kept them as separate planes; once the rebuilt frame offsets were
+  encoded, neighbouring positions could become equal and the ROI was refused with
+  "RTDOSE planes must be strictly monotonic". Positions within 1e-9 mm of each
+  other, or of the first or last dose plane, now form one plane, sampled at a dose
+  plane when one of them lies on it. An ROI whose contour planes are all more than
+  1e-9 mm apart and from the dose boundary planes is measured exactly as in 3.0.5.
+
 ## 3.0.5 — 2026-11-20
 
 Cite this release by version and by the DOI archived for the `v3.0.5` tag (see

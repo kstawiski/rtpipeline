@@ -419,3 +419,70 @@ def test_existing_table_columns_match_stored_baseline_with_additive_alignment(tm
     assert [[cell(row[i]) for i in keep] for row in projected.itertuples(index=False)] == [
         [row[i] for i in keep] for row in baseline['rows']
     ]
+
+
+
+def _roundoff(z, k=3):
+    """A position k representable steps above z: a nonzero float64 round-off."""
+    shifted = z + k * np.spacing(z)
+    assert shifted != z
+    return float(shifted)
+
+
+@pytest.mark.parametrize('base', [0., -73.4, 1012.3])
+@pytest.mark.parametrize('k', [1, 3, 64])
+def test_contour_planes_differing_by_round_off_are_one_plane(tmp_path, base, k):
+    # Several contours on one plane can give mean z values that differ only by
+    # floating round-off; they form one sampled plane.
+    dose = dose_grid(tmp_path/'dose.dcm', step=2., start=base, stop=base + 40.)
+    z1, z2 = base + 3.3, base + 5.7
+    rs = structure(tmp_path/'rs.dcm', [[z1, z2, _roundoff(z2, k), _roundoff(z2, 2 * k)]])
+    working, method = dose_on_contour_planes(rs, dose, 1)
+    assert method == 'DOSE_Z_INTERPOLATED'
+    positions = _axial_dose_plane_positions(working)
+    np.testing.assert_allclose(positions, [base, z1, z2, base + 40.], atol=1e-9, rtol=0)
+    assert dvh.dvhcalc.get_dvh(rs, working, 1).volume > 0
+
+
+def test_round_off_duplicates_far_from_origin_no_longer_refuse(tmp_path):
+    # Offsets measured from a distant origin are encoded with fewer decimals,
+    # so round-off duplicates collapse into equal neighbours (3.0.5 refused).
+    dose = dose_grid(tmp_path/'dose.dcm', step=2., start=-73.4, stop=40.6)
+    rs = structure(tmp_path/'rs.dcm', [[0.5, _roundoff(0.5, 1), 5.7, _roundoff(5.7, 1), 9.1]])
+    working, _ = dose_on_contour_planes(rs, dose, 1)
+    positions = _axial_dose_plane_positions(working)
+    np.testing.assert_allclose(positions, [-73.4, 0.5, 5.7, 9.1, 40.6], atol=1e-9, rtol=0)
+    assert dvh.dvhcalc.get_dvh(rs, working, 1).volume > 0
+
+
+@pytest.mark.parametrize('lower', [True, False])
+def test_round_off_at_a_dose_boundary_uses_the_boundary(tmp_path, lower):
+    dose = dose_grid(tmp_path/'dose.dcm', step=2., start=0., stop=40.)
+    edge = _roundoff(0., 1) if lower else 40. - 2 * np.spacing(40.)
+    zs = sorted([edge, 7.3] + ([40.] if not lower else [0.]))
+    working, method = dose_on_contour_planes(structure(tmp_path/'rs.dcm', [zs]), dose, 1)
+    np.testing.assert_allclose(_axial_dose_plane_positions(working), [0., 7.3, 40.],
+                               atol=1e-12, rtol=0)
+    assert method == 'DOSE_Z_INTERPOLATED'
+
+
+@pytest.mark.parametrize('order', ['below', 'above'])
+def test_round_off_around_a_dose_plane_samples_the_dose_plane(tmp_path, order):
+    dose = dose_grid(tmp_path/'dose.dcm', step=2.5, start=5., stop=20.)
+    dose.GridFrameOffsetVector = _axial_dose_plane_positions(dose).tolist()
+    near = 10. - 2 * np.spacing(10.) if order == 'below' else _roundoff(10., 2)
+    working, method = dose_on_contour_planes(
+        structure(tmp_path/'rs.dcm', [[5., near, 10., 20.]]), dose, 1)
+    assert method == 'EXACT'
+    np.testing.assert_allclose(_axial_dose_plane_positions(working), [5., 10., 20.],
+                               atol=0, rtol=0)
+
+
+def test_distinct_planes_beyond_round_off_are_kept(tmp_path):
+    # Planes 2e-9 mm apart and 2e-9 mm from the origin stay separate, and a
+    # cluster is measured from its first position, never chained.
+    dose = dose_grid(tmp_path/'dose.dcm', step=2., start=0., stop=40.)
+    zs = [5e-10, 2e-9, 3.3, 3.3 + 5e-10, 3.3 + 1.5e-9, 7.3]
+    working, _ = dose_on_contour_planes(structure(tmp_path/'rs.dcm', [zs]), dose, 1)
+    np.testing.assert_allclose(_axial_dose_plane_positions(working),
+                               [0., 2e-9, 3.3, 3.3 + 1.5e-9, 7.3, 40.], atol=1e-12, rtol=0)
